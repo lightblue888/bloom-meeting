@@ -48,6 +48,7 @@
       "nsis",
       "msi"
     ],
+    "publisher": "Bloom",
     "category": "Productivity",
     "shortDescription": "Bloom 组会：开会、录下会议窗口、实时转写",
     "longDescription": "Bloom 组会：开会时只录自己的窗口，边录边转写，会后生成修订对比和纪要。",

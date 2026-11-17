@@ -1,5 +1,7 @@
 # Bloom
 
+<p align="center"><img src="docs/bloom-demo.gif" width="720" alt="会上说定一处改法，论文当场出现删红增绿的修订"></p>
+
 **组会上说定的改法，直接改进论文。** Bloom 是给课题组开组会用的 AI 助手：它在会上听大家讨论，被叫到时用语音回答问题；主持人或共同主持人拍板一处改法，它就排队把论文改好，修订标记当场长在稿子上，改完口头汇报一句。散会后有修订对比、逐字稿和纪要。
 
 **Spoken decisions in research meetings become live paper revisions.** Bloom listens to a group meeting, answers when it is addressed, and when the host or a co-host settles a change, it revises the paper on the spot — the tracked changes appear in the paper while the meeting goes on.

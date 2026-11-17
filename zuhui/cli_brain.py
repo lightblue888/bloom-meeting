@@ -47,6 +47,8 @@ class _Proc:
             args += ["--tools", ""]
             cwd = str(d)
         flags = 0x08000000 if os.name == "nt" else 0          # CREATE_NO_WINDOW
+        from . import provider
+        args = provider.map_args(args)                       # 设置里填了别家的 API key：换成那家的型号
         self.p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                   text=True, encoding="utf-8", errors="replace", env=_strip_claude_env(),
                                   cwd=cwd, bufsize=1, creationflags=flags)

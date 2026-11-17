@@ -116,7 +116,8 @@ class FastBrain:
             s += "\n\n" + (PROMPTS / "app_facts.md").read_text(encoding="utf-8-sig").strip()
         except OSError:
             pass
-        return s.replace("@AI", assistant_name(self.cfg))     # 提示词里它自己的名字：设置里起的，没起按对话模型
+        from . import provider
+        return s.replace("@AI", assistant_name(self.cfg)) + provider.facts()   # 它自己的名字；用别家接口时补一句型号
 
     # ---------- 开头别连着用同一个 ----------
     def openers(self) -> list[str]:

@@ -29,7 +29,9 @@ def app_facts() -> str:
     """软件现状（prompts/app_facts.md）：学生答软件问题以它为准。"""
     try:
         from .config import assistant_name
-        return (PROMPTS / "app_facts.md").read_text(encoding="utf-8-sig").strip().replace("@AI", assistant_name())
+        from . import provider
+        return ((PROMPTS / "app_facts.md").read_text(encoding="utf-8-sig").strip().replace("@AI", assistant_name())
+                + provider.facts())
     except OSError:
         return "（软件现状读不到）"
 
@@ -47,7 +49,8 @@ def _strip_claude_env() -> dict:
     from .netenv import SAVED
     env.update(SAVED)                    # 后端自己不走代理（会议连接），claude 要连国外：把原来的代理加回去
     env.setdefault("PYTHONIOENCODING", "utf-8")
-    return env
+    from . import provider
+    return provider.apply_env(env)          # 设置里填了别家（或 Anthropic）的 API key：带上地址、密钥、型号
 
 
 def _resolve_claude(name: str) -> str:
@@ -644,7 +647,8 @@ class Hands:
         """起一次 `claude -p ...`，返回 (解析出的 JSON, 原始输出, 退出码)。cancel 置位或超时就杀掉（退出码 None）。
         on_event：配 --output-format stream-json --verbose 用，每来一个事件（一行 JSON）就回调一次；返回的 JSON 是最后那个
         type=result 事件，字段和 --output-format json 的一样。"""
-        cmd = [_resolve_claude(self.hcfg.get("claude", "claude"))] + args
+        from . import provider
+        cmd = [_resolve_claude(self.hcfg.get("claude", "claude"))] + provider.map_args(args)   # 别家接口：换成那家的型号
         kw = {}
         if sys.platform == "win32":
             kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)

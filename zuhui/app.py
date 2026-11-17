@@ -1057,6 +1057,7 @@ class Meeting:
                 self.viewer.brain = self.brain_state           # 界面上"Claude 在干什么"
                 self.viewer.talking = self._talking            # 谁在出声：会议页上头像外亮一圈
                 self.viewer.on_profile = self._on_profile      # 设置里改了昵称
+                self.viewer.on_provider = self._on_provider    # 设置里换了模型来源
                 self.viewer.mic_mute = lambda m=None: self.ears.set_muted(m) if self.ears is not None else False   # 主持人麦克风静音（m=None 只问）
                 self.viewer.on_log = self.log                  # 访客在会议页上做的事记进会议日志
                 if not any(self.board.counts().values()):
@@ -2139,6 +2140,19 @@ class Meeting:
                 best, best_cov = n, cov
         return best if best_cov >= 0.6 else None
 
+    def _on_provider(self) -> None:
+        """设置里换了模型来源：对话那个常驻的 claude 进程关掉（下一句用新的地址、密钥、型号重开），
+        AI 的默认名字、叫它的名字、提示词跟着换。改稿、查资料每次都是新起的进程，自然用新的。"""
+        s = getattr(self.fast, "_cli_session", None)
+        self.fast._cli_session = None
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
+        me = self.viewer.me_name() if self.viewer is not None else ""
+        self._on_profile(me, assistant_name(self.cfg))
+
     def _on_profile(self, name: str, ai: str) -> None:
         """设置里改了你的昵称或 AI 的名字：会议页、逐字稿、认谁是主持人马上用新名字（配置是共用的那一份，view 已经改好）；
         叫它的名字、提示词跟着换；语音桥下次进语音房间时用新名字（正开着的这场，访客那边要等下一场才换）。"""
@@ -2328,6 +2342,11 @@ class Meeting:
         cur = model_current(self.cfg)
         out = {part: {"current": cur.get(part), "options": [{"id": i, "label": label} for i, label in opts]}
                for part, opts in MODEL_OPTIONS.items()}
+        from . import provider
+        p = provider.active()
+        if p and p["kind"] != "anthropic":           # 用别家接口：对话、改稿各只有设置里填的那一个（在设置里改）
+            for part, mid in (("dialog", p["fast"]), ("edit", p["main"])):
+                out[part] = {"current": mid, "options": [{"id": mid, "label": mid}]}
         out["tts"] = _tts_label()
         out["asr"] = _asr_label()
         return out

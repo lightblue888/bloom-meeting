@@ -773,3 +773,6 @@
   outline: none;
   border-color: var(--brand, #3b82f6);
 }
+.app .st-name.st-wide {
+  width: 280px;
+}

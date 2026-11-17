@@ -49,6 +49,7 @@ export const MOVED: Record<string, string> = { cloud: 'speech', 'speech.cloud': 
 
 export const SECTIONS: Record<string, Key> = {
   'general.profile': 'settings.general.profile',
+  'general.model_source': 'settings.general.model_source',
   'general.app': 'settings.general.app',
   'general.about': 'settings.general.about',
   'speech.models': 'speech.section.models',
@@ -65,6 +66,12 @@ export const ENTRIES: Entry[] = [
   row('general.avatar', 'general.profile', 'settings.general.avatar'),
   row('general.name', 'general.profile', 'settings.general.name'),
   row('general.ai_name', 'general.profile', 'settings.general.ai_name', { detail: 'settings.general.ai_name.detail' }),
+  row('general.source', 'general.model_source', 'settings.general.source'),
+  row('general.api_key', 'general.model_source', 'settings.general.api_key'),
+  row('general.base_url', 'general.model_source', 'settings.general.base_url'),
+  row('general.fast_model', 'general.model_source', 'settings.general.fast_model'),
+  row('general.main_model', 'general.model_source', 'settings.general.main_model'),
+  row('general.provider_check', 'general.model_source', 'settings.general.provider_check'),
   row('general.login', 'general.app', 'settings.general.login', { detail: 'settings.general.login.detail' }),
   row('general.language', 'general.app', 'settings.general.language'),
   whole('general.about'),

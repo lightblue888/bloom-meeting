@@ -29,6 +29,8 @@ def ask(prompt: str, system: str = "", model: str = HAIKU, effort: str = "low", 
         sp.write_text(system, encoding="utf-8")
         args += ["--system-prompt-file", str(sp)]
     flags = 0x08000000 if os.name == "nt" else 0          # 不弹黑窗口
+    from . import provider
+    args = provider.map_args(args)                        # 设置里填了别家的 API key：换成那家的型号
     try:
         r = subprocess.run(args, input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace",
                            env=_strip_claude_env(), cwd=str(d), timeout=timeout, creationflags=flags)

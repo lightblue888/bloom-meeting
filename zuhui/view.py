@@ -3062,7 +3062,11 @@ class Viewer:
         except Exception:
             pass
         hcfg = self.cfg.get("hands") or {}
-        r["models"] = {"fast": _pretty_model(self.cfg["fast"].get("model")), "hands": _pretty_model(hcfg.get("model", "claude-opus-5-5")) + {"low": " · Low", "medium": " · Medium", "high": " · High",
+        from . import provider
+        pv = provider.active()
+        pv = pv if pv and pv["kind"] != "anthropic" else None      # 用别家接口：显示那家的型号
+        r["models"] = {"fast": pv["fast"] if pv else _pretty_model(self.cfg["fast"].get("model")),
+                       "hands": (pv["main"] if pv else _pretty_model(hcfg.get("model", "claude-opus-5-5"))) + {"low": " · Low", "medium": " · Medium", "high": " · High",
                                                                           "xhigh": " · Extra", "max": " · Max"}.get(str(hcfg.get("effort", "xhigh")), ""),
                        "tts": _tts_name(), "asr": asr}
         try:                                                    # 接话分类模型：没开 None；加载中 / 就绪（在哪块设备上）/ 加载失败
@@ -3099,6 +3103,7 @@ class Viewer:
     brain = None                          # Meeting.brain_state：Claude 在干什么（前台在听/想/说，后台在查什么）
     talking = None                        # Meeting._talking：此刻谁在出声（"me"、"claude"、访客的名字）
     on_profile = None                     # Meeting._on_profile(你的昵称, AI 的名字)：设置里改了名字
+    on_provider = None                    # Meeting._on_provider()：设置里换了模型来源
     mic_mute = None                       # Ears.set_muted：mic_mute(True/False) 静音 / 打开，mic_mute() 只问 → 现在是否静音
     models_set = None
 
@@ -3659,6 +3664,9 @@ class Viewer:
                     self._json(viewer.api_current())
                 elif p == "/api/brain/stream":     # "Claude 在干什么"：变了就推（前端只管每秒计时）
                     self._brain_stream()
+                elif p == "/api/provider":         # 设置 → 模型来源（密钥只给最后四位）
+                    from . import provider
+                    self._json(provider.public())
                 elif p == "/api/profile":          # 设置 → 你在会上：昵称、头像
                     self._json(_profile(viewer))
                 elif p == "/api/mic/stream":       # 静音没有、谁在出声：会议页上的静音标记和头像外的亮圈
@@ -3828,6 +3836,29 @@ class Viewer:
                         except Exception:
                             pass
                     return self._json(_profile(viewer))
+                if p == "/api/provider":       # 设置里换模型来源 {kind, base_url, key, fast, main} → 现在的（密钥只给最后四位）
+                    from . import provider
+                    try:
+                        provider.save(provider.clean(body if isinstance(body, dict) else {}))
+                    except ValueError as e:
+                        return self._json({"error": str(e)}, 400)
+                    except OSError:
+                        return self._json({"error": "failed"}, 500)
+                    cb = getattr(viewer, "on_provider", None)
+                    if callable(cb):
+                        try:
+                            cb()
+                        except Exception:
+                            pass
+                    return self._json(provider.public())
+                if p == "/api/provider/test":  # 用存好的来源问一句"好"：{ok, ms} 或 {ok: false, error}（会花一点点那家的额度）
+                    from . import claude_text
+                    t0 = time.time()
+                    try:
+                        claude_text.ask("只回一个字：好", model=claude_text.HAIKU, timeout=90)
+                        return self._json({"ok": True, "ms": int((time.time() - t0) * 1000)})
+                    except Exception as e:
+                        return self._json({"ok": False, "error": str(e)[-160:]})
                 if p == "/api/profile/avatar":  # 设置里换头像 {"data": data: 地址或 base64}，移除 {"remove": true}
                     from . import host_profile
                     try:

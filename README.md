@@ -18,11 +18,15 @@ irm https://raw.githubusercontent.com/lightblue888/bloom-meeting/main/install.ps
 
 它会装好 uv（Python 管理）和 ffmpeg（录会议窗口）、Bloom 的后端（`%LOCALAPPDATA%\bloom-meeting`，自带 Python 环境）和桌面端（开始菜单里的 Bloom）。再运行一次就是更新，你的 `config.json` 不会被覆盖。
 
-Bloom 用**你自己的 Claude 账号**思考和改稿：需要装好并登录 [Claude Code](https://docs.claude.com/en/docs/claude-code)（套餐或 API key 都行）。没装的话安装脚本最后会告诉你怎么装：
+Bloom 的对话、改稿、纪要都通过本机的 [Claude Code](https://docs.claude.com/en/docs/claude-code) 调模型，两种用法任选：
+
+- **Claude 账号**：在终端运行一次 `claude` 登录（Claude 套餐或 Anthropic Console 账号）。
+- **API key**：在 Bloom 的 **设置 → 通用 → 模型来源** 里选 DeepSeek、Kimi、智谱 GLM、通义千问、Anthropic API，或者填任何兼容 Anthropic 格式的接口，粘贴 API key。按用量从你在那家的账户扣费；Claude Code 仍要装，但不用登录。
+
+没装 Claude Code 的话，安装脚本最后会提示：
 
 ```powershell
 irm https://claude.ai/install.ps1 | iex
-claude        # 登录一次
 ```
 
 ## 用法 · Usage
@@ -72,7 +76,7 @@ cd ..\apps\desktop; npx @tauri-apps/cli@2 build --bundles nsis
 
 ## 隐私
 
-会议的录屏、逐字稿、论文都只存在你自己的电脑上（`~/.zuhui`、`~/Blurt`）。对话和改稿通过你自己的 Claude Code 调用 Anthropic 的模型。开了邀请链接时，会议内容经你自己的中继转给进会的人：论文、逐字稿只放在中继的内存里，磁盘上只记会议名、参会人和头像。
+会议的录屏、逐字稿、论文都只存在你自己的电脑上（`~/.zuhui`、`~/Blurt`）。对话和改稿通过你自己的 Claude Code 调用你选的模型来源（Anthropic，或你在设置里填的服务商）；API key 只存在本机的 `~/.zuhui/provider.json`。开了邀请链接时，会议内容经你自己的中继转给进会的人：论文、逐字稿只放在中继的内存里，磁盘上只记会议名、参会人和头像。
 
 ## License
 

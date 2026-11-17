@@ -399,6 +399,27 @@ async function postProfile(path: string, body: unknown): Promise<Profile> {
   return toProfile(j);
 }
 
+/** Settings → General → Model source: Claude Code's own login ('claude'), or an API key — for an Anthropic-compatible
+ *  endpoint (DeepSeek, Kimi, GLM, Qwen, any other) or for Anthropic's API. The key never comes back, only its last four. */
+export type ProviderKind = 'claude' | 'deepseek' | 'kimi' | 'glm' | 'qwen' | 'anthropic' | 'custom';
+export interface ProviderPreset {
+  label: string;
+  base_url: string;
+  fast: string;
+  main: string;
+}
+export interface Provider {
+  kind: ProviderKind;
+  base_url: string;
+  fast: string;
+  main: string;
+  key_set: boolean;
+  key_tail: string;
+  active: boolean;
+  label: string;
+  presets: Record<string, ProviderPreset>;
+}
+
 export interface Current {
   backend: boolean;
   /** live only: what Claude is doing (null when no meeting is on) */
@@ -609,6 +630,34 @@ export const meetingApi = {
   /** a picture as a data: URL; the backend squares it to 256 px */
   setAvatar: (data: string) => postProfile('/api/profile/avatar', { data }),
   removeAvatar: () => postProfile('/api/profile/avatar', { remove: true }),
+  provider: async (): Promise<Provider> => {
+    const r = await fetch(`${ZUHUI_BASE}/api/provider`, { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return (await r.json()) as Provider;
+  },
+  /** an empty key keeps the one saved; the error is a code the page words (kind, key, base_url, model, failed) */
+  setProvider: async (p: { kind: ProviderKind; base_url?: string; key?: string; fast?: string; main?: string }): Promise<Provider> => {
+    const r = await fetch(`${ZUHUI_BASE}/api/provider`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(p),
+      signal: AbortSignal.timeout(10000),
+    });
+    const j = (await r.json().catch(() => ({}))) as Partial<Provider> & { error?: string };
+    if (!r.ok || !j.kind) throw new Error(j.error || 'failed');
+    window.dispatchEvent(new Event(PROFILE_EVENT)); // the AI's default name follows the source
+    return j as Provider;
+  },
+  /** asks the saved source one short question (costs the provider a few tokens) */
+  testProvider: async (): Promise<{ ok: boolean; ms?: number; error?: string }> => {
+    const r = await fetch(`${ZUHUI_BASE}/api/provider/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+      signal: AbortSignal.timeout(100000),
+    });
+    return (await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }))) as { ok: boolean; ms?: number; error?: string };
+  },
   /** the live 修订对比 page, for the iframe (host=bloom: its own toolbar hides, the tools sit in the shell's row) */
   liveDiffUrl: () => `${ZUHUI_BASE}/?embed=1&host=bloom&ui=${uiLang()}`,
   /** a past meeting's snapshot (`diff_url` is server-relative) */

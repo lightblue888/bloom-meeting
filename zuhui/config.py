@@ -135,9 +135,12 @@ _MODEL_FAMILY = (("claude", "Claude"), ("gpt", "GPT"), ("o1", "GPT"), ("o3", "GP
 
 
 def default_assistant_name(cfg: dict) -> str:
-    """没在设置里起名字时：按对话模型叫（claude-* 叫 Claude……），认不出就叫 AI。"""
-    m = str((cfg.get("fast") or {}).get("model") or "").strip().lower()
-    return next((v for k, v in _MODEL_FAMILY if m.startswith(k)), "AI")
+    """没在设置里起名字时：在用别家接口就按那家叫（DeepSeek、Kimi……，见 provider.py），否则按对话模型叫
+    （claude-* 叫 Claude……），认不出就叫 AI。"""
+    from . import provider
+    p = provider.active()
+    m = str((p or {}).get("fast") or (cfg.get("fast") or {}).get("model") or "").strip().lower()
+    return provider.ai_name(p) or next((v for k, v in _MODEL_FAMILY if m.startswith(k)), "AI")
 
 
 def assistant_name(cfg: dict | None = None) -> str:
@@ -162,6 +165,12 @@ _ENV_OVERRIDE = {"dialog": "ZUHUI_FAST_MODEL", "edit": "ZUHUI_HANDS_MODEL", "eff
 
 
 def model_label(part: str, mid: str | None) -> str:
+    """界面上的型号名。在用别家接口时，对话、改稿两档显示那家的型号（设置 → 模型来源）。"""
+    if part in ("dialog", "edit"):
+        from . import provider
+        p = provider.active()
+        if p and p["kind"] != "anthropic":
+            return p["fast"] if part == "dialog" else p["main"]
     return next((label for i, label in MODEL_OPTIONS.get(part, []) if i == mid), str(mid or ""))
 
 

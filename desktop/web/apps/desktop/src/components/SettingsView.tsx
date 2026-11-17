@@ -10,7 +10,7 @@ import { i18n, t } from '../i18n';
 import { ENTRIES, GROUPS, MOVED, PANES, pane, paneOf, paneReason, reason, results, SECTIONS, SUGGESTIONS, textIn, type Key, type PaneId, type ResultGroup } from '../settings/catalog';
 import { Group, Page, Popup, requestFlash, Row, S, TextLink, Toggle, lang } from '../settings/kit';
 import '../settings/settings.css';
-import { meetingApi, avatarUrl, type Profile } from '../meetingApi';
+import { meetingApi, avatarUrl, PROFILE_EVENT, type Profile, type Provider, type ProviderKind } from '../meetingApi';
 import { isImeKey } from '../ime';
 import { Flower, HOST_COLOR } from './Flower';
 import { ModelsPane } from './ModelsSettings';
@@ -315,6 +315,7 @@ function GeneralPane({ status, cfg, save, onLang }: {
   return (
     <Page id="general">
       <ProfileGroup />
+      <ProviderGroup />
       <Group id="general.app">
         {login?.supported && (
           <Toggle id="general.login" on={login.enabled} detail={loginErr ? S('settings.general.login_failed') : undefined} warn={loginErr}
@@ -399,6 +400,20 @@ function ProfileGroup() {
       setNameErr(profileError(e));
     }
   };
+  // the AI's default name follows the model source (Settings → General → Model source): read again when that changes
+  useEffect(() => {
+    const again = () =>
+      meetingApi.profile().then(
+        (x) => {
+          setP(x);
+          if (!editing.current) setName(x.name);
+          if (!aiEditing.current) setAi(x.assistant_custom ? x.assistant : '');
+        },
+        () => {},
+      );
+    window.addEventListener(PROFILE_EVENT, again);
+    return () => window.removeEventListener(PROFILE_EVENT, again);
+  }, []);
   const saveAi = async () => {
     aiEditing.current = false;
     if (!p) return;
@@ -515,6 +530,149 @@ function ProfileGroup() {
             }
           }}
         />
+      </Row>
+    </Group>
+  );
+}
+
+const SOURCES: ProviderKind[] = ['claude', 'deepseek', 'kimi', 'glm', 'qwen', 'anthropic', 'custom'];
+const PROVIDER_ERRORS = ['key', 'base_url', 'model'];
+
+/** Model source: Claude Code's own login, or an API key (DeepSeek, Kimi, GLM, Qwen, Anthropic, any Anthropic-compatible
+ *  endpoint). Bloom runs every model call through Claude Code; an API source hands it the endpoint, the key and the
+ *  provider's models. The key goes to the backend once and is never shown again, only its last four. */
+function ProviderGroup() {
+  const [p, setP] = useState<Provider | null>(null);
+  const [down, setDown] = useState(false);
+  const [kind, setKind] = useState<ProviderKind>('claude');
+  const [base, setBase] = useState('');
+  const [key, setKey] = useState('');
+  const [fast, setFast] = useState('');
+  const [main, setMain] = useState('');
+  const [msg, setMsg] = useState<{ text: string; warn: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
+  /** the fields for a source: what is saved when it is the saved one, else the provider's published defaults */
+  const fill = (x: Provider, k: ProviderKind) => {
+    const pre = x.presets[k];
+    const same = x.kind === k;
+    setBase(same && x.base_url ? x.base_url : pre?.base_url ?? '');
+    setFast(same && x.fast ? x.fast : pre?.fast ?? '');
+    setMain(same && x.main ? x.main : pre?.main ?? '');
+    setKey('');
+  };
+  useEffect(() => {
+    let alive = true;
+    let timer = 0;
+    const load = () =>
+      meetingApi.provider().then(
+        (x) => {
+          if (!alive) return;
+          setP(x);
+          setDown(false);
+          setKind(x.kind);
+          fill(x, x.kind);
+        },
+        () => {
+          if (!alive) return;
+          setDown(true);
+          timer = window.setTimeout(load, 4000);
+        },
+      );
+    void load();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, []);
+  const name = (k: ProviderKind) =>
+    k === 'claude' ? S('settings.provider.claude') : k === 'custom' ? S('settings.provider.custom') : p?.presets[k]?.label || k;
+  const save = async (k: ProviderKind = kind) => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const x = await meetingApi.setProvider(k === 'claude' ? { kind: k } : { kind: k, base_url: base, key, fast, main });
+      setP(x);
+      setKind(x.kind);
+      fill(x, x.kind);
+      setMsg({ text: S('settings.provider.saved'), warn: false });
+    } catch (e) {
+      const c = String((e as Error)?.message ?? e);
+      setMsg({ text: S(`settings.provider.err.${PROVIDER_ERRORS.includes(c) ? c : 'failed'}`), warn: true });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const choose = (k: ProviderKind) => {
+    setKind(k);
+    setMsg(null);
+    if (p) fill(p, k);
+    // back to Claude Code's own login: nothing to fill in, so it is saved right away
+    if (k === 'claude' && p && p.kind !== 'claude') void save('claude');
+  };
+  const test = async () => {
+    setBusy(true);
+    setMsg({ text: S('settings.provider.testing'), warn: false });
+    try {
+      const r = await meetingApi.testProvider();
+      setMsg(r.ok ? { text: S('settings.provider.ok', ((r.ms ?? 0) / 1000).toFixed(1)), warn: false } : { text: S('settings.provider.fail', r.error ?? ''), warn: true });
+    } catch (e) {
+      setMsg({ text: S('settings.provider.fail', String((e as Error)?.message ?? e)), warn: true });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const api = kind !== 'claude';
+  const endpoint = api && kind !== 'anthropic';
+  const dirty = !!p && (kind !== p.kind || !!key || (endpoint && (base !== p.base_url || fast !== p.fast || main !== p.main)));
+  const keyHint = p && p.kind === kind && p.key_set ? S('settings.provider.key_saved', p.key_tail) : S('settings.provider.key_placeholder');
+  const field = (v: string, set: (s: string) => void, max: number, wide?: boolean, testid?: string) => (
+    <input
+      className={`st-name ${wide ? 'st-wide' : ''}`}
+      value={v}
+      maxLength={max}
+      spellCheck={false}
+      disabled={!p || busy}
+      data-testid={testid}
+      onChange={(e) => set(e.target.value.trim())}
+    />
+  );
+  return (
+    <Group id="general.model_source" footer={down ? S('settings.profile.offline') : undefined}>
+      <Row
+        id="general.source"
+        detail={!api ? S('settings.provider.claude_detail') : kind === 'custom' ? S('settings.provider.billed_any') : S('settings.provider.billed', name(kind))}
+      >
+        <Popup label={S('settings.general.source')} value={kind} choices={SOURCES.map((k) => [k, name(k)] as [ProviderKind, string])} dividers={[1, 5]}
+          onChange={choose} disabled={!p || busy} />
+      </Row>
+      {api && (
+        <Row id="general.api_key">
+          <input
+            className="st-name st-wide"
+            type="password"
+            value={key}
+            placeholder={keyHint}
+            autoComplete="off"
+            spellCheck={false}
+            maxLength={400}
+            disabled={!p || busy}
+            data-testid="provider-key"
+            onChange={(e) => setKey(e.target.value.trim())}
+          />
+        </Row>
+      )}
+      {endpoint && <Row id="general.base_url">{field(base, setBase, 200, true, 'provider-url')}</Row>}
+      {endpoint && <Row id="general.fast_model">{field(fast, setFast, 80, false, 'provider-fast')}</Row>}
+      {endpoint && <Row id="general.main_model">{field(main, setMain, 80, false, 'provider-main')}</Row>}
+      <Row id="general.provider_check" detail={msg?.text ?? null} warn={!!msg?.warn}>
+        {api && (
+          <button className="primary" disabled={!p || busy || !dirty} onClick={() => void save()} data-testid="provider-save">
+            {S('settings.provider.save')}
+          </button>
+        )}
+        <button disabled={!p || busy || dirty} onClick={() => void test()} data-testid="provider-test">
+          {S('settings.provider.test')}
+        </button>
       </Row>
     </Group>
   );

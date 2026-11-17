@@ -17,7 +17,7 @@
                       GET /view/<room>/paper
                       GET /view/<room>/fig/<名>
      知道房间号就能看 (房间号随机、猜不到; 和进会是同一个口令)。
-   全放内存, 不落盘; 服务重启就清空, 桌面端会补推。
+   放内存里; 会议名、参会人、头像另存一份到 rooms.json (STATE_DIRECTORY), 服务重启后读回来。论文、逐字稿、字幕、任务板只在内存里 (NO_DISK), 重启就没了, 桌面端补推。
 3. 访客在会议页上做事 (2026-11-17 起访客页和主持人用同一套会议界面):
    - 访客:            POST /view/<room>/act      {"path": 白名单里的接口, "body": {...}}   切论文 / 确认、撤回改动 / 改一段原文
                       POST /view/<room>/upload?name=<文件名>   原样的文件字节 (论文, <=50 MB)：加进这场会
@@ -38,7 +38,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import jwt  # python3-jwt (PyJWT)
 
 ENV_FILE = os.environ.get("BLOOM_ENV") or "/opt/bloom/livekit.env"   # 本机测试可以换一份
-ROLES = ("teacher", "student", "guest")
 TTL = 6 * 3600  # token 有效 6 小时
 
 ROOM_RE = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
@@ -77,6 +76,8 @@ NO_DISK = ("captions", "transcript", "partial", "board", "brain", "focus")   # �
 DIRTY = threading.Event()
 ROOMS = {}   # room -> {"state": dict|None, "sv": int, "paper": bytes|None, "pv": int, "assets": {name: (ctype, bytes)}, "touched": float}
 
+
+NAME_MAX = 32          # 访客的名字最多这么多字（和访客页输入框一样）
 
 def make_token(room, name, role):
     now = int(time.time())
@@ -380,7 +381,7 @@ class Handler(BaseHTTPRequestHandler):
                 r = _room(parts[1])
                 if r is not None:
                     r["host_seen"] = time.time()
-                have = {"sv": r["sv"] if r else 0, "pv": r["pv"] if r else 0,
+                have = {"sv": r["sv"] if r else 0, "pv": r["pv"] if r else 0, "lines": bool(r and r.get("lines")),
                         "paper": bool(r and r["paper"]), "assets": sorted((r or {}).get("assets", {}).keys())}
             return self._json(200, have)
         return self._json(404, {"error": "not found"})
@@ -388,11 +389,10 @@ class Handler(BaseHTTPRequestHandler):
     def _token(self, q):
         room = q.get("room", [""])[0].strip()
         name = q.get("name", [""])[0].strip()
-        role = q.get("role", ["guest"])[0].strip().lower()
         if not room or not name:
             return self._json(400, {"error": "room 和 name 必填"})
-        if len(room) > 64 or len(name) > 64:
-            return self._json(400, {"error": "room/name 太长 (<=64)"})
+        if len(room) > 64 or len(name) > NAME_MAX:
+            return self._json(400, {"error": f"room 最多 64 个字、name 最多 {NAME_MAX} 个字"})
         if not ROOM_RE.match(room):
             return self._json(400, {"error": "房间号不对"})
         with LOCK:
@@ -419,6 +419,10 @@ class Handler(BaseHTTPRequestHandler):
                 if since == r["sv"]:
                     return self._json(200, {"sv": r["sv"], "pv": r["pv"], "same": True})
                 return self._json(200, {"sv": r["sv"], "pv": r["pv"], "state": r["state"]})
+            if what == "lines":
+                if not r or not r.get("lines"):
+                    return self._json(200, {})
+                return self._send(200, r["lines"], "application/json; charset=utf-8")
             if what == "paper":
                 if not r or not r["paper"]:
                     return self._send(404, "论文还没推上来".encode("utf-8"), "text/plain; charset=utf-8")
@@ -481,6 +485,9 @@ class Handler(BaseHTTPRequestHandler):
                 r["sv"] += 1
                 DIRTY.set()
                 return self._json(200, {"ok": True, "sv": r["sv"], "pv": r["pv"]})
+            if what == "lines":                    # 逐字稿 + 任务板（JSON），状态里的 lv 是它的版本
+                r["lines"] = body
+                return self._json(200, {"ok": True})
             if what == "paper":
                 r["paper"] = body
                 r["pv"] += 1
@@ -498,6 +505,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True})
             if what == "clear":
                 r["inbox"], r["results"], r["uploads"] = [], {}, {}
+                r["lines"] = None
                 r["paper"] = None
                 r["assets"] = {k: v for k, v in r["assets"].items() if k.startswith("av-")}   # 头像留着，散会页也要用
                 r["pv"] += 1

@@ -785,7 +785,6 @@ class _AudioVAD:
         self._run_on = 0
         self._barged = False
         self._rest = b""
-        self.level = 0.0             # 你麦克风的音量（0–1，上得快落得慢）：会议页上自己头像旁的三根条
         self.frames: deque = deque(maxlen=1250)  # 最近约 40 秒每帧（结束秒, 是不是你在出声）：认声音时只取有声的帧
         self.probs: deque = deque(maxlen=1250)   # 同样这些帧（结束秒, Silero 概率）：学生出声时也照记，比回声用
         self._offs: deque = deque(maxlen=300)    # 最近 30 秒每次读音频时的（墙上时刻 − 读到的录音秒）：取最小的当录音时钟的零点
@@ -969,10 +968,6 @@ class _AudioVAD:
                 t_end = t0 + (i + 1) * self.FRAME / 16000.0
                 self.frames.append((t_end, not muted and not off and p >= self.threshold))
                 self.probs.append((t_end, p))
-                # 音量条：和访客页同一套换算（-52 到 -16 dB 映射到 0–1）。学生在出声时只算判成人声的帧，免得回声让条一直跳
-                lv_rms = float(np.sqrt((frame * frame).mean()))
-                lv = 0.0 if (muted and p < self.threshold) else min(1.0, max(0.0, (20.0 * math.log10(lv_rms + 1e-9) + 52.0) / 36.0))
-                self.level = lv if lv > self.level else self.level * 0.88 + lv * 0.12
                 if off:                    # 静音 / 主持人在别的设备上：这一路的声音不算你在说话，也不打断学生
                     self._loud = self._run_on = 0
                     continue
@@ -1702,17 +1697,10 @@ class Ears:
         self._dispatch_thread.start()
         self._tail_thread.start()
 
-    def mic_level(self) -> float | None:
-        """你麦克风现在的音量（0–1）；没在录、或者一秒多没读到新音频（录音停了）就是 None，会议页上不显示音量条。"""
-        vad = self.vad
-        if vad is None or not vad.knows or time.time() - float(vad.pump_wall or 0) > 1.0:
-            return None
-        return round(float(vad.level), 2)
-
     def set_muted(self, muted=None) -> bool:
         """主持人麦克风静音（会议页 POST /api/mic/mute）：muted=None 只问现在的状态。→ 现在是否静音。
         静音时：这一路不转写、不显示正在说的半句、不算你在说话（学生不等你）、不打断学生；语音桥推给访客的这一路推静音。
-        音量条照样有（level 照报，页面据此提示"你在静音时说话"）。一直静到你再点一下；这场会散了自动解除（存在 ~/.zuhui/mic_mute.json，
+        一直静到你再点一下；这场会散了自动解除（存在 ~/.zuhui/mic_mute.json，
         后端中途重启也还是静音）。"""
         if muted is None:
             return MIC.muted
@@ -1722,10 +1710,6 @@ class Ears:
             self._emit("log", {"kind": "mic", "text": ("Host mic muted" if now else "Host mic unmuted") if self.en
                                else ("主持人麦克风已静音" if now else "主持人麦克风已打开")})
         return now
-
-    def mic_state(self) -> dict:
-        """/api/mic/stream 推的那一份：{"level": 0–1 或 None（没在录）, "muted": 是否静音}。"""
-        return {"level": self.mic_level(), "muted": bool(MIC.muted)}
 
     def stop(self) -> None:
         self._stop.set()
@@ -1743,10 +1727,6 @@ class Ears:
             return False
         age = (v.audio_now - v.last_voice) + (time.time() - v.pump_wall)
         return age < window
-
-    @property
-    def listening(self) -> bool:
-        return self.session is not None
 
     # -- 内部 --
     def _emit(self, kind: str, payload):

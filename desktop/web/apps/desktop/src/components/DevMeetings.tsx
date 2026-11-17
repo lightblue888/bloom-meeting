@@ -12,7 +12,6 @@ import { keep } from './useDismiss';
 
 const sig = (r: DevRun | undefined) => (r ? [r.n_lines, r.state, r.processing, r.has_summary, r.match, r.duration_s].join('|') : '');
 const NOBODY: Participant[] = [];
-const NOOP = () => undefined;
 
 /** a run's group: "<paper> 第 N 轮", or the paper alone for runs without a round */
 const groupOf = (r: DevRun) => (r.round ? t('meeting.dev.round', { p: r.paper, n: String(r.round) }) : t('meeting.dev.no_round', { p: r.paper }));
@@ -226,10 +225,6 @@ export function DevMeetings({ active = true }: { active?: boolean }) {
                           partial={pickedLive ? d.partial ?? null : null}
                           people={people}
                           follow={pickedLive}
-                          version={null}
-                          onVersion={NOOP}
-                          cleanup={null}
-                          raw={null}
                           brain={pickedLive ? d.brain ?? null : null}
                           board={pickedLive ? d.board : null}
                         />

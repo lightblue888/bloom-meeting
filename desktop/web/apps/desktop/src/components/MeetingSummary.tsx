@@ -1,13 +1,12 @@
-// The 纪要 tab's two faces and the 时间轴 tab (docs/meeting-ui-spec.md §当前会议). While the meeting is live the 纪要
-// tab is the task board — 排队 / 改中 / 已改 in three columns, a card = the task's title, the teacher's words, the
-// student's report. After 散会 it is the Summary, laid out as Tencent Meeting's AI summary: title, speakers, the
-// abstract, 核心结论 in a blue-edged box, each topic's 01 / 02 cards, 后续工作安排. The timeline lists what happened
-// in order: the teacher spoke → task N was noted → task N was done.
-import { useEffect, useMemo, useState } from 'react';
+// The 纪要 tab's two faces (docs/meeting-ui-spec.md §当前会议). While the meeting is live the 纪要 tab is the task
+// board — 排队 / 改中 / 已改 in three columns, a card = the task's title, the teacher's words, the student's report.
+// After 散会 it is the Summary, laid out as Tencent Meeting's AI summary: title, speakers, the abstract, 核心结论 in a
+// blue-edged box, each topic's 01 / 02 cards, 后续工作安排.
+import { useEffect, useState } from 'react';
 import { Icon } from '@blurt/icons';
 import { mi18n as i18n, mt as t } from '../i18n';
 import { stepV } from './stepText';
-import { fmtDuration, multiPaper, secSince, tagKey, type Board, type Line, type Meeting, type Participant, type Summary, type Task, type TaskStatus } from '../meetingApi';
+import { fmtDuration, multiPaper, type Board, type Participant, type Summary, type Task, type TaskStatus } from '../meetingApi';
 import { Names, nameStyle } from './Highlight';
 import { colorsByName } from './Flower';
 
@@ -270,8 +269,10 @@ export function TodoList({ board, meetingId }: { board: Board | null; meetingId:
 export function SummaryView({ summary, people }: { summary: Summary; people?: Participant[] }) {
   const n2 = (i: number) => String(i + 1).padStart(2, '0');
   // the people in this 纪要: their names stand out as chips wherever the text mentions them
-  const names = [...(summary.speakers ?? []), 'Claude'].filter((n) => n && !['老师', '学生', '主持人', '助手'].includes(n));
-  const me = names.find((n) => n !== 'Claude') ?? null;
+  // the backend lists the host first and the AI second (whatever it is called)
+  const ai = people?.find((p) => p.id === 'claude' || p.role === 'student')?.name ?? summary.speakers?.[1] ?? 'Claude';
+  const names = [...new Set([...(summary.speakers ?? []), ai])].filter((n) => n && !['老师', '学生', '主持人', '助手'].includes(n));
+  const me = names.find((n) => n !== ai) ?? null;
   // everyone in their own colour (the one their flower has); the first speaker stands in for the host when nobody is listed
   const colors = colorsByName(people ?? [], names, me);
   const N = (x: string) => <Names text={x} names={names} colors={colors} />;
@@ -283,7 +284,7 @@ export function SummaryView({ summary, people }: { summary: Summary; people?: Pa
           <Icon name="voice" size={13} />
           {summary.speakers.map((s, i) => (
             <span key={i} className="mt-name" style={nameStyle(colors[s])}>
-              {s}
+              <span className="mt-name-t">{s}</span>
             </span>
           ))}
         </p>
@@ -335,68 +336,4 @@ export function SummaryView({ summary, people }: { summary: Summary; people?: Pa
       )}
     </div>
   );
-}
-
-interface Event {
-  sec: number;
-  kind: 'teacher' | 'student' | 'noted' | 'done' | 'failed' | 'system';
-  text: string;
-  idx?: number;
-}
-
-/** The transcript and the board merged by time: a teacher line, "noted" / "done" with the edit's own title (no task numbers on screen). */
-export function Timeline({ meeting, transcript, board }: { meeting: Meeting | null; transcript: Line[]; board: Board | null }) {
-  const events = useMemo(() => {
-    const out: Event[] = [];
-    for (const l of transcript) {
-      if (l.who === 'teacher') out.push({ sec: l.sec, kind: 'teacher', text: l.text });
-      else if (l.who === 'student') out.push({ sec: l.sec, kind: 'student', text: l.text });
-      else out.push({ sec: l.sec, kind: 'system', text: l.text });
-    }
-    const started = meeting?.started;
-    for (const x of board?.tasks ?? []) {
-      const c = secSince(started, x.created);
-      if (c != null) out.push({ sec: c, kind: 'noted', text: x.title, idx: x.idx });
-      const f = secSince(started, x.finished);
-      if (f != null && (x.status === 'done' || x.status === 'failed')) out.push({ sec: f, kind: x.status, text: x.status === 'done' ? x.result || x.title : x.error || x.title, idx: x.idx });
-    }
-    return out.sort((a, b) => a.sec - b.sec);
-  }, [transcript, board, meeting?.started]);
-  if (!events.length)
-    return (
-      <div className="mt-empty">
-        <Icon name="history" size={28} />
-      </div>
-    );
-  const label = (e: Event) => {
-    switch (e.kind) {
-      case 'teacher': return t('meeting.who.teacher');
-      case 'student': return t('meeting.who.student');
-      case 'noted': return t('meeting.timeline.noted');
-      case 'done': return t('meeting.timeline.done');
-      case 'failed': return t('meeting.timeline.failed');
-      default: return t('meeting.who.system');
-    }
-  };
-  return (
-    <ol className="mt-timeline">
-      {events.map((e, i) => (
-        <li key={i} className={`mt-tl is-${e.kind}`}>
-          <span className="mt-tl-time">{fmtDuration(e.sec)}</span>
-          <span className="mt-tl-dot" />
-          <div className="mt-tl-body">
-            <span className="mt-tl-label">{label(e)}</span>
-            <span className="mt-tl-text">{e.text}</span>
-          </div>
-        </li>
-      ))}
-    </ol>
-  );
-}
-
-/** the short label of a fast-model tag ("#edit" → 改稿), for the transcript's teacher rows */
-export function TagChip({ tag }: { tag: string | undefined }) {
-  const k = tagKey(tag);
-  if (!k) return null;
-  return <span className={`mt-tag is-${tag!.replace(/^#/, '').toLowerCase()}`}>{t(k)}</span>;
 }

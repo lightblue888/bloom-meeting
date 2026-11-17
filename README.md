@@ -25,7 +25,7 @@ claude        # 登录一次
 
 1. 开始菜单打开 **Bloom**，把论文拖进窗口（PDF、Word、Markdown、LaTeX）。
 2. 点 **开会**：Bloom 只录它自己的窗口，边录边转写。
-3. 对着论文讨论。叫 “Claude” 提问，它会用语音回答；说定一处改法（“这句就改成……，定了”），它记下并开始改，改好的地方出现删红增绿的修订标记。
+3. 对着论文讨论。叫 AI 的名字提问（默认按模型叫 Claude，可以在 **设置 → 通用 → 个人资料** 里改），它会用语音回答；说定一处改法（“这句就改成……，定了”），它记下并开始改，改好的地方出现删红增绿的修订标记。
 4. 点 **散会**：逐字稿整理、修订对比、纪要。以往的会在 **回顾** 里。
 
 身份：开 Bloom 的人是主持人；主持人可以把参会的人设为**共同主持人**（每场会重新设）。只有主持人和共同主持人说的改法会照办。
@@ -36,13 +36,13 @@ claude        # 登录一次
 
 ## 设置
 
-`%LOCALAPPDATA%\bloom-meeting\app\config.json`：
+昵称、头像和 AI 的名字在 **设置 → 通用 → 个人资料** 里改。其余在 `%LOCALAPPDATA%\bloom-meeting\app\config.json`：
 
 | 键 | 作用 |
 |---|---|
-| `meeting.me` | 你的名字（主持人） |
+| `meeting.me` | 你的名字（主持人）；设置里改过的优先 |
 | `meeting.me_asr` | 你的名字常被语音识别听成什么（正则列表），用来纠正逐字稿 |
-| `hands.model` / `hands.effort` | 改稿用的模型和思考强度（也能在会议页 Claude 的卡片上换） |
+| `hands.model` / `hands.effort` | 改稿用的模型和思考强度（也能在会议页 AI 的卡片上换） |
 | `share.base_url` | 会议中继的网址（不填就不开邀请链接） |
 
 语音合成默认用 Windows 自带的声音；装了 `edge-tts`（`uv sync --extra voice`）会用它。克隆音色（IndexTTS2、GPT-SoVITS）要另装，路径写在 `~/.zuhui/paths.json`。
@@ -68,7 +68,7 @@ cd ..\apps\desktop; npx @tauri-apps/cli@2 build --bundles nsis
 
 ## 隐私
 
-会议的录屏、逐字稿、论文都只存在你自己的电脑上（`~/.zuhui`、`~/Blurt`）。对话和改稿通过你自己的 Claude Code 调用 Anthropic 的模型。开了邀请链接时，会议内容经你自己的中继转给进会的人，中继只放在内存里。
+会议的录屏、逐字稿、论文都只存在你自己的电脑上（`~/.zuhui`、`~/Blurt`）。对话和改稿通过你自己的 Claude Code 调用 Anthropic 的模型。开了邀请链接时，会议内容经你自己的中继转给进会的人：论文、逐字稿只放在中继的内存里，磁盘上只记会议名、参会人和头像。
 
 ## License
 

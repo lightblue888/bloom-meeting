@@ -104,15 +104,6 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
     return typeof polledBrain.now === 'number' ? { ...polledBrain, skew: polledBrain.now - Date.now() / 1000 } : polledBrain;
   }, [pushUp, pushed, polledBrain]);
   // stable callbacks: the page's columns are memoized and must not see "new" handlers on every poll
-  const meetingId = cur?.meeting?.id ?? null;
-  const onRestore = useCallback(
-    async (ids: string[], restored: boolean) => {
-      if (!meetingId) return;
-      await meetingApi.restore(meetingId, ids, restored);
-      setCur(await meetingApi.current());
-    },
-    [meetingId, setCur],
-  );
   const onRole = useCallback(
     (name: string, role: 'cohost' | 'participant' | 'dismiss') => {
       const done = role === 'dismiss' ? meetingApi.dismissRole(name) : meetingApi.setRole(name, role);
@@ -425,9 +416,6 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
         onSwitchPaper={busy !== 'paper' && papers.length > 1 ? (id: string) => void switchPaper(id) : null}
         onAddPaper={hasPaper ? () => void (busy !== 'paper' && changePaper()) : null}
         transcript={cur?.transcript ?? NO_LINES}
-        raw={state === 'ended' ? cur?.transcript_raw ?? null : null}
-        cleanup={state === 'ended' ? cur?.cleanup ?? null : null}
-        onRestore={meeting && state === 'ended' ? onRestore : undefined}
         partial={cur?.partial ?? null}
         people={cur?.participants ?? null}
         suggest={cur?.role_suggest ?? null}

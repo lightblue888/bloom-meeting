@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""主持人麦克风静音：POST /api/mic/mute、/api/mic/stream 推的格式、Ears.set_muted 的状态（存盘、散会清掉）。
+"""主持人麦克风静音：POST /api/mic/mute、/api/mic/stream 推的格式（静音没有、谁在出声）、Ears.set_muted 的状态（存盘、散会清掉）。
 
 HTTP 那部分在子进程里起一个独立的对比页服务（ZUHUI_HOME 指到临时目录、随便一个空端口），不碰正在跑的 Bloom（47330）。
 
@@ -46,7 +46,6 @@ class MicStateTest(unittest.TestCase):
         self.assertTrue(self.ears._MicState(self.path).muted)          # 后端重启：还是静音
         kind, payload = e._q.get_nowait()
         self.assertEqual((kind, payload["kind"]), ("log", "mic"))
-        self.assertEqual(e.mic_state(), {"level": None, "muted": True})
         self.assertFalse(e.set_muted(False))
         self.assertFalse(self.path.exists())
         self.assertFalse(self.ears._MicState(self.path).muted)
@@ -89,8 +88,8 @@ def post(body):
 out["unwired"] = post({"muted": True})
 e = object.__new__(ears.Ears); e._q, e.en, e.vad = queue.Queue(), False, None
 v.mic_mute = lambda m=None: e.set_muted(m)
-level = {"v": 0.37}
-v.mic_level = lambda: level["v"]
+talk = {"v": ["me"]}
+v.talking = lambda: talk["v"]
 sc = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
 sc.request("GET", "/api/mic/stream"); sr = sc.getresponse()
 def event():
@@ -105,7 +104,7 @@ out["ev1"] = event()
 out["bad"] = post({"muted": "maybe"})
 out["str_false"] = post({"muted": "false"})
 out["ev2"] = event()
-level["v"] = None
+talk["v"] = ["张三", "claude", "claude"]
 out["ev3"] = event()
 out["mute_on2"] = post({"muted": True})
 out["persist"] = json.loads((Path(os.environ["ZUHUI_HOME"]) / "mic_mute.json").read_text(encoding="utf-8"))
@@ -126,13 +125,13 @@ class MuteHttpTest(unittest.TestCase):
         r = json.loads(line[7:])
         self.assertEqual(r["unwired"][0], 503)
         self.assertTrue(r["ctype"].startswith("text/event-stream"))
-        self.assertEqual(json.loads(r["ev0"]), {"level": 0.35, "muted": False})   # 取到 0.05
+        self.assertEqual(json.loads(r["ev0"]), {"muted": False, "talk": ["me"]})
         self.assertEqual(r["mute_on"], [200, {"muted": True}])
-        self.assertEqual(json.loads(r["ev1"]), {"level": 0.35, "muted": True})
+        self.assertEqual(json.loads(r["ev1"]), {"muted": True, "talk": ["me"]})
         self.assertEqual(r["bad"][0], 400)
         self.assertEqual(r["str_false"], [200, {"muted": False}])
-        self.assertEqual(json.loads(r["ev2"]), {"level": 0.35, "muted": False})
-        self.assertEqual(json.loads(r["ev3"]), {"level": None, "muted": False})   # 没在录音：level 是 null
+        self.assertEqual(json.loads(r["ev2"]), {"muted": False, "talk": ["me"]})
+        self.assertEqual(json.loads(r["ev3"]), {"muted": False, "talk": ["claude", "张三"]})   # 去重、排好序
         self.assertEqual(r["mute_on2"], [200, {"muted": True}])
         self.assertTrue(r["persist"]["muted"])
         self.assertEqual(r["mute_off"], [200, {"muted": False}])

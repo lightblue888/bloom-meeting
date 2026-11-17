@@ -11,8 +11,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@blurt/icons';
 import { i18n, t } from '../i18n';
-import { cleanTitle, fmtDuration, fmtWhen, hasCleanup, meetingApi, type Line, type MeetingBrief, type MeetingDetail, type Participant, type VideoInfo } from '../meetingApi';
-import { CleanupList, MeetingLayout, type Version } from './MeetingLayout';
+import { cleanTitle, fmtDuration, fmtWhen, meetingApi, type Line, type MeetingBrief, type MeetingDetail, type Participant, type VideoInfo } from '../meetingApi';
+import { MeetingLayout } from './MeetingLayout';
 import { Highlight, Names } from './Highlight';
 import { colorsByName } from './Flower';
 import { keep, useDismiss } from './useDismiss';
@@ -38,9 +38,6 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
   const [loading, setLoading] = useState<string | null>(null);
   /** the meeting whose delete is waiting for 删除 / 取消 */
   const [confirm, setConfirm] = useState<string | null>(null);
-  /** the preview's transcript: 干净版 / 原始版 (only once the cleanup made edits) */
-  const [pv, setPv] = useState<Version>('clean');
-  const [edits, setEdits] = useState(false);
   const lang = i18n().lang;
   const cache = useRef(details);
   cache.current = details;
@@ -156,7 +153,6 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
   }, [picked, pickedSig]);
   useEffect(() => {
     setConfirm(null);
-    setEdits(false);
   }, [picked]);
   // the opened meeting: the same
   const openBrief = (list ?? []).find((m) => m.id === open);
@@ -181,14 +177,13 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
   const opened = !!(open && details[open]);
   const layoutView = layoutId && layoutD && (
     <div className={`mt-hlayer ${opened ? '' : 'is-off'}`} aria-hidden={!opened || undefined}>
-      <OpenMeeting key={layoutId} id={layoutId} d={layoutD} active={active && opened} onBack={back} refresh={refresh} uiLang={i18n().lang} />
+      <OpenMeeting key={layoutId} d={layoutD} active={active && opened} onBack={back} uiLang={i18n().lang} />
     </div>
   );
 
   const brief = pickedBrief ?? null;
   const d = picked ? details[picked] : undefined;
-  const cleaned = !!d && hasCleanup(d.cleanup) && Array.isArray(d.transcript_raw);
-  const plines = d ? (cleaned && pv === 'raw' ? d.transcript_raw! : d.transcript) : [];
+  const plines = d ? d.transcript : [];
   // the chosen meeting's people and their colours (host blue, Claude orange, everyone else their own colour, as their flower)
   const meName = d ? ((d.participants ?? []).find((p) => p.you)?.name ?? (d.participants ?? []).find((p) => p.role === 'teacher')?.name ?? t('meeting.rank.host')) : null;
   const guestNames = d ? [...(d.participants ?? []).filter((p) => !p.you && p.id !== 'claude').map((p) => p.name), ...d.transcript.filter((l) => l.who === 'guest' && l.name).map((l) => l.name as string)] : [];
@@ -198,7 +193,7 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
     const ps = d?.participants ?? [];
     if (who === 'guest') return name || t('meeting.who.guest');
     if (who === 'teacher') return ps.find((p) => p.you)?.name ?? ps.find((p) => p.role === 'teacher')?.name ?? t('meeting.rank.host');
-    if (who === 'student') return 'Claude';
+    if (who === 'student') return ps.find((p) => p.id === 'claude' || p.role === 'student')?.name ?? t('meeting.who.student');
     return '';
   };
   // the whole transcript of the chosen meeting: built again only when its lines, the search or the meeting change
@@ -307,7 +302,6 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
                       {d && (d.transcript.length > 0 || !!d.video) && (
                         <ShareMenu
                           id={brief.id}
-                          versions={cleaned}
                           transcript={d.transcript.length > 0}
                           video={d.video ?? null}
                           fileName={recordingName(cleanTitle(brief.title) || brief.id, brief.started)}
@@ -363,36 +357,7 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
                       )}
                       <div className="mt-hp-hrow mt-hp-trhead">
                         <h3 className="mt-hp-h">{t('meeting.history.preview.transcript')}</h3>
-                        {cleaned && (
-                          <span className="mt-ver" role="group" aria-label={t('meeting.clean.version')} data-testid="preview-version">
-                            {(['clean', 'raw'] as const).map((v) => (
-                              <button key={v} className={pv === v ? 'is-sel' : ''} aria-pressed={pv === v} onClick={() => setPv(v)} data-testid={`preview-${v}`}>
-                                {t(`meeting.clean.${v}`)}
-                              </button>
-                            ))}
-                          </span>
-                        )}
                       </div>
-                      {cleaned && (
-                        <div className="mt-hp-edits">
-                          <button className={`mt-edits-btn ${edits ? 'is-open' : ''}`} onClick={() => setEdits((v) => !v)} aria-expanded={edits} data-testid="preview-cleanup-toggle">
-                            <span>{t('meeting.clean.list')}</span>
-                            <span className="mt-edits-n">{t('meeting.clean.count', { n: i18n().formatNumber(d.cleanup!.length) })}</span>
-                            <Icon name={edits ? 'chevron-up' : 'chevron-down'} size={12} />
-                          </button>
-                          {edits && (
-                            <CleanupList
-                              items={d.cleanup!}
-                              raw={d.transcript_raw ?? null}
-                              compact
-                              onRestore={async (ids, restored) => {
-                                await meetingApi.restore(brief.id, ids, restored);
-                                await refresh(brief.id);
-                              }}
-                            />
-                          )}
-                        </div>
-                      )}
                       {plines.length ? (
                         linesView
                       ) : (
@@ -415,22 +380,13 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
 
 /** an opened past meeting: the page with 修订对比 / 纪要 / 录屏; its handlers stay the same between polls. Its name is
  *  locked (2026-11-14, the user: a meeting's name is set before it starts, not afterwards) */
-const OpenMeeting = memo(function OpenMeeting({ id, d, active, onBack, refresh, uiLang }: {
+const OpenMeeting = memo(function OpenMeeting({ d, active, onBack, uiLang }: {
   /** the app's language: a change re-renders this cached view (the back button, the tabs) */
   uiLang: string;
-  id: string;
   d: MeetingDetail;
   active: boolean;
   onBack: () => void;
-  refresh: (id: string) => Promise<MeetingDetail | null>;
 }) {
-  const onRestore = useCallback(
-    async (ids: string[], restored: boolean) => {
-      await meetingApi.restore(id, ids, restored);
-      await refresh(id);
-    },
-    [id, refresh],
-  );
   const actions = useMemo(
     () => (
       <button className="mt-btn" onClick={onBack} data-testid="history-back">
@@ -447,9 +403,6 @@ const OpenMeeting = memo(function OpenMeeting({ id, d, active, onBack, refresh, 
       active={active}
       meeting={d.meeting}
       transcript={d.transcript}
-      raw={d.transcript_raw ?? null}
-      cleanup={d.cleanup ?? null}
-      onRestore={onRestore}
       people={d.participants ?? NOBODY}
       board={d.board}
       summary={d.summary}
@@ -496,12 +449,11 @@ function recordingName(title: string, started: string | null | undefined): strin
   return `${base}${when}`;
 }
 
-/** 回顾 → 分享: the transcript as Markdown or TXT, saved where the user picks (only on the host's machine); once the
- *  transcript has been cleaned up, the clean version or the one as said. 存录屏: the meeting's screen recording, copied
- *  by the backend to where the user picks; the item stays open and busy while it copies. */
-function ShareMenu({ id, versions, transcript, video, fileName, onToast, active }: {
+/** 回顾 → 分享: the transcript as Markdown or TXT, saved where the user picks (only on the host's machine). 存录屏: the
+ *  meeting's screen recording, copied by the backend to where the user picks; the item stays open and busy while it
+ *  copies. */
+function ShareMenu({ id, transcript, video, fileName, onToast, active }: {
   id: string;
-  versions: boolean;
   /** the transcript has lines: 存成 Markdown / TXT */
   transcript: boolean;
   /** the meeting has a recording: 存录屏 */
@@ -550,11 +502,11 @@ function ShareMenu({ id, versions, transcript, video, fileName, onToast, active 
       </button>
     </div>
   );
-  const go = async (fmt: 'md' | 'txt', version: 'clean' | 'raw' = 'clean') => {
+  const go = async (fmt: 'md' | 'txt') => {
     setOpen(false);
     setBusy(true);
     try {
-      const path = await meetingApi.exportTranscript(id, fmt, version);
+      const path = await meetingApi.exportTranscript(id, fmt);
       if (path) onToast(t('meeting.history.shared', { a: path }));
     } catch (e) {
       onToast(t('meeting.history.share_failed', { a: String((e as Error)?.message ?? e) }));
@@ -570,19 +522,7 @@ function ShareMenu({ id, versions, transcript, video, fileName, onToast, active 
       </button>
       {open && (
         <div className="mt-share-pop" role="menu">
-          {!transcript ? null : versions ? (
-            (['clean', 'raw'] as const).map((v) => (
-              <div key={v} className="mt-share-group" role="group" aria-label={t(`meeting.clean.${v}`)}>
-                <span className="mt-share-h">{t(`meeting.clean.${v}`)}</span>
-                <button role="menuitem" onClick={() => void go('md', v)} data-testid={`history-share-${v}-md`}>
-                  {t('meeting.history.share.md')}
-                </button>
-                <button role="menuitem" onClick={() => void go('txt', v)} data-testid={`history-share-${v}-txt`}>
-                  {t('meeting.history.share.txt')}
-                </button>
-              </div>
-            ))
-          ) : (
+          {transcript && (
             <>
               <button role="menuitem" onClick={() => void go('md')} data-testid="history-share-md">
                 {t('meeting.history.share.md')}

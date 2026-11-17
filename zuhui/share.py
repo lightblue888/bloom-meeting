@@ -107,7 +107,7 @@ CAPTION_LINES = 6        # 访客页字幕：只推最近这么多句
 CAPTION_CHARS = 200      # 每句最多这么多字（长句留结尾：字幕要的是正在说的那部分）
 
 
-def captions(lines: list[dict], host: str) -> list[dict]:
+def captions(lines: list[dict], host: str, ai: str = "Claude") -> list[dict]:
     """访客页字幕用的最近几句：[{who, name, text, sec}]，顺序和逐字稿一样（按开口时刻，不一定是追加）。
     who 是 teacher（主持人）/ student（Claude）/ guest（链接进来的人），system 之类的不给。"""
     out = []
@@ -118,7 +118,7 @@ def captions(lines: list[dict], host: str) -> list[dict]:
             continue
         if len(text) > CAPTION_CHARS:
             text = "…" + text[-(CAPTION_CHARS - 1):]
-        name = "Claude" if who == "student" else (str(l.get("name") or "").strip() or (host if who == "teacher" else "参会者"))
+        name = ai if who == "student" else (str(l.get("name") or "").strip() or (host if who == "teacher" else "参会者"))
         try:
             sec = round(float(l.get("sec") or 0), 1)
         except (TypeError, ValueError):
@@ -403,9 +403,10 @@ class Share:
         people = []
         for p in st.get("people") or []:
             p = dict(p)
-            f = self._avatar_file("claude" if p.get("role") == "student" else p.get("name"))
-            if f is None and p.get("role") == "teacher":
-                f = self._avatar_file("me")
+            if p.get("role") == "teacher":                # 主持人：设置里选的（me.*）优先，和软件里一样
+                f = self._avatar_file("me") or self._avatar_file(p.get("name"))
+            else:
+                f = self._avatar_file("claude" if p.get("role") == "student" else p.get("name"))
             url = push(f) if f else None
             if url:
                 p["avatar"] = url
@@ -415,9 +416,10 @@ class Share:
             parts = []
             for p in st["participants"]:
                 p = dict(p)
-                f = self._avatar_file("claude" if p.get("id") == "claude" else p.get("name"))
-                if f is None and p.get("rank") == "host":
-                    f = self._avatar_file("me")
+                if p.get("rank") == "host":
+                    f = self._avatar_file("me") or self._avatar_file(p.get("name"))
+                else:
+                    f = self._avatar_file("claude" if p.get("id") == "claude" else p.get("name"))
                 url = push(f) if f else None
                 if url:
                     p["avatar"] = url
@@ -431,11 +433,11 @@ class Share:
 
     def _upcoming(self) -> dict:
         """还没开的下一场：访客打开链接看到"未开始"（拿不到进会的 token），开会后自动变成能进。"""
-        from .config import current_paper
+        from .config import assistant_name, current_paper
         me = str((self.cfg.get("meeting") or {}).get("me") or "主持人")
         title = ((current_paper() or {}).get("name") or "组会").strip()
         return {"upcoming": True, "live": False, "title": title, "host": me, "paper": False,
-                "people": [{"name": me, "role": "teacher"}, {"name": "Claude", "role": "student"}]}
+                "people": [{"name": me, "role": "teacher"}, {"name": assistant_name(self.cfg), "role": "student"}]}
 
     RESUME_GRACE_S = 90.0         # 后端刚起来这么久内，"没在开会"不当成散会（多半是重启后还没接回会议）
 
@@ -453,6 +455,7 @@ class Share:
         last_state = None          # 上次推的会议信息（json 文本）
         last_key = None            # 上次推的论文版本
         last_paper = None          # 上次推的论文快照的哈希
+        last_lines = None          # 上次推的逐字稿 + 任务板的版本
         sent: dict[str, str] = {}  # 已推的图：文件名 -> 哈希
         was_live = False
         next_check = 0.0
@@ -472,7 +475,7 @@ class Share:
                     if was_live or room_used():                  # 散会（或上次散会时没收尾成，比如后端在散会后崩了）
                         self._push("clear", b"", "application/json")   # 中继：标成结束、踢人；失败就过几秒再来
                         new_room()                               # 下一场换新房间号：旧链接再也进不来
-                        was_live, last_state, last_key, last_paper, sent = False, None, None, None, {}
+                        was_live, last_state, last_key, last_paper, sent, last_lines = False, None, None, None, {}, None
                         upcoming_room, next_idle = None, 0.0
                     if room() != upcoming_room or time.time() >= next_idle:   # 下一场的链接先在中继上登记成"未开始"
                         if room() != upcoming_room or not self._have().get("sv"):
@@ -488,6 +491,8 @@ class Share:
                         have = self._have()
                         if not have.get("sv"):
                             last_state = None
+                        if not have.get("lines"):
+                            last_lines = None
                         if not have.get("paper"):
                             last_key, last_paper = None, None
                         names = set(have.get("assets") or [])
@@ -507,6 +512,16 @@ class Share:
                             last_paper = ph
                         last_key = key
                     st = self._with_avatars(st, sent)
+                    # 逐字稿、任务板是大块，几秒才变一次；"Claude 在干什么"之类每秒都变。分开推：大块变了才推一份，
+                    # 状态里只带它的版本号（lv），访客 lv 变了才去拉（两小时的会，逐字稿几百 KB，不再每秒重下）
+                    if st.get("v", 0) >= 2:
+                        heavy = {"transcript": st.pop("transcript", None), "board": st.pop("board", None)}
+                        hb = json.dumps(heavy, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                        lv = hashlib.sha1(hb).hexdigest()[:12]
+                        if lv != last_lines:
+                            self._push("lines", hb, "application/json")
+                            last_lines = lv
+                        st["lv"] = lv
                     body = json.dumps(st, ensure_ascii=False, sort_keys=True)
                     if body != last_state:
                         self._push("state", body.encode("utf-8"), "application/json")

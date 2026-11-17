@@ -9,7 +9,7 @@
 HTTP（127.0.0.1:47330）：
     GET /          对比页（注入了自动刷新 + 控制条）
     GET /version   {"build": n, "counts": {...}, "mirror": 时间}
-    GET /record    让口喷鸡开始录屏（blurt://record）
+    GET /record    让口喷鸡开始录屏（blurt://meeting）
     GET /rebuild   强制重算
     GET /rebase    把当前镜像设为新的原文快照（新一场会）
 """
@@ -1311,23 +1311,41 @@ def _js(v) -> str:
     return json.dumps(v, ensure_ascii=False).replace("</", "<\\/")
 
 
+def _profile(viewer) -> dict:
+    """设置里"个人资料"那一组：{"name": 昵称, "avatar": 你自己的头像地址（没有是 None，界面上画花）,
+    "custom": 头像是不是在设置里选的（能移除）, "assistant": AI 现在的名字, "assistant_default": 不起名字时叫什么,
+    "assistant_custom": 是不是起过名字}。"""
+    from . import host_profile
+    from .config import default_assistant_name
+    me, ai = viewer.participants(guests=False)[:2]
+    av = me.get("avatar")
+    own = av if av and not str(av).split("?")[0].endswith("/bloom.png") else None
+    return {"name": me["name"], "avatar": own, "custom": host_profile.avatar_file() is not None,
+            "assistant": ai["name"], "assistant_default": default_assistant_name(viewer.cfg),
+            "assistant_custom": host_profile.saved_assistant() is not None}
+
+
 def _mic_state(viewer) -> dict:
-    """主持人麦克风此刻：{"level": 0–1（取到 0.05）或 None（没在录）, "muted": bool}（/api/mic/stream、/api/mic/mute 用）。"""
-    v = m = None
-    try:
-        v = viewer.mic_level() if callable(getattr(viewer, "mic_level", None)) else None
-    except Exception:
-        v = None
+    """主持人麦克风静音没有、此刻谁在出声（/api/mic/stream、/api/mic/mute 用）：{"muted": bool, "talk": [...]}。
+    talk 里 "me" 是主持人、"claude" 是 Claude，其余是访客的名字；会议页上这些人的头像外亮一圈。"""
     try:
         m = viewer.mic_mute() if callable(getattr(viewer, "mic_mute", None)) else False
     except Exception:
         m = False
-    return {"level": None if v is None else round(round(float(v) / 0.05) * 0.05, 2), "muted": bool(m)}
+    try:
+        talk = viewer.talking() if callable(getattr(viewer, "talking", None)) else []
+    except Exception:
+        talk = []
+    return {"muted": bool(m), "talk": sorted({str(x) for x in talk or [] if x})}
 
 
 _WHO = re.compile(r"^(?:【这句是)?(参会的老师|参会者)(.+?)说(?:的】|[:：])\s*")
 # 逐字稿上软件自己写的行（切论文时的"切到 某篇"）：以前被当成人说的话混进多人讨论（2026-11-14 组会的卡片上署了名）
 _SYS_ROW = re.compile(r"^(?:切到 \S|Switched to \S)")
+# 谁能跨源调这个后端：Bloom 自己的窗口（tauri）和本机的页面（localhost / 127.0.0.1，开发时的 vite 也算）。
+# 不带 Origin 的（本机脚本、语音桥转来的访客操作、/bloom 技能）照常。以前是 *：你浏览器里随便哪个网站都能悄悄调本机
+# 47330 切论文、清任务板、改名字（2026-11-17 收紧）
+_LOCAL_ORIGIN = re.compile(r"^(?:tauri://localhost|https?://tauri\.localhost|https?://(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?)$", re.I)
 _GCOLOR: dict = {}            # 访客 → 颜色（Viewer.guest_colors 定的，批注卡片里的名字也用它）
 
 
@@ -1362,9 +1380,13 @@ def _task_brief(t: dict, me: str = "") -> dict:
     return b
 
 
+_AI_NAME = ["Claude"]          # 会上那位 AI 现在叫什么（Viewer 起来时、设置里改名时更新；批注卡片上认它用）
+
+
 def _color_of(name: str, me: str = "") -> str:
-    """批注卡片上名字的颜色：你蓝、Claude 橙、访客用会上定的颜色（后端重启过、表里没有的，按先后从调色板取）。"""
-    if name == "Claude":
+    """批注卡片上名字的颜色：你蓝、AI 橙、访客用会上定的颜色（后端重启过、表里没有的，按先后从调色板取）。
+    以前的会里记的 AI 名字是 Claude，也认。"""
+    if name in ("Claude", _AI_NAME[0]):
         return CLAUDE_COLOR
     if not name or name == me:
         return HOST_COLOR
@@ -1550,11 +1572,12 @@ def _guest_asset_name(name: str, data: bytes) -> str:
 
 
 def _deep_link(url: str) -> bool:
-    """让 Bloom 开始 / 停止录屏（blurt://record、blurt://stop …）。
+    """让 Bloom 开始 / 停止录屏（blurt://meeting、blurt://stop）。
     直接把链接交给装好的那个 exe（它是单实例：已经开着就转给开着的那个），不经过注册表里的 blurt:// 关联：
     那个关联曾被一份调试版改成指向它自己，结果每次开会都弹出连不上开发服务器的全屏错误页。"""
     local = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
-    # 装在哪：安装包装的在 Bloom\（开源版），早先手装的在 Blurt    exe = next((p for p in (local / "Bloom" / "blurt.exe", local / "Blurt" / "blurt.exe") if p.exists()), local / "Blurt" / "blurt.exe")
+    # 装在哪：安装包装的在 Bloom 文件夹（开源版），早先手装的在 Blurt 文件夹
+    exe = next((p for p in (local / "Bloom" / "blurt.exe", local / "Blurt" / "blurt.exe") if p.exists()), local / "Blurt" / "blurt.exe")
     try:
         if exe.exists():
             flags = 0x00000008 | 0x00000200 if sys.platform == "win32" else 0   # DETACHED_PROCESS | NEW_PROCESS_GROUP
@@ -2496,74 +2519,6 @@ class Viewer:
             done += 1
         return text, done, sorted(set(also), key=order.index)
 
-    def _rebuild_text(self, text: str, tid: str, rejected: set) -> tuple[str, int]:
-        """撤回 tid：它改过的每一处，顺着"前一条改出来的段落 = 后一条改之前的段落"找出这一处的整条改动链，
-        从链头的原文开始，把没撤回的几条按先后重新改一遍（中间有被撤的，后面的改动按字挪过去），换掉稿子里现在的样子。
-        返回 (新文本, 处理成了几处)。纯删除（这条只删了段落）退回老办法：放回原处。"""
-        import difflib
-
-        def norm(xs):
-            return [str(x).replace("\r\n", "\n") for x in (xs or [])]
-
-        tasks = sorted(self._paper_tasks(tid), key=lambda t: t.get("idx") or 0)   # 只看这一篇上的
-        ops_of = {t["id"]: [{"old": norm(o.get("old")), "new": norm(o.get("new")), "prev": o.get("prev")}
-                            for o in (self._changes(t["id"]).get("ops") or [])] for t in tasks}
-        order = [t["id"] for t in tasks]
-        if tid not in ops_of:
-            return text, 0
-        me = order.index(tid)
-        J = "\n\n".join
-        done = 0
-        for op in ops_of[tid]:
-            if not op["new"]:                       # 这条删了几段：放回去（老办法）
-                out, n = self._revert_text(text, [op])
-                text, done = out, done + n
-                continue
-            chain = [(tid, op)]
-            root = op["old"]
-            for k in range(me - 1, -1, -1):         # 往前找：谁改出了这一条改之前的那几段
-                hit = next((o for o in ops_of[order[k]] if o["new"] and o["new"] == root), None)
-                if hit:
-                    chain.insert(0, (order[k], hit))
-                    root = hit["old"]
-            tail = op["new"]
-            for k in range(me + 1, len(order)):     # 往后找：谁接着改了这一条改出来的那几段
-                hit = next((o for o in ops_of[order[k]] if o["old"] and o["old"] == tail), None)
-                if hit:
-                    chain.append((order[k], hit))
-                    tail = hit["new"]
-            state = J(root)
-            for k_id, o in chain:                   # 从原文起，没撤回的按先后重改一遍
-                if k_id in rejected:
-                    continue
-                if state == J(o["old"]):
-                    state = J(o["new"])
-                    continue
-                merged = self._three_way(state, J(o["old"]), J(o["new"]))
-                if merged is not None:
-                    state = merged
-            sp = self._spans(text)
-            keys = [k for _, _, k in sp]
-            n = len(tail) or 1
-            at = next((i for i in range(len(keys) - len(tail) + 1) if tail and keys[i:i + len(tail)] == tail), -1)
-            if at < 0:                              # 稿子里这几段后来又被动过（比如之前撤回过一次）：找最像的
-                tj = J(tail)
-                best, score = -1, 0.0
-                for i in range(len(keys) - n + 1):
-                    r = difflib.SequenceMatcher(None, tj, J(keys[i:i + n]), autojunk=False).ratio()
-                    if r > score:
-                        best, score = i, r
-                if best < 0 or score < 0.6:
-                    continue
-                at = best
-            a, b = sp[at][0], sp[at + n - 1][1]
-            if state:
-                text = text[:a] + state + text[b:]
-            else:
-                text = (text[:a].rstrip("\n") + "\n\n" + text[b:].lstrip("\n")) if text[:a].strip() else text[b:].lstrip("\n")
-            done += 1
-        return text, done
-
     @staticmethod
     def _three_way(cur: str, base: str, target: str) -> str | None:
         """cur 是 base 后来又变过的样子：把 base → target 的改动挪到 cur 上；有一处挪不过去就 None。
@@ -3065,8 +3020,11 @@ class Viewer:
         import urllib.request
         r = {"paper": self.mirror.exists(), "fast": False, "tts": False, "blurt": False, "recording": False, "hands": self.cfg["hands"].get("backend", "cli")}
         try:
-            from .config import user_env
-            r["fast"] = bool(user_env(self.cfg["fast"]["api_key_env"]))
+            # 对话模型走本机的 Claude 命令行（cli_brain，用你的 Claude 套餐）：找得到 claude 就算接上了。
+            # 以前看的是 DEEPSEEK_API_KEY，没配那个钥匙的机器上对话灯一直显示离线（2026-11-17 改）
+            from .hands import _resolve_claude
+            exe = _resolve_claude(str((self.cfg.get("hands") or {}).get("claude", "claude")))
+            r["fast"] = Path(exe).is_absolute() and Path(exe).exists()
         except Exception:
             pass
         try:
@@ -3139,9 +3097,9 @@ class Viewer:
     # 值不对抛 ValueError，没权限抛 PermissionError。没接上时 /api/models 回 503，卡片只显示名字、不能点。
     models_get = None
     brain = None                          # Meeting.brain_state：Claude 在干什么（前台在听/想/说，后台在查什么）
-    mic_level = None                      # Ears.mic_level：主持人麦克风音量（0–1，没在录是 None）
+    talking = None                        # Meeting._talking：此刻谁在出声（"me"、"claude"、访客的名字）
+    on_profile = None                     # Meeting._on_profile(你的昵称, AI 的名字)：设置里改了名字
     mic_mute = None                       # Ears.set_muted：mic_mute(True/False) 静音 / 打开，mic_mute() 只问 → 现在是否静音
-    on_deepen = None                      # Meeting.deepen：逐字稿上"让 Opus 深想"
     models_set = None
 
     def _models_now(self) -> dict | None:
@@ -3156,7 +3114,8 @@ class Viewer:
 
     def assistant_card(self) -> dict:
         """Claude 那张卡上的四行（访客页也画这张卡）：对话模型、改稿模型 + 思考强度、语音合成、语音识别，都是给人看的名字。"""
-        out = {"name": "Claude", "dialog": "", "edit": "", "effort": "", "tts": "", "asr": ""}
+        from .config import assistant_name
+        out = {"name": assistant_name(self.cfg), "dialog": "", "edit": "", "effort": "", "tts": "", "asr": ""}
         mg = self._models_now()
         if mg:
             for part in ("dialog", "edit", "effort", "tts", "asr"):
@@ -3288,7 +3247,8 @@ class Viewer:
         try:
             assistant = self.assistant_card()
         except Exception:
-            assistant = {"name": "Claude", "dialog": "", "edit": "", "effort": "", "tts": "", "asr": ""}
+            from .config import assistant_name
+            assistant = {"name": assistant_name(self.cfg), "dialog": "", "edit": "", "effort": "", "tts": "", "asr": ""}
         lines = self.meetings.current_lines()
         everyone = self.participants()
         out = {"title": title or self.paper_info().get("name") or "组会", "host": people[0]["name"], "live": True,
@@ -3296,7 +3256,7 @@ class Viewer:
                "people": [{"name": p["name"], "role": p["role"], "rank": p.get("rank")} for p in people],
                "colors": {p["name"]: p.get("color") for p in everyone if p.get("color")},
                "assistant": assistant,
-               "captions": share_captions(lines, people[0]["name"]),   # 旧访客页的字幕：最近几句
+               "captions": share_captions(lines, people[0]["name"], people[1]["name"]),   # 旧访客页的字幕：最近几句
                # 主持人屏幕上正看着哪一节哪一段：访客页据此"跟随主持人"（section 名 + 那一段的编号和开头几个字）
                "focus": ({k: (self.focus or {}).get(k) for k in ("section", "no", "text", "top", "ri", "off", "k")} if self.focus else None)}
         # v2（2026-11-17）：访客页用和主持人一样的会议界面，看到的东西和主持人一样（逐字稿、修改卡片、几篇论文、Claude 在做什么），
@@ -3414,13 +3374,16 @@ class Viewer:
         def avatar(*names):
             for n in names:
                 for ext in AVATAR_TYPES:
-                    if n and (AVATARS / f"{n}{ext}").exists():
-                        return f"/avatars/{n}{ext}"
+                    f = AVATARS / f"{n}{ext}"
+                    if n and f.exists():           # 地址带着修改时间：设置里换了头像，各页面拿到的是新图
+                        return f"/avatars/{n}{ext}?v={f.stat().st_mtime_ns // 1_000_000}"
             return "/avatars/bloom.png" if (AVATARS / "bloom.png").exists() else None
 
         from . import roles
+        from .config import assistant_name
+        ai = _AI_NAME[0] = assistant_name(self.cfg)
         out = [{"id": "me", "name": me, "role": "teacher", "rank": "host", "you": True, "avatar": avatar("me", me), "color": HOST_COLOR},
-               {"id": "claude", "name": "Claude", "role": "student", "rank": "assistant", "avatar": avatar("claude"), "color": CLAUDE_COLOR}]
+               {"id": "claude", "name": ai, "role": "student", "rank": "assistant", "avatar": avatar("claude"), "color": CLAUDE_COLOR}]
         gs = [g.get("name") or "参会者" for g in (list(self.guests) + list(getattr(self.share, "guests", []) or []))]
         cmap = self.guest_colors(gs)
         for g in (list(self.guests) + list(getattr(self.share, "guests", []) or [])) if guests else []:
@@ -3503,11 +3466,23 @@ class Viewer:
             def log_message(self, *a):
                 pass
 
+            def _cors(self):
+                """跨源只给 Bloom 自己的窗口和本机页面（_LOCAL_ORIGIN），回的就是对方的 Origin；别的来源不给这个头，浏览器读不到。"""
+                o = self.headers.get("Origin")
+                if o and _LOCAL_ORIGIN.match(o):
+                    self.send_header("Access-Control-Allow-Origin", o)
+                    self.send_header("Vary", "Origin")
+
+            def _origin_ok(self) -> bool:
+                """这个请求能不能改东西：没带 Origin（本机脚本）或者来自 Bloom 自己的窗口、本机页面。"""
+                o = self.headers.get("Origin")
+                return not o or bool(_LOCAL_ORIGIN.match(o))
+
             def _send(self, code, body: bytes, ctype="text/html; charset=utf-8", cache: str = "no-store"):
                 self.send_response(code)
                 self.send_header("Content-Type", ctype)
                 self.send_header("Cache-Control", cache)
-                self.send_header("Access-Control-Allow-Origin", "*")  # 口喷鸡的 webview 跨源来拿
+                self._cors()                            # 桌面端的 webview 跨源来拿
                 self.send_header("Access-Control-Allow-Headers", "Content-Type")
                 self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
                 self.send_header("Content-Length", str(len(body)))
@@ -3521,7 +3496,7 @@ class Viewer:
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream; charset=utf-8")
                 self.send_header("Cache-Control", "no-store")
-                self.send_header("Access-Control-Allow-Origin", "*")
+                self._cors()
                 self.end_headers()
 
                 def key(b):                      # 每秒都在变的（秒数、后台的现在）不算"变了"
@@ -3554,12 +3529,12 @@ class Viewer:
                     return
 
             def _mic_stream(self):
-                """主持人麦克风：每 0.1 秒看一次，变了才推 {"level": 音量 0–1（取到 0.05）或 null（没在录音，页面上不显示音量条）,
-                "muted": 是否静音（POST /api/mic/mute）}。静音时音量照报（页面可以提示"你在静音时说话"）。"""
+                """主持人麦克风和谁在出声：每 0.1 秒看一次，变了才推 {"muted": 是否静音（POST /api/mic/mute）,
+                "talk": 此刻在出声的人（见 _mic_state）}。"""
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream; charset=utf-8")
                 self.send_header("Cache-Control", "no-store")
-                self.send_header("Access-Control-Allow-Origin", "*")
+                self._cors()
                 self.end_headers()
                 last, beat = "", time.time()
                 try:
@@ -3601,7 +3576,7 @@ class Viewer:
                         self.send_response(416)
                         self.send_header("Content-Range", f"bytes */{size}")
                         self.send_header("Content-Length", "0")
-                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self._cors()
                         self.end_headers()
                         return
                     partial = True
@@ -3613,7 +3588,7 @@ class Viewer:
                 if partial:
                     self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
                 self.send_header("Cache-Control", "no-cache")
-                self.send_header("Access-Control-Allow-Origin", "*")
+                self._cors()
                 self.send_header("Access-Control-Expose-Headers", "Content-Range, Accept-Ranges, Content-Length")
                 self.end_headers()
                 if head:
@@ -3684,7 +3659,9 @@ class Viewer:
                     self._json(viewer.api_current())
                 elif p == "/api/brain/stream":     # "Claude 在干什么"：变了就推（前端只管每秒计时）
                     self._brain_stream()
-                elif p == "/api/mic/stream":       # 主持人麦克风音量：会议页上自己头像旁的三根条
+                elif p == "/api/profile":          # 设置 → 你在会上：昵称、头像
+                    self._json(_profile(viewer))
+                elif p == "/api/mic/stream":       # 静音没有、谁在出声：会议页上的静音标记和头像外的亮圈
                     self._mic_stream()
                 elif p == "/api/paper":
                     self._json(viewer.paper_info())
@@ -3777,6 +3754,8 @@ class Viewer:
                             inj = _inject(None, tasks, viewer.me_name(), viewer.figures(), ui or viewer.ui_lang)
                             body = body.replace("</body>", inj + "</body>", 1) if "</body>" in body else body + inj
                         self._send(200, (_embed(body, local_fonts=hosted) if embed else body).encode("utf-8"))
+                elif p in ("/record", "/rebuild", "/rebase") and not self._origin_ok():
+                    self._json({"error": "origin not allowed"}, 403)    # 这几个 GET 会改东西：别的网站不行
                 elif p == "/record":
                     self._json({"ok": _deep_link("blurt://meeting")})
                 elif p == "/rebuild":
@@ -3805,7 +3784,7 @@ class Viewer:
                 elif p.startswith("/avatars/"):
                     name = Path(p.rsplit("/", 1)[-1]).name
                     if name == "me":             # 侧栏头像：不用知道文件名
-                        name = Path(str(viewer.participants()[0].get("avatar") or "bloom.png")).name
+                        name = Path(str(viewer.participants()[0].get("avatar") or "bloom.png").split("?")[0]).name
                     f = AVATARS / name
                     ctype = AVATAR_TYPES.get(f.suffix.lower())
                     if ctype and f.is_file():           # 头像几乎不换：缓存五分钟，来回切页面不用每次重拿
@@ -3818,6 +3797,8 @@ class Viewer:
             def do_POST(self):
                 p = self.path.split("?")[0]
                 body = self._body()
+                if not self._origin_ok():      # 别的网站发来的（text/plain 的 POST 不走预检，光靠响应头拦不住）
+                    return self._json({"error": "origin not allowed"}, 403)
                 if p == "/api/scroll":         # 连续流：滚动中的每一帧，直接转给访客（不记、不进中继）
                     cb = getattr(viewer, "on_scroll", None)
                     if cb is not None:
@@ -3826,6 +3807,39 @@ class Viewer:
                         except Exception:
                             pass
                     return self._json({"ok": True, "g": len(getattr(viewer.share, "guests", None) or [])})
+                if p == "/api/profile":        # 设置里改昵称 {"name"}、AI 的名字 {"assistant"（空的 = 按对话模型叫）} → 现在的资料；不行 400 {"error": 代码}
+                    from . import host_profile
+                    from .config import assistant_name
+                    try:
+                        if "name" in body:
+                            name = host_profile.save_name(body.get("name"), taken=[assistant_name(viewer.cfg)])
+                            viewer.cfg.setdefault("meeting", {})["me"] = name     # 后端各处共用这一份配置：马上用新名字
+                        if "assistant" in body:
+                            ai = host_profile.save_assistant(body.get("assistant"), taken=[viewer.me_name()])
+                            viewer.cfg.setdefault("assistant", {})["name"] = ai or ""
+                    except ValueError as e:
+                        return self._json({"error": str(e)}, 400)
+                    except OSError:
+                        return self._json({"error": "failed"}, 500)
+                    cb = getattr(viewer, "on_profile", None)
+                    if callable(cb):
+                        try:
+                            cb(viewer.me_name(), assistant_name(viewer.cfg))
+                        except Exception:
+                            pass
+                    return self._json(_profile(viewer))
+                if p == "/api/profile/avatar":  # 设置里换头像 {"data": data: 地址或 base64}，移除 {"remove": true}
+                    from . import host_profile
+                    try:
+                        if body.get("remove"):
+                            host_profile.clear_avatar()
+                        else:
+                            host_profile.save_avatar(host_profile.decode_image(body.get("data")))
+                    except ValueError as e:
+                        return self._json({"error": str(e)}, 400)
+                    except OSError:                # 文件被占着（Windows）之类：没换成，过一会儿再试
+                        return self._json({"error": "failed"}, 500)
+                    return self._json(_profile(viewer))
                 if p == "/api/mic/mute":       # 主持人麦克风静音 {"muted": true|false} → {"muted": 现在是否静音}（见 Ears.set_muted）
                     fn = getattr(viewer, "mic_mute", None)
                     want = body.get("muted") if isinstance(body, dict) else None
@@ -3841,15 +3855,6 @@ class Viewer:
                         return self._json({"muted": bool(fn(want))})
                     except Exception as e:
                         return self._json({"muted": _mic_state(viewer)["muted"], "error": repr(e)[:120]}, 500)
-                if p == "/api/deepen":         # 逐字稿上"让 Opus 深想"：那条前台回答交给后台 Claude 重新想
-                    fn = getattr(viewer, "on_deepen", None)
-                    if not callable(fn):
-                        return self._json({"ok": False, "error": "没接上"}, 503)
-                    try:
-                        sec = body.get("sec")
-                        return self._json(fn(float(sec) if sec is not None else None, str(body.get("text") or "")[:200]))
-                    except Exception as e:
-                        return self._json({"ok": False, "error": repr(e)[:120]}, 500)
                 if p == "/api/focus":          # 对比页：屏幕上正显示哪一节哪一段
                     sec = (body.get("section") or "").strip() if isinstance(body.get("section"), str) else ""
                     txt = str(body.get("text") or "")[:200]
@@ -3865,10 +3870,6 @@ class Viewer:
                     viewer.focus_k = max(getattr(viewer, "focus_k", 0) + 1, int(time.time() * 1000))   # 只增不减（后端重启也是）
                     viewer.focus = {"section": sec[:200] or None, "text": txt or None, "no": body.get("no"),
                                     "ri": ri, "off": off, "at": time.time(), "top": not sec and not txt, "k": viewer.focus_k}
-                    hist = viewer.__dict__.setdefault("focus_hist", [])     # 停在哪一节的变化：(时刻, 小节)
-                    if not hist or hist[-1][1] != viewer.focus["section"]:
-                        hist.append((time.time(), viewer.focus["section"]))
-                        del hist[:-500]
                     sent = viewer.__dict__.setdefault("focus_sent", {})
                     sent[viewer.focus_k] = time.time()
                     for old in [k for k in sent if k < viewer.focus_k - 200]:
@@ -3909,18 +3910,6 @@ class Viewer:
                 elif p.startswith("/api/meetings/") and p.endswith("/delete"):   # 回顾里删一场会（会议挪进回收站，录屏送进 Windows 回收站）
                     busy = viewer.busy_session() if callable(getattr(viewer, "busy_session", None)) else None
                     self._json(viewer.meetings.delete(p.split("/")[3], busy_session=busy))
-                elif p.startswith("/api/meetings/") and p.endswith("/restore"):  # 删改清单：恢复 / 撤销恢复几条
-                    fn = getattr(viewer.meetings, "restore", None)
-                    ids = body.get("ids")
-                    if not callable(fn):
-                        return self._json({"ok": False, "error": "整理逐字稿还没接上"}, 503)
-                    if not isinstance(ids, list) or not ids:
-                        return self._json({"ok": False, "error": "缺 ids"}, 400)
-                    try:
-                        r = fn(p.split("/")[3], [str(x) for x in ids], bool(body.get("restored", True)))
-                        self._json(r if isinstance(r, dict) else {"ok": True})
-                    except (KeyError, ValueError) as e:
-                        self._json({"ok": False, "error": str(e)}, 400)
                 elif p == "/api/models":         # Claude 那张卡上点了一行：换对话模型 / 改稿模型 / 思考强度
                     fn = viewer.models_set
                     if not callable(fn):

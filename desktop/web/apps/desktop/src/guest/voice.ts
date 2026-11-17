@@ -22,7 +22,6 @@ export interface VoiceSnapshot {
   audioBlocked: boolean;
   /** who is talking now (their names; the host's and Claude's voices come in under the meeting's own identities) */
   speaking: string[];
-  level: number;
 }
 
 const REASONS = ['UNKNOWN_REASON', 'CLIENT_INITIATED', 'DUPLICATE_IDENTITY', 'SERVER_SHUTDOWN', 'PARTICIPANT_REMOVED', 'ROOM_DELETED',
@@ -48,8 +47,6 @@ export class GuestVoice {
   private lastQ = '';
   private diagLeft = 400;
   private t0 = 0;
-  private meter: { ctx: AudioContext | null; an: AnalyserNode | null; src: MediaStreamAudioSourceNode | null; timer: number; track: MediaStreamTrack | null; lv: number } =
-    { ctx: null, an: null, src: null, timer: 0, track: null, lv: 0 };
 
   constructor(
     private readonly ROOM: string,
@@ -83,7 +80,7 @@ export class GuestVoice {
       }
     }
     return { joined: this.joined, connected: !!this.room, micOn, conn: this.connMsg, connKind: this.connKind,
-      audioBlocked: this.audioBlocked, speaking, level: this.meter.lv };
+      audioBlocked: this.audioBlocked, speaking };
   }
 
   /** a token for this room in this name: the voice's own when fresh, else a new one (the guest page's actions use it too) */
@@ -94,7 +91,7 @@ export class GuestVoice {
   }
 
   private async tokenFor(name: string): Promise<any> {
-    const r = await fetch(`/token?room=${encodeURIComponent(this.ROOM)}&name=${encodeURIComponent(name)}&role=guest`, { cache: 'no-store' });
+    const r = await fetch(`/token?room=${encodeURIComponent(this.ROOM)}&name=${encodeURIComponent(name)}`, { cache: 'no-store' });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) {
       const e: any = new Error(d.error || `HTTP ${r.status}`);
@@ -157,7 +154,6 @@ export class GuestVoice {
     this.room = null;
     this.joined = false;
     if (r) r.disconnect();
-    this.meterStop();
     document.querySelectorAll('audio[data-sid]').forEach((el) => el.remove());
     this.setConn('');
   }
@@ -178,7 +174,7 @@ export class GuestVoice {
     } catch {
       this.toast(this.L('没拿到麦克风权限', 'No microphone permission'));
     }
-    this.micUi();
+    this.onChange();
     return this.snapshot().micOn;
   }
 
@@ -255,7 +251,7 @@ export class GuestVoice {
     this.room = null;
     this.lastQ = '';
     document.querySelectorAll('audio[data-sid]').forEach((el) => el.remove());
-    this.micUi();
+    this.onChange();
     if (!this.joined) return;
     if (why === 'DUPLICATE_IDENTITY') {
       this.rj.stop = why;
@@ -288,7 +284,7 @@ export class GuestVoice {
       this.toast(first ? this.L('没拿到麦克风权限，先以静音进会', 'No microphone permission: joined muted')
         : this.L('麦克风没重新打开，点一下麦克风按钮再开', 'The microphone did not come back: click the microphone to turn it on'));
     }
-    this.micUi();
+    this.onChange();
   }
 
   private voice(again: boolean) {
@@ -327,7 +323,7 @@ export class GuestVoice {
           if (r && r === this.room) { this.room = null; try { r.disconnect(); } catch { /* */ } }
           const msg = (e && e.message) || String(e);
           this.diag(again ? 'rejoin_fail' : 'connect_fail', msg);
-          this.micUi();
+          this.onChange();
           if (!this.joined) return;
           if (e && e.tokenStatus === 403) { this.setConn(this.L(`语音没连上（${msg}），论文和逐字稿照常更新。`, `Voice did not connect (${msg}); the paper and transcript still update.`), 'info'); return; }
           this.rejoinSoon();
@@ -341,55 +337,5 @@ export class GuestVoice {
     this.rj.timer = 0;
     this.rj.n = 0;
     this.voice(true);
-  }
-
-  // ---------- the level beside one's own microphone (25 times a second is smooth enough) ----------
-  private micUi() {
-    if (this.snapshot().micOn) this.meterStart();
-    else this.meterStop();
-    this.onChange();
-  }
-
-  private meterStop() {
-    clearInterval(this.meter.timer);
-    this.meter.timer = 0;
-    try { this.meter.src?.disconnect(); } catch { /* */ }
-    this.meter.src = null;
-    this.meter.an = null;
-    this.meter.track = null;
-    this.meter.lv = 0;
-  }
-
-  private meterStart() {
-    try {
-      const LK = window.LivekitClient;
-      const pub = this.room && this.room.localParticipant.getTrackPublication(LK.Track.Source.Microphone);
-      const mt: MediaStreamTrack | undefined = pub && pub.track && pub.track.mediaStreamTrack;
-      if (!mt || this.meter.track === mt) return;
-      this.meterStop();
-      const AC = window.AudioContext || (window as any).webkitAudioContext;
-      if (!AC) return;
-      this.meter.ctx = this.meter.ctx || new AC();
-      if (this.meter.ctx.state === 'suspended') this.meter.ctx.resume().catch(() => {});
-      this.meter.src = this.meter.ctx.createMediaStreamSource(new MediaStream([mt]));
-      const an = this.meter.ctx.createAnalyser();
-      an.fftSize = 512;
-      this.meter.src.connect(an);
-      this.meter.an = an;
-      this.meter.track = mt;
-      const buf = new Uint8Array(an.fftSize);
-      let last = -1;
-      this.meter.timer = window.setInterval(() => {
-        if (!this.meter.an) return;
-        this.meter.an.getByteTimeDomainData(buf);
-        let sum = 0;
-        for (let i = 0; i < buf.length; i++) { const x = (buf[i] - 128) / 128; sum += x * x; }
-        const db = 20 * Math.log10(Math.sqrt(sum / buf.length) + 1e-6);
-        const v = Math.min(1, Math.max(0, (db + 52) / 36));
-        this.meter.lv = v > this.meter.lv ? v : this.meter.lv * 0.82 + v * 0.18;
-        const k = Math.round(this.meter.lv * 20);
-        if (k !== last) { last = k; this.onChange(); }
-      }, 40);
-    } catch { /* no level: the button still works */ }
   }
 }

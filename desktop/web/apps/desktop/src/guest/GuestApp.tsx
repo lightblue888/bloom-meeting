@@ -38,6 +38,8 @@ interface RelayState {
   assistant?: Assistant;
   focus?: HostFocus | null;
   avatar_default?: string;
+  /** the version of the transcript + board, pushed apart from this (they are big and change every few seconds) */
+  lv?: string;
 }
 
 const ROOM = (() => {
@@ -61,6 +63,8 @@ function useRelay() {
     let alive = true;
     let sv = -1;
     let timer = 0;
+    let lv = '';
+    let heavy: { transcript?: Line[]; board?: Board } = {};
     const tick = async () => {
       try {
         const r = await fetch(`/view/${enc(ROOM)}/state?sv=${sv}`, { cache: 'no-store', signal: AbortSignal.timeout(6000) });
@@ -69,7 +73,17 @@ function useRelay() {
         if (d.same) setS((p) => (p.pv === d.pv && !p.lost ? p : { ...p, pv: d.pv, lost: 0 }));
         else {
           sv = d.sv;
-          setS({ sv: d.sv, pv: d.pv, state: d.state ?? null, loaded: true, lost: 0 });
+          const st: RelayState | null = d.state ?? null;
+          // the transcript and the board come apart (lv); fetched only when they changed
+          if (st?.lv && st.lv !== lv) {
+            try {
+              const h = await (await fetch(`/view/${enc(ROOM)}/lines`, { cache: 'no-store', signal: AbortSignal.timeout(10000) })).json();
+              heavy = { transcript: h.transcript ?? [], board: h.board ?? undefined };
+              lv = st.lv;
+            } catch { /* next tick tries again (lv stays the old one) */ }
+          }
+          if (!alive) return;
+          setS({ sv: d.sv, pv: d.pv, state: st ? (st.lv ? { ...st, ...heavy } : st) : null, loaded: true, lost: 0 });
         }
       } catch {
         // the relay is away: keep what we have, remember since when (the page says so after a few seconds)
@@ -90,19 +104,17 @@ type Phase = 'loading' | 'invalid' | 'wait' | 'live' | 'ended';
 const phaseOf = (loaded: boolean, st: RelayState | null): Phase =>
   !loaded ? 'loading' : !st ? 'invalid' : st.live ? 'live' : st.upcoming ? 'wait' : 'ended';
 
-// ---------------------------------------------------------------- a tiny store so the 25-a-second mic level only redraws the mic button
-function makeStore<T>(get: () => T, keyOf?: (v: T) => string) {
+// ---------------------------------------------------------------- a tiny store: its readers redraw only when the part they read changed
+function makeStore<T>(get: () => T, keyOf: (v: T) => string) {
   const subs = new Set<() => void>();
   let snap = get();
-  let key = keyOf ? keyOf(snap) : '';
+  let key = keyOf(snap);
   return {
     bump() {
       const next = get();
-      if (keyOf) {
-        const k = keyOf(next);
-        if (k === key) return;               // nothing this store's readers care about changed
-        key = k;
-      }
+      const k = keyOf(next);
+      if (k === key) return;                 // nothing this store's readers care about changed
+      key = k;
       snap = next;
       subs.forEach((f) => f());
     },
@@ -124,10 +136,7 @@ const follow: Follow = new Follow(() => followStore.bump(), (m) => voice.publish
 const followStore = makeStore(() => ({ following: follow.following, host: follow.hasHost() }), (f) => `${f.following}|${f.host}`);
 const voice: GuestVoice = new GuestVoice(
   ROOM, L, () => phaseNow === 'live',
-  () => {
-    allStore.bump();
-    metaStore.bump();
-  },
+  () => metaStore.bump(),
   (topic, m) => {
     if (topic === 'bloom' && m?.t === 'focus') {
       delete m.t;
@@ -136,8 +145,6 @@ const voice: GuestVoice = new GuestVoice(
   },
   (msg) => sink.toast(msg),
 );
-/** every change, the mic level too (25 a second): only the meter beside the guest's avatar reads it */
-const allStore = makeStore(() => voice.snapshot());
 /** what the page redraws for: joined, the connection, the microphone on / off, who is talking */
 const metaStore = makeStore(() => voice.snapshot(), (s) => JSON.stringify([s.joined, s.connected, s.micOn, s.conn, s.connKind, s.audioBlocked, s.speaking]));
 
@@ -147,11 +154,27 @@ export function GuestApp() {
     applyPlatform(/Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent) ? 'mac' : 'win');
     applyTheme('auto');
   }, []);
+  const [me, setMe] = useState<string | null>(null);
+  const joined = !!me;
   const relay = useRelay();
-  const st = relay.state;
-  latest.state = st;
-  const phase = phaseOf(relay.loaded, st);
+  const phase = phaseOf(relay.loaded, relay.state);
   phaseNow = phase;
+  // the last full state while the meeting was on: after it ends, the guest keeps looking at it (read only) until they
+  // leave — the final revisions, the transcript — instead of being thrown back to the join card
+  const frozen = useRef<RelayState | null>(null);
+  const frozenPv = useRef(0);
+  // decided in the same render the end is seen (an effect would let one render through with the ended state: a new
+  // paper version, the guest no longer a co-host — and the paper on screen reloads into "not there")
+  const endedSeen = useRef(false);
+  if (!joined) endedSeen.current = false;
+  else if (phase === 'ended' && frozen.current) endedSeen.current = true;
+  const ended = joined && endedSeen.current;
+  if (phase === 'live' && (relay.state?.v ?? 0) >= 2 && !ended) {
+    frozen.current = relay.state;
+    frozenPv.current = relay.pv;     // the relay deletes the paper when the meeting ends: keep the version on screen
+  }
+  const st = ended ? frozen.current : relay.state;
+  latest.state = st;
 
   const [toasts, setToasts] = useState<{ id: number; text: string }[]>([]);
   const toast = useCallback((text: string) => {
@@ -164,19 +187,17 @@ export function GuestApp() {
   const vs = useSyncExternalStore(metaStore.subscribe, metaStore.get);
   const fs = useSyncExternalStore(followStore.subscribe, followStore.get);
 
-  const [me, setMe] = useState<string | null>(null);
-  const joined = !!me;
 
   // the host's place from the relay too (the data channel is faster, this one is the fallback)
   useEffect(() => {
     if (joined) follow.onFocus(st?.focus ?? null, 'relay');
   }, [joined, st?.focus]);
 
-  // the meeting ended while in it: hang up, show 已结束
+  // the meeting ended while in it: hang up; the page stays as it was at the end (read only) until they leave
   useEffect(() => {
     if (joined && phase === 'ended') {
       voice.leave('ended');
-      setMe(null);
+      if (!frozen.current) setMe(null);
       toast(L('会议已结束', 'The meeting has ended'));
     }
   }, [joined, phase, toast]);
@@ -265,19 +286,18 @@ export function GuestApp() {
         const one = (v?: string) => (v ? { current: v, options: [{ id: v, label: v }] } : undefined);
         return { dialog: one(a.dialog), edit: one(a.edit), effort: one(a.effort), tts: a.tts, asr: a.asr };
       },
-      devices: async () => ({ mic: allStore.get().micOn ? L('浏览器的麦克风', 'the browser’s microphone') : null, speaker: null }),
+      devices: async () => ({ mic: metaStore.get().micOn ? L('浏览器的麦克风', 'the browser’s microphone') : null, speaker: null }),
       setMicMuted: async (muted: boolean) => {
         if (voice.snapshot().micOn === muted) await voice.toggleMic();
         return !voice.snapshot().micOn;
       },
       watchMic: (on) => {
-        const vstore = allStore;
         const send = () => {
-          const s = vstore.get();
-          on({ level: s.connected ? s.level : null, muted: s.connected ? !s.micOn : false });
+          const s = metaStore.get();
+          on({ muted: s.connected ? !s.micOn : false });
         };
         send();
-        return vstore.subscribe(send);
+        return metaStore.subscribe(send);
       },
     });
     return () => setGuestTransport(null);
@@ -316,10 +336,11 @@ export function GuestApp() {
     if (!st) return null;
     return {
       id: st.meeting?.id ?? ROOM, title: st.meeting?.title ?? st.title ?? '', started: st.meeting?.started ?? st.started ?? '',
-      ended: null, state: 'live', duration_s: st.meeting?.duration_s ?? 0, lang: st.meeting?.lang ?? undefined,
-      papers: st.papers, active_paper: st.active_paper ?? null,
+      ended: ended ? relay.state?.ended ?? new Date().toISOString() : null, state: ended ? 'ended' : 'live',
+      duration_s: ended && st.started ? Math.max(0, (Date.now() - Date.parse(st.started)) / 1000) : st.meeting?.duration_s ?? 0,
+      lang: st.meeting?.lang ?? undefined, papers: st.papers, active_paper: st.active_paper ?? null,
     } as Meeting;
-  }, [st]);
+  }, [st, ended, relay.state?.ended]);
 
   const join = useCallback((name: string, mic: boolean) => {
     store('bloom.name', name);
@@ -360,26 +381,33 @@ export function GuestApp() {
   const v2 = (st?.v ?? 0) >= 2;
   return (
     <div className={`app g-app ${joined ? 'is-in' : ''}`}>
-      {joined && phase === 'live' && v2 ? (
+      {joined && (phase === 'live' || ended) && v2 ? (
         <MeetingLayout
           meeting={meeting}
           papers={st?.papers ?? null}
           activePaper={st?.active_paper ?? null}
-          onSwitchPaper={(st?.papers?.length ?? 0) > 1 ? (id: string) => void switchPaper(id) : null}
-          onAddPaper={addPaper}
+          onSwitchPaper={!ended && (st?.papers?.length ?? 0) > 1 ? (id: string) => void switchPaper(id) : null}
+          onAddPaper={ended ? null : addPaper}
           transcript={st?.transcript ?? NO_LINES}
           partial={st?.partial ?? null}
           people={people}
           board={st?.board ?? null}
-          brain={brainNow}
+          brain={ended ? null : brainNow}
           summary={null}
           diffSrc={`/view/${enc(ROOM)}/paper?host=bloom&co=${amCo ? 1 : 0}`}
-          paperVersion={relay.pv}
+          paperVersion={ended ? frozenPv.current : relay.pv}
           onFrame={(el) => follow.setFrame(el)}
-          live
-          status={status}
-          actions={<GuestActions s={vs} following={fs.following} hasHost={fs.host} co={amCo} onLeave={leave} />}
-          notice={offline ? (
+          live={!ended}
+          status={ended ? null : status}
+          actions={ended ? (
+            <button className="mt-btn g-leave" onClick={leave} data-testid="guest-leave">{L('离开', 'Leave')}</button>
+          ) : <GuestActions s={vs} following={fs.following} hasHost={fs.host} co={amCo} onLeave={leave} />}
+          notice={ended ? (
+            <div className="g-conn">
+              <span>{L('会议已结束。这是散会那一刻的论文、修订和逐字稿，关掉页面就没了；要留一份请找主持人。',
+                'The meeting has ended. This is the paper, its revisions and the transcript as of the end; they are gone once you close the page — ask the host for a copy.')}</span>
+            </div>
+          ) : offline ? (
             <div className="g-conn is-busy">
               <span>{L('和会议的连接断了，正在重连…（论文和逐字稿停在断开的那一刻）', 'Lost the connection to the meeting, reconnecting… (the paper and transcript are as of then)')}</span>
             </div>
@@ -418,7 +446,7 @@ const GuestActions = memo(function GuestActions({ s, following, hasHost, co, onL
   return (
     <div className="g-acts">
       {co && (
-        <span className="g-co" title={L('你是共同主持人：你说的改法 Claude 会照办，批注上可以确认、撤回，能就地改一段', 'You are a co-host: Claude acts on your edits; you can confirm, undo and edit in place')}>
+        <span className="g-co" title={L('共同主持人：可以确认、撤回修订，直接修改段落', 'Co-host: you can confirm or undo revisions and edit paragraphs')}>
           {L('共同主持人', 'Co-host')}
         </span>
       )}
@@ -459,7 +487,7 @@ function ConnBar({ s, voice }: { s: VoiceSnapshot; voice: GuestVoice }) {
 
 // ---------------------------------------------------------------- before joining
 function JoinScreen({ phase, st, onJoin }: { phase: Phase; st: RelayState | null; onJoin: (name: string, mic: boolean) => void }) {
-  const [name, setName] = useState(() => store('bloom.name') || '');
+  const [name, setName] = useState(() => (store('bloom.name') || '').slice(0, 32));
   const [mic, setMic] = useState(() => store('bloom.mic') === '1');
   const [err, setErr] = useState('');
   const topic = phase === 'invalid' ? (ROOM ? L('链接无效', 'Invalid link') : L('Bloom 会议', 'Bloom meeting')) : st?.title || L('组会', 'Meeting');
@@ -533,7 +561,7 @@ function WhoIsIn({ st }: { st: RelayState | null }) {
       <span className="g-who-list">
         {list.slice(0, 8).map((p) => (
           <span key={p.id ?? p.name} className="g-who-p" style={{ color: p.color ?? undefined }}>
-            {p.name}
+            <span className="g-who-n">{p.name}</span>
             {label(p) && <i>{label(p)}</i>}
           </span>
         ))}

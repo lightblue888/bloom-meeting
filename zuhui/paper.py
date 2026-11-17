@@ -111,9 +111,3 @@ class Paper:
             if st and t and (st.startswith(t[:12]) or t.startswith(st[:12])):
                 return s
         return None
-
-    def excerpt(self, section: Section | None, chars: int = 2500) -> str:
-        if not section:
-            return ""
-        t = section.text
-        return t if len(t) <= chars else t[:chars] + "\n…（后略）"

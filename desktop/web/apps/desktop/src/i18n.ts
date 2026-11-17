@@ -38,5 +38,5 @@ export const mi18n = () => meetingI18n ?? current;
 // the grey step lines, "被打断了", the speaker labels. Everything else on the meeting screen — buttons, tabs, the
 // paper toolbar, the status strip, the task board, 修改清单, summary headings, the state and the date — follows the app's
 // language (2026-11-14: a Chinese meeting under the English UI showed 修订标记 / 上一处 / 已结束 / 11月14日 / 修改清单).
-const LINE_WORDS = /^meeting\.(?:ai\.(?:cat\.|lat$|took$|step\.|step$|cut$|musing$|unspoken_chip$|stale_chip$|deep_secs$|edit_live$|deep_wait$|legend$)|who\.|clean\.kind\.)/;
+const LINE_WORDS = /^meeting\.(?:ai\.(?:cat\.|lat$|took$|step\.|cut$|musing$|unspoken_chip$|stale_chip$|deep_secs$|edit_live$|deep_wait$)|who\.)/;
 export const mt = (key: string, p?: Params) => (LINE_WORDS.test(key) ? mi18n() : current).t(key, p);

@@ -27,18 +27,14 @@ DEFAULTS = {
     "paper": {
         "file": "paper/paper.md",          # 论文的本地 Markdown 镜像（相对仓库根）
         "title": "论文",
-        "doc_url": "",                      # Claude 文档链接（同步回去用）
     },
-    "fast": {                               # 快嘴：秒回的对话模型（OpenAI 兼容接口）
-        "base_url": "https://api.deepseek.com",
+    "fast": {                               # 快嘴：秒回的对话模型（套餐里的常驻 Claude Code 进程，见 cli_brain.py）
         "model": "claude-haiku-5-5",        # 快嘴只用套餐里的 Haiku（2026-11-12 起 Bloom 里去掉了 DeepSeek，不能换）
-        "api_key_env": "DEEPSEEK_API_KEY",
-        "direct": True,                     # 不走系统代理（国内接口直连更快）
-        "disable_thinking": True,           # DeepSeek Flash 默认先思考再回答，关掉才能秒回
-        "max_tokens": 360,
-        "temperature": 0.5,
         "history_turns": 40,                # 软件记着的最近几来回：换进程时整段补给新进程（以前走接口每轮全发，才压到 14）
-        "section_chars": 2500,
+        # 下面三个 Bloom 自己不读了：只有 scratch_ab/sim 的扮演者（DeepSeek）还读
+        "base_url": "https://api.deepseek.com",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "disable_thinking": True,           # DeepSeek Flash 默认先思考再回答，关掉才能秒回
     },
     "ears": {                               # 耳朵：口喷鸡录屏的实时转写
         "idle_flush": 0.5,                  # 老师停顿这么多秒 = 一条说完（句号后更短，几个字没说完更长，见 ears._Collector）
@@ -107,7 +103,6 @@ DEFAULTS = {
         "model": "claude-opus-5-5",
         "effort": "xhigh",                  # 思考强度：low / medium / high / xhigh / max（界面上显示为 Extra）
         "timeout_s": 420,
-        "allowed_tools": "Read,Edit,Write,MultiEdit,Grep,Glob",
     },
 }
 
@@ -120,14 +115,37 @@ def _merge(a: dict, b: dict) -> dict:
 
 
 def load(path: Path | None = None) -> dict:
-    """DEFAULTS ← config.json ← 换过的模型（~/.zuhui/models.json）← 测试用的环境变量（ZUHUI_FAST_MODEL 等）。"""
+    """DEFAULTS ← config.json ← 换过的模型（~/.zuhui/models.json）← 测试用的环境变量（ZUHUI_FAST_MODEL 等）
+    ← 设置里改的昵称（~/.zuhui/profile.json，盖过 meeting.me）。"""
     p = path or (ROOT / "config.json")
     cfg = copy.deepcopy(DEFAULTS)
     if p.exists():
         with open(p, encoding="utf-8-sig") as f:
             cfg = _merge(cfg, json.load(f))
     apply_saved_models(cfg)
+    from .host_profile import apply as apply_profile
+    apply_profile(cfg)
     return cfg
+
+
+# ---------------- 会上那位 AI 叫什么 ----------------
+# 对话模型的 id → 没起名字时的叫法（认不出的叫 AI）
+_MODEL_FAMILY = (("claude", "Claude"), ("gpt", "GPT"), ("o1", "GPT"), ("o3", "GPT"), ("o4", "GPT"), ("gemini", "Gemini"),
+                 ("deepseek", "DeepSeek"), ("qwen", "Qwen"), ("kimi", "Kimi"), ("glm", "GLM"))
+
+
+def default_assistant_name(cfg: dict) -> str:
+    """没在设置里起名字时：按对话模型叫（claude-* 叫 Claude……），认不出就叫 AI。"""
+    m = str((cfg.get("fast") or {}).get("model") or "").strip().lower()
+    return next((v for k, v in _MODEL_FAMILY if m.startswith(k)), "AI")
+
+
+def assistant_name(cfg: dict | None = None) -> str:
+    """会上那位 AI 的名字：设置里起的（~/.zuhui/profile.json 的 assistant），没起就按对话模型。
+    参会人列表、逐字稿、访客页、纪要、提示词里的 @AI、叫它的名字都从这里取，别处不要写死。"""
+    cfg = load() if cfg is None else cfg
+    n = str((cfg.get("assistant") or {}).get("name") or "").strip()
+    return n or default_assistant_name(cfg)
 
 
 # ---------------- 模型切换（会议页卡片上点、开会时说一句都行） ----------------
@@ -232,6 +250,7 @@ def user_env(name: str) -> str | None:
 
 
 def api_key(cfg: dict) -> str:
+    """DeepSeek 的密钥：Bloom 自己不用了，只有 scratch_ab/sim 的扮演者还在用。"""
     env = cfg["fast"]["api_key_env"]
     v = user_env(env)
     if not v:

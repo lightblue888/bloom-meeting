@@ -149,6 +149,8 @@ class AudioBridge:
         self.enabled = sc.get("audio", True) is not False
         self.mouth = mouth
         self.me = me or "主持人"
+        from .config import assistant_name
+        self.ai = assistant_name(cfg)               # 会上那位 AI 的名字：访客页上它说话时亮圈靠这个名字对上
         self.devices = devices                    # False：不开扬声器、麦克风，也不推学生（测试用：只听访客、转写）
         self.error: str | None = None
         self.connected = False
@@ -194,11 +196,6 @@ class AudioBridge:
         """这会儿正在出声的访客的名字（判停说他最后一个有声帧离现在不到 within 秒）。"""
         ge = self.guest_ears
         return ge.talking(within) if (ge is not None and self.connected) else []
-
-    def guest_busy(self, name: str) -> bool:
-        """这位访客还没说完（还在出声，或者有一段送去转了还没出字）。"""
-        ge = self.guest_ears
-        return bool(ge is not None and self.connected and ge.busy(name))
 
     def guest_texts(self, name: str, ws: float, we: float) -> list[str]:
         """这位访客在 [ws, we] 前后直接转出来的字。"""
@@ -545,7 +542,7 @@ class AudioBridge:
 
         # ---- 学生：单独一个身份，推 Mouth 放的那句 ----
         stu = rtc.Room(loop=loop)
-        await stu.connect(url, self._token("bloom-student", "Claude", "student"),
+        await stu.connect(url, self._token("bloom-student", self.ai, "student"),
                           rtc.RoomOptions(auto_subscribe=False, connect_timeout=15))
         stu_src = rtc.AudioSource(SR, 1, queue_size_ms=1000)
         stu_track = rtc.LocalAudioTrack.create_audio_track("student", stu_src)

@@ -10,6 +10,9 @@ import { i18n, t } from '../i18n';
 import { ENTRIES, GROUPS, MOVED, PANES, pane, paneOf, paneReason, reason, results, SECTIONS, SUGGESTIONS, textIn, type Key, type PaneId, type ResultGroup } from '../settings/catalog';
 import { Group, Page, Popup, requestFlash, Row, S, TextLink, Toggle, lang } from '../settings/kit';
 import '../settings/settings.css';
+import { meetingApi, avatarUrl, type Profile } from '../meetingApi';
+import { isImeKey } from '../ime';
+import { Flower, HOST_COLOR } from './Flower';
 import { ModelsPane } from './ModelsSettings';
 import { StoragePane } from './StorageSettings';
 
@@ -311,6 +314,7 @@ function GeneralPane({ status, cfg, save, onLang }: {
   const language = cfg.lang === 'zh' ? 'zh-Hans' : ['en', 'zh-Hans'].includes(cfg.lang) ? cfg.lang : 'auto';
   return (
     <Page id="general">
+      <ProfileGroup />
       <Group id="general.app">
         {login?.supported && (
           <Toggle id="general.login" on={login.enabled} detail={loginErr ? S('settings.general.login_failed') : undefined} warn={loginErr}
@@ -331,5 +335,187 @@ function GeneralPane({ status, cfg, save, onLang }: {
         <span>{S('settings.general.about.version', status.version)}</span>
       </div>
     </Page>
+  );
+}
+
+const PROFILE_ERRORS = ['empty', 'too_long', 'taken', 'too_big', 'bad_image'];
+const profileError = (e: unknown) => {
+  const c = String((e as Error)?.message ?? e);
+  return S(`settings.profile.err.${PROFILE_ERRORS.includes(c) ? c : 'failed'}`);
+};
+
+/** Profile: your photo, your name, and the AI's name in meetings (empty: it goes by the model). They live in the Bloom
+ *  backend (not this app's config), so they need it running; while it isn't, the group says so and waits. */
+function ProfileGroup() {
+  const [p, setP] = useState<Profile | null>(null);
+  const [down, setDown] = useState(false);
+  const [name, setName] = useState('');
+  const [nameErr, setNameErr] = useState<string | null>(null);
+  const [ai, setAi] = useState('');
+  const [aiErr, setAiErr] = useState<string | null>(null);
+  const aiEditing = useRef(false);
+  const [picErr, setPicErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const file = useRef<HTMLInputElement>(null);
+  const editing = useRef(false);
+  useEffect(() => {
+    let alive = true;
+    let timer = 0;
+    const load = () =>
+      meetingApi.profile().then(
+        (x) => {
+          if (!alive) return;
+          setP(x);
+          setDown(false);
+          if (!editing.current) setName(x.name);
+          if (!aiEditing.current) setAi(x.assistant_custom ? x.assistant : '');
+        },
+        () => {
+          if (!alive) return;
+          setDown(true);
+          timer = window.setTimeout(load, 4000);
+        },
+      );
+    void load();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, []);
+  const saveName = async () => {
+    editing.current = false;
+    if (!p) return;
+    if (name.trim() === p.name) {
+      setName(p.name);
+      setNameErr(null);
+      return;
+    }
+    try {
+      const x = await meetingApi.setProfileName(name);
+      setP(x);
+      setName(x.name);
+      setNameErr(null);
+    } catch (e) {
+      setNameErr(profileError(e));
+    }
+  };
+  const saveAi = async () => {
+    aiEditing.current = false;
+    if (!p) return;
+    const was = p.assistant_custom ? p.assistant : '';
+    if (ai.trim() === was) {
+      setAi(was);
+      setAiErr(null);
+      return;
+    }
+    try {
+      const x = await meetingApi.setAssistantName(ai);
+      setP(x);
+      setAi(x.assistant_custom ? x.assistant : '');
+      setAiErr(null);
+    } catch (e) {
+      setAiErr(profileError(e));
+    }
+  };
+  const pick = async (f: File | undefined) => {
+    if (!f) return;
+    setPicErr(null);
+    if (f.size > 8_000_000) {
+      setPicErr(profileError(new Error('too_big')));
+      return;
+    }
+    setBusy(true);
+    try {
+      const data = await new Promise<string>((ok, bad) => {
+        const r = new FileReader();
+        r.onload = () => ok(String(r.result));
+        r.onerror = () => bad(new Error('bad_image'));
+        r.readAsDataURL(f);
+      });
+      setP(await meetingApi.setAvatar(data));
+    } catch (e) {
+      setPicErr(profileError(e));
+    } finally {
+      setBusy(false);
+      if (file.current) file.current.value = '';
+    }
+  };
+  const remove = async () => {
+    setBusy(true);
+    setPicErr(null);
+    try {
+      setP(await meetingApi.removeAvatar());
+    } catch (e) {
+      setPicErr(profileError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Group id="general.profile" footer={down ? S('settings.profile.offline') : undefined}>
+      <Row id="general.avatar" detail={picErr ?? undefined} warn={!!picErr}>
+        <span className="st-avatar" data-testid="profile-avatar">
+          {p?.avatar ? <img src={avatarUrl(p.avatar)} alt="" draggable={false} /> : <Flower color={HOST_COLOR} />}
+        </span>
+        <button disabled={!p || busy} onClick={() => file.current?.click()} data-testid="profile-pick">
+          {S('settings.profile.change')}
+        </button>
+        {p?.custom && (
+          <button disabled={busy} onClick={() => void remove()} data-testid="profile-remove">
+            {S('settings.profile.remove')}
+          </button>
+        )}
+        <input ref={file} type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={(e) => void pick(e.target.files?.[0])} />
+      </Row>
+      <Row id="general.name" detail={nameErr ?? undefined} warn={!!nameErr}>
+        <input
+          className="st-name"
+          value={name}
+          maxLength={24}
+          disabled={!p}
+          spellCheck={false}
+          aria-label={S('settings.general.name')}
+          data-testid="profile-name"
+          onFocus={() => (editing.current = true)}
+          onChange={(e) => setName(e.target.value)}
+          onBlur={() => void saveName()}
+          onKeyDown={(e) => {
+            if (isImeKey(e)) return;
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+            if (e.key === 'Escape') {
+              setName(p?.name ?? '');
+              setNameErr(null);
+              editing.current = false;
+              (e.target as HTMLInputElement).blur();
+            }
+          }}
+        />
+      </Row>
+      <Row id="general.ai_name" detail={aiErr ?? undefined} warn={!!aiErr}>
+        <input
+          className="st-name"
+          value={ai}
+          maxLength={24}
+          disabled={!p}
+          spellCheck={false}
+          placeholder={p?.assistant_default ?? ''}
+          aria-label={S('settings.general.ai_name')}
+          data-testid="profile-ai-name"
+          onFocus={() => (aiEditing.current = true)}
+          onChange={(e) => setAi(e.target.value)}
+          onBlur={() => void saveAi()}
+          onKeyDown={(e) => {
+            if (isImeKey(e)) return;
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+            if (e.key === 'Escape') {
+              setAi(p?.assistant_custom ? p.assistant : '');
+              setAiErr(null);
+              aiEditing.current = false;
+              (e.target as HTMLInputElement).blur();
+            }
+          }}
+        />
+      </Row>
+    </Group>
   );
 }

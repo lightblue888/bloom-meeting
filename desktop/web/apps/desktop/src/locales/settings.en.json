@@ -129,5 +129,22 @@
   "st.win.storage.show": "Show in File Explorer",
   "st.win.storage.uv": "Python runner (uv)",
   "st.win.models.failed_row": "Didn’t finish · check the connection",
-  "st.win.models.one_at_a_time": "One download at a time"
+  "st.win.models.one_at_a_time": "One download at a time",
+  "st.settings.general.profile": "Profile",
+  "st.settings.general.avatar": "Photo",
+  "st.settings.general.name": "Name",
+  "st.settings.kw.general.avatar": "avatar, photo, picture, profile, host",
+  "st.settings.kw.general.name": "name, nickname, display name, user name, profile, host",
+  "st.settings.profile.change": "Change",
+  "st.settings.profile.remove": "Remove",
+  "st.settings.profile.offline": "Bloom's backend isn't running, so this can't be changed now.",
+  "st.settings.profile.err.empty": "The name can't be empty.",
+  "st.settings.profile.err.too_long": "24 characters at most.",
+  "st.settings.profile.err.too_big": "The picture must be under 8 MB.",
+  "st.settings.profile.err.bad_image": "Can't read this picture. Try a JPG or PNG.",
+  "st.settings.profile.err.failed": "Couldn't save. Try again.",
+  "st.settings.general.ai_name": "AI name",
+  "st.settings.general.ai_name.detail": "What people call it in meetings. Leave empty to use the model's name.",
+  "st.settings.kw.general.ai_name": "AI, assistant, name, wake word, model, Claude, DeepSeek",
+  "st.settings.profile.err.taken": "Someone in the meeting already has this name."
 }

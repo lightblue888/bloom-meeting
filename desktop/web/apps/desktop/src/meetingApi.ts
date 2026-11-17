@@ -1,5 +1,5 @@
 // The 组会 (group meeting) backend: `python -m zuhui serve` on 127.0.0.1:47330 (docs/meeting-ui-spec.md). The page only
-// reads it over local HTTP, polling; the two Tauri commands here start it and probe it (src-tauri/src/zuhui.rs).
+// reads it over local HTTP, polling; the Tauri command here starts it (src-tauri/src/zuhui.rs).
 // Everything is wrapped so that a backend that isn't there, or a page outside Tauri, never throws into React.
 
 import { invoke as tauriInvoke } from '@tauri-apps/api/core';
@@ -67,8 +67,6 @@ export interface Line {
   cut?: boolean;
   /** which model said it, full name and effort: "DeepSeek V4 Flash", "Claude Haiku 5.5 Low", "Claude Opus 5.5 Extra" */
   model?: string;
-  /** the fast model's answer was handed to the background Claude ("让 Opus 深想") */
-  deepened?: boolean;
   /** #deep-answer from the quick lookup (Haiku searching the paper for a count, a place, a sentence): shown as 思考 */
   quick?: boolean;
   /** a looked-up answer put on screen the moment it was found, not said yet (it waits for a pause) */
@@ -321,15 +319,15 @@ export function watchBrain(on: (b: Brain | null) => void, onDown?: () => void): 
   return () => es?.close();
 }
 
-/** the host's microphone as /api/mic/stream pushes it: the level (0–1; null while nothing is being recorded) and
- *  whether the host muted it (undefined: an older backend that sends the bare level and knows no mute) */
+/** what /api/mic/stream pushes: whether the host's microphone is muted, and who is talking right now ("me" = the
+ *  host, "claude" = Claude, anyone else by name; their avatars get the ring). On the guest page: the guest's own mute. */
 export interface MicState {
-  level: number | null;
   muted?: boolean;
+  talk?: string[];
 }
 
-/** one message of /api/mic/stream → MicState. Two formats: the older bare level (`0.35`, `null`) and the object
- *  `{"level": 0.35, "muted": false}`. Anything else is null (the caller waits for the next one). */
+/** one message of /api/mic/stream → MicState (`{"muted": false, "talk": ["me"]}`); anything else is null (the caller
+ *  waits for the next one). */
 export function parseMic(data: string): MicState | null {
   let v: unknown;
   try {
@@ -337,16 +335,15 @@ export function parseMic(data: string): MicState | null {
   } catch {
     return null;
   }
-  const lvl = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) ? Math.max(0, Math.min(1, x)) : null);
-  if (v === null || typeof v === 'number') return { level: lvl(v) };
-  if (typeof v === 'object' && !Array.isArray(v)) {
-    const o = v as { level?: unknown; muted?: unknown };
-    return { level: lvl(o.level), ...(typeof o.muted === 'boolean' ? { muted: o.muted } : {}) };
-  }
-  return null;
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const o = v as { muted?: unknown; talk?: unknown };
+  return {
+    ...(typeof o.muted === 'boolean' ? { muted: o.muted } : {}),
+    talk: Array.isArray(o.talk) ? o.talk.filter((x): x is string => typeof x === 'string') : [],
+  };
 }
 
-/** The host mic pushed by the backend when it changes (level, muted). Returns a function that stops listening. */
+/** The host's mute and who is talking, pushed by the backend when they change. Returns a function that stops listening. */
 export function watchMic(on: (s: MicState) => void): () => void {
   if (guestT) return guestT.watchMic(on);
   let es: EventSource | null = null;
@@ -359,9 +356,47 @@ export function watchMic(on: (s: MicState) => void): () => void {
     const s = parseMic(String(e.data));
     if (s) on(s);
   };
-  // the stream dropped: no level (the meter hides); the mute state stays as last known
-  es.onerror = () => on({ level: null });
+  // the stream dropped: nobody is shown talking; the mute state stays as last known
+  es.onerror = () => on({ talk: [] });
   return () => es?.close();
+}
+
+/** Settings → General → Profile: your name, your own photo (null: the flower; `custom`: picked in Settings, so it can
+ *  be removed) and the AI's name in meetings (`assistant_custom` false: none given, it goes by the model, which would
+ *  call it `assistant_default`). Kept by the Bloom backend (~/.zuhui/profile.json, avatars/me.png). */
+export interface Profile {
+  name: string;
+  avatar: string | null;
+  custom: boolean;
+  assistant: string;
+  assistant_default: string;
+  assistant_custom: boolean;
+}
+
+const toProfile = (j: Partial<Profile>): Profile => ({
+  name: String(j.name ?? ''),
+  avatar: j.avatar ?? null,
+  custom: !!j.custom,
+  assistant: String(j.assistant ?? ''),
+  assistant_default: String(j.assistant_default ?? ''),
+  assistant_custom: !!j.assistant_custom,
+});
+
+/** fired on window after the name or the photo changed, so the rail's avatar loads again */
+export const PROFILE_EVENT = 'bloom-profile';
+
+async function postProfile(path: string, body: unknown): Promise<Profile> {
+  const r = await fetch(`${ZUHUI_BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(20000),
+  });
+  const j = (await r.json().catch(() => ({}))) as Partial<Profile> & { error?: string };
+  // the error is a code the page words (empty, too_long, taken, too_big, bad_image, failed)
+  if (!r.ok || typeof j.name !== 'string') throw new Error(j.error || 'failed');
+  window.dispatchEvent(new Event(PROFILE_EVENT));
+  return toProfile(j);
 }
 
 export interface Current {
@@ -430,9 +465,6 @@ export interface DevDetail extends MeetingDetail {
   dev: DevRun;
 }
 
-/** the cleanup UI shows only when the cleanup made edits (null / empty: the page looks as it always did) */
-export const hasCleanup = (c: CleanupItem[] | null | undefined): c is CleanupItem[] => Array.isArray(c) && c.length > 0;
-
 /** an avatar's full URL (the backend serves /avatars/…); '' when there is none */
 export const avatarUrl = (rel: string | null | undefined): string => (rel ? (rel.startsWith('http') || guestT ? rel : ZUHUI_BASE + rel) : '');
 
@@ -453,7 +485,6 @@ let guestT: GuestTransport | null = null;
 export const setGuestTransport = (t: GuestTransport | null) => {
   guestT = t;
 };
-export const isGuestPage = () => !!guestT;
 
 async function get<T>(path: string, timeoutMs = 8000): Promise<T> {
   const r = await fetch(ZUHUI_BASE + path, { signal: AbortSignal.timeout(timeoutMs), cache: 'no-store' });
@@ -532,28 +563,6 @@ export const meetingApi = {
     if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
     return j.path || to;
   },
-  /** 删改清单: put edits back into the clean transcript (restored) or take them out again */
-  restore: async (id: string, ids: string[], restored: boolean): Promise<void> => {
-    const r = await fetch(`${ZUHUI_BASE}/api/meetings/${encodeURIComponent(id)}/restore`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids, restored }),
-      signal: AbortSignal.timeout(10000),
-    });
-    const j = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
-    if (!r.ok || j.ok === false) throw new Error(j.error || `HTTP ${r.status}`);
-  },
-  /** live: hand one of the fast model's answers (and the question it answered) to the background Claude to think through */
-  deepen: async (sec: number, text: string): Promise<void> => {
-    const r = await fetch(`${ZUHUI_BASE}/api/deepen`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sec, text }),
-      signal: AbortSignal.timeout(8000),
-    });
-    const j = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
-    if (!r.ok || j.ok === false) throw new Error(j.error || `HTTP ${r.status}`);
-  },
   /** Claude's card: the models now and the choices; null when the backend can't switch models (503) */
   models: async (): Promise<Models | null> => {
     if (guestT) return guestT.models();
@@ -589,6 +598,17 @@ export const meetingApi = {
     if (!r.ok || typeof j.muted !== 'boolean') throw new Error(j.error || `HTTP ${r.status}`);
     return j.muted;
   },
+  profile: async (): Promise<Profile> => {
+    const r = await fetch(`${ZUHUI_BASE}/api/profile`, { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return toProfile((await r.json()) as Partial<Profile>);
+  },
+  setProfileName: (name: string) => postProfile('/api/profile', { name }),
+  /** the AI's name in meetings; '' goes back to the model's */
+  setAssistantName: (assistant: string) => postProfile('/api/profile', { assistant }),
+  /** a picture as a data: URL; the backend squares it to 256 px */
+  setAvatar: (data: string) => postProfile('/api/profile/avatar', { data }),
+  removeAvatar: () => postProfile('/api/profile/avatar', { remove: true }),
   /** the live 修订对比 page, for the iframe (host=bloom: its own toolbar hides, the tools sit in the shell's row) */
   liveDiffUrl: () => `${ZUHUI_BASE}/?embed=1&host=bloom&ui=${uiLang()}`,
   /** a past meeting's snapshot (`diff_url` is server-relative) */
@@ -652,15 +672,6 @@ export const meetingApi = {
     if (!inTauri) return null;
     return (await tauriInvoke<string | null>('zuhui_pick_paper')) ?? null;
   },
-  /** Rust: can 127.0.0.1:47330 be connected to? (null outside Tauri: the fetch itself is the probe) */
-  backendRunning: async (): Promise<boolean | null> => {
-    if (!inTauri) return null;
-    try {
-      return await tauriInvoke<boolean>('zuhui_backend_running');
-    } catch {
-      return null;
-    }
-  },
   /** 开会: Bloom records only its own window (it follows the window, covered or not, no frame drawn); the region is
    * the fallback where the window handle can't be had */
   recordStart: (region: [number, number, number, number] | null) => tauriInvoke<string>('capture_start', { opts: { pick: false, region, window: true } }),
@@ -696,20 +707,4 @@ export function fmtWhen(iso: string | null | undefined, lang: string): string {
   } catch {
     return d.toLocaleString();
   }
-}
-
-/** seconds between an ISO time and the meeting's start; null when either doesn't parse */
-export function secSince(started: string | null | undefined, iso: string | null | undefined): number | null {
-  if (!started || !iso) return null;
-  const a = new Date(started).getTime();
-  const b = new Date(iso).getTime();
-  if (Number.isNaN(a) || Number.isNaN(b)) return null;
-  return Math.max(0, (b - a) / 1000);
-}
-
-/** the fast model's tag on a teacher line → the i18n key of its label; null for none / unknown */
-export function tagKey(tag: string | undefined | null): string | null {
-  if (!tag) return null;
-  const k = tag.replace(/^#/, '').toLowerCase();
-  return ['edit', 'ask', 'status', 'chat', 'report'].includes(k) ? `meeting.tag.${k}` : null;
 }

@@ -129,5 +129,22 @@
   "st.win.storage.show": "在文件资源管理器中显示",
   "st.win.storage.uv": "Python 运行器（uv）",
   "st.win.models.failed_row": "没下载完 · 请检查网络",
-  "st.win.models.one_at_a_time": "一次下载一个"
+  "st.win.models.one_at_a_time": "一次下载一个",
+  "st.settings.general.profile": "个人资料",
+  "st.settings.general.avatar": "头像",
+  "st.settings.general.name": "昵称",
+  "st.settings.kw.general.avatar": "头像, 照片, 图片, 个人资料, 主持人",
+  "st.settings.kw.general.name": "名字, 昵称, 用户名, 显示名, 个人资料, 主持人",
+  "st.settings.profile.change": "更换",
+  "st.settings.profile.remove": "移除",
+  "st.settings.profile.offline": "Bloom 后台未运行，暂时无法修改。",
+  "st.settings.profile.err.empty": "昵称不能为空。",
+  "st.settings.profile.err.too_long": "不能超过 24 个字。",
+  "st.settings.profile.err.too_big": "图片不能超过 8 MB。",
+  "st.settings.profile.err.bad_image": "无法读取该图片，请换一张 JPG 或 PNG。",
+  "st.settings.profile.err.failed": "保存失败，请重试。",
+  "st.settings.general.ai_name": "AI 名称",
+  "st.settings.general.ai_name.detail": "会上用这个名字叫它。留空则用模型名。",
+  "st.settings.kw.general.ai_name": "AI, 助手, 名字, 唤醒词, 模型, Claude, DeepSeek",
+  "st.settings.profile.err.taken": "与会上其他人重名。"
 }

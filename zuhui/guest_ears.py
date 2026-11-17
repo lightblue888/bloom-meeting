@@ -145,11 +145,6 @@ class AsrWorker:
                 q += max(0.0, self._busy[2] / SR * r - (time.time() - self._busy[3]))
         return q
 
-    @property
-    def alive(self) -> bool:
-        p = self._proc
-        return p is not None and p.poll() is None and self.error is None
-
     def start(self) -> None:
         work = STATE / "tmp" / "guest_asr"
         work.mkdir(parents=True, exist_ok=True)

@@ -204,27 +204,6 @@ body {
   align-items: center;
   gap: 8px;
 }
-.g-mic {
-  position: relative;
-  overflow: hidden;
-}
-.g-mic.is-on {
-  color: var(--brand-ink, var(--ink));
-}
-.g-mic.is-on::after {
-  /* the level: a thin bar along the bottom that moves with the voice */
-  content: '';
-  position: absolute;
-  left: 0;
-  bottom: 0;
-  height: 2px;
-  width: calc(var(--lv, 0) * 100%);
-  background: var(--bloom, #2563eb);
-  transition: width 60ms linear;
-}
-.g-mic.is-off {
-  color: var(--mute);
-}
 .g-leave {
   color: var(--err);
 }
@@ -272,6 +251,18 @@ body {
   box-shadow: 0 8px 26px rgba(0, 0, 0, 0.25);
 }
 
+/* the paper's tools: when the paper column is narrow they scroll sideways instead of being cut off */
+.g-app .mt-bar {
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.g-app .mt-bar::-webkit-scrollbar {
+  display: none;
+}
+.g-app .mt-bar > * {
+  flex: none;
+}
+
 /* ---------------------------------------------------------------- narrow screens (phones): the bar takes two rows
    (the name; then 新增, the people, the microphone and 离开), the paper's tools scroll sideways, the paper full width
    with the transcript under it in its own scroll */
@@ -316,10 +307,34 @@ body {
     border-top: 1px solid var(--line);
     min-width: 0;
   }
-  .g-mic .g-lbl {
-    display: none;
-  }
   .g-back {
     display: none;
   }
+}
+
+/* 名字、会议名再长也不撑破卡片：标题最多两行，其余一行放不下就省略号 */
+.g-topic {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.g-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.g-who-p {
+  max-width: 100%;
+  min-width: 0;
+}
+.g-who-n {
+  min-width: 0;
+  max-width: 12em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.g-toast {
+  overflow-wrap: anywhere;
 }

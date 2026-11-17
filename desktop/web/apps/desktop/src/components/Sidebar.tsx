@@ -2,12 +2,13 @@
 import { useEffect, useState } from 'react';
 import { Icon } from '@blurt/icons';
 import { t } from '../i18n';
-import { ZUHUI_BASE } from '../meetingApi';
+import { PROFILE_EVENT, ZUHUI_BASE } from '../meetingApi';
+import { Flower, HOST_COLOR } from './Flower';
 
 /** 会议 (the meeting under way), 回顾 (the meetings held) or Dev (the simulated meetings Bloom is tested with) */
 export type Page = 'meeting' | 'history' | 'dev';
 
-export function Sidebar({ page, onGo, onSettings }: { page: Page | null; onGo: (p: Page) => void; onSettings: () => void }) {
+export function Sidebar({ page, dev, onGo, onSettings }: { page: Page | null; dev: boolean; onGo: (p: Page) => void; onSettings: () => void }) {
   return (
     <nav className="mw-sidebar mt-rail" aria-label={t('main.sidebar.label')}>
       <RailAvatar />
@@ -20,10 +21,12 @@ export function Sidebar({ page, onGo, onSettings }: { page: Page | null; onGo: (
           <Icon name="history" size={22} />
           <span>{t('meeting.nav.history')}</span>
         </a>
-        <a role="option" aria-selected={page === 'dev'} className={`mt-rail-item ${page === 'dev' ? 'sel' : ''}`} onClick={() => onGo('dev')} data-testid="nav-dev">
-          <Icon name="code" size={22} />
-          <span>{t('meeting.nav.dev')}</span>
-        </a>
+        {dev && (
+          <a role="option" aria-selected={page === 'dev'} className={`mt-rail-item ${page === 'dev' ? 'sel' : ''}`} onClick={() => onGo('dev')} data-testid="nav-dev">
+            <Icon name="code" size={22} />
+            <span>{t('meeting.nav.dev')}</span>
+          </a>
+        )}
       </div>
       <div className="mt-rail-foot">
         <button className="mt-rail-btn" onClick={onSettings} aria-label={t('mw.settings')} data-tip={t('mw.settings')} data-testid="nav-settings">
@@ -34,18 +37,42 @@ export function Sidebar({ page, onGo, onSettings }: { page: Page | null; onGo: (
   );
 }
 
+/** your photo, or Bloom's flower in the host's colour when you have none (a fresh install). The backend may come up after
+ *  the window: until it answers, the flower, asked again every few seconds. Settings changing the photo loads it anew. */
 function RailAvatar() {
-  const [ok, setOk] = useState(true);
+  const [has, setHas] = useState(false);
   const [n, setN] = useState(0);
-  // the backend may come up after the window: try again every few seconds until the picture loads
   useEffect(() => {
-    if (ok) return;
-    const h = setTimeout(() => {
-      setOk(true);
-      setN((k) => k + 1);
-    }, 4000);
-    return () => clearTimeout(h);
-  }, [ok]);
-  if (!ok) return <span className="mt-rail-me is-empty" aria-hidden="true" />;
-  return <img className="mt-rail-me" src={`${ZUHUI_BASE}/avatars/me?n=${n}`} alt="" draggable={false} onError={() => setOk(false)} />;
+    const again = () => setN((k) => k + 1);
+    window.addEventListener(PROFILE_EVENT, again);
+    return () => window.removeEventListener(PROFILE_EVENT, again);
+  }, []);
+  useEffect(() => {
+    let alive = true;
+    let timer = 0;
+    const look = () =>
+      fetch(`${ZUHUI_BASE}/avatars/me?n=${n}`, { cache: 'no-store' }).then(
+        (r) => {
+          void r.body?.cancel();
+          if (alive) setHas(r.ok);
+        },
+        () => {
+          if (!alive) return;
+          setHas(false);
+          timer = window.setTimeout(look, 4000);
+        },
+      );
+    void look();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [n]);
+  if (!has)
+    return (
+      <span className="mt-rail-me is-flower" aria-hidden="true">
+        <Flower color={HOST_COLOR} />
+      </span>
+    );
+  return <img className="mt-rail-me" src={`${ZUHUI_BASE}/avatars/me?n=${n}`} alt="" draggable={false} onError={() => setHas(false)} />;
 }

@@ -738,3 +738,38 @@
 
 /* the window's own question (PhoneAsk): the agent-setup sheet with the phone's glyph and the digits centred */
 
+/* General → You in meetings: the photo (round, the flower when there is none) and the name field */
+.st-avatar {
+  display: inline-flex;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  overflow: hidden;
+  box-sizing: border-box;
+  background: #26262a;
+}
+.st-avatar:has(svg) {
+  padding: 2px;
+}
+.st-avatar img,
+.st-avatar svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.app .st-name {
+  width: 200px;
+  min-height: var(--ctl-h);
+  padding: 0 10px;
+  border: 1px solid var(--ctl-border);
+  border-radius: var(--r-sm);
+  background: var(--ctl-bg);
+  color: var(--ink);
+  font: inherit;
+}
+.app .st-name:focus {
+  outline: none;
+  border-color: var(--brand, #3b82f6);
+}

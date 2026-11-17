@@ -102,6 +102,8 @@ def set_role(name: str, role: str) -> dict:
     role = _ALIAS.get(role, role)
     if role not in ROLES:
         raise ValueError(f"身份只能是 {ROLES}")
+    if len(str(name or "").strip()) > 64:          # 进会的名字中继那边最多 64 个字，再长的不是会上的人
+        raise ValueError("名字太长")
     k = _key(name)
     if not k:
         raise ValueError("没有名字")
@@ -116,11 +118,6 @@ def set_role(name: str, role: str) -> dict:
             d["dismissed"].append(k)    # 设过了（不管设成什么）就不再提示恢复
         _save(d)
         return {"name": rec["name"], "role": role, "at": rec["at"]}
-
-
-def suggest(name: str, why: str = "") -> bool:
-    """旧接口（学生猜谁像老师）：不再猜，什么都不做。"""
-    return False
 
 
 def suggestions() -> list[dict]:
@@ -139,9 +136,3 @@ def dismiss(name: str) -> None:
         if k and k not in d["dismissed"]:
             d["dismissed"].append(k)
         _save(d)
-
-
-def all_roles() -> dict[str, str]:
-    """{名字: 身份}：这场会的共同主持人，给前端标参会人。"""
-    with _lock:
-        return {v.get("name") or k: "cohost" for k, v in _load()["cohosts"].items()}

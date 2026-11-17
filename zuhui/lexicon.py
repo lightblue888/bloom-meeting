@@ -150,9 +150,6 @@ def build(paper: Path, name: str | None = None) -> dict:
 def enrich(lex: dict, cfg: dict) -> dict:
     """给前 60 个术语补中文释义：把术语和它在论文里第一次出现的那句话交给对话模型，一次调用。失败就原样返回。"""
     try:
-        from openai import OpenAI
-        import httpx
-        from .config import api_key
         text = Path(lex["path"]).read_text(encoding="utf-8-sig", errors="replace")
         items = []
         for x in lex["terms"][:60]:

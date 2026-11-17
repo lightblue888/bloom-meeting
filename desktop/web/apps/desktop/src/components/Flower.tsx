@@ -36,7 +36,8 @@ export function colorsByName(people: Participant[], others: string[] = [], me?: 
   const out: Record<string, string> = Object.create(null);
   for (const p of people) if (p.name && out[p.name] === undefined) out[p.name] = byId[p.id];
   if (me && !people.some(isHost) && out[me] === undefined) out[me] = HOST_COLOR;
-  if (out.Claude === undefined) out.Claude = CLAUDE_COLOR;
+  const ai = people.find(isClaude)?.name ?? 'Claude';            // the AI, whatever it is called
+  if (out[ai] === undefined) out[ai] = CLAUDE_COLOR;
   let k = people.filter((p) => !isHost(p) && !isClaude(p)).length;
   for (const raw of others) {
     const n = (raw ?? '').trim();

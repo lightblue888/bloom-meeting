@@ -749,8 +749,6 @@ class Mouth:
             log.warning("tts :%s /say 失败: %r", port, e)
             return False
 
-    _synth_indextts = _synth_server                    # 旧名字
-
     def _synth_edge(self, text: str, out: Path) -> Path | None:
         """edge-tts 出 mp3；有 ffmpeg 就转成 out(.wav)，没有就原样留成 .mp3（ffplay 两种都能放）。"""
         if not self.edge_tts or time.time() < self._edge_down_until:

@@ -1,23 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { parseMic } from './meetingApi';
 
-describe('parseMic: /api/mic/stream, the older bare level and the object with the mute state', () => {
-  it('reads the older bare level', () => {
-    expect(parseMic('0.35')).toEqual({ level: 0.35 });
-    expect(parseMic('null')).toEqual({ level: null });
-    expect(parseMic('1.7')).toEqual({ level: 1 });
-    expect(parseMic('-2')).toEqual({ level: 0 });
+describe('parseMic: /api/mic/stream (the mute state, who is talking)', () => {
+  it('reads the mute state and the talkers', () => {
+    expect(parseMic('{"muted": false, "talk": ["me", "claude"]}')).toEqual({ muted: false, talk: ['me', 'claude'] });
+    expect(parseMic('{"muted": true, "talk": []}')).toEqual({ muted: true, talk: [] });
+    expect(parseMic('{"talk": ["张三"]}')).toEqual({ talk: ['张三'] });
   });
-  it('reads the object with the mute state', () => {
-    expect(parseMic('{"level": 0.5, "muted": false}')).toEqual({ level: 0.5, muted: false });
-    expect(parseMic('{"level": null, "muted": true}')).toEqual({ level: null, muted: true });
-    expect(parseMic('{"level": 0.2}')).toEqual({ level: 0.2 });
-    expect(parseMic('{"muted": true}')).toEqual({ level: null, muted: true });
+  it('an older backend (a level, no talkers): nobody talking', () => {
+    expect(parseMic('{"level": 0.5, "muted": false}')).toEqual({ muted: false, talk: [] });
   });
   it('ignores what it cannot read', () => {
     expect(parseMic('not json')).toBeNull();
-    expect(parseMic('"loud"')).toBeNull();
+    expect(parseMic('0.35')).toBeNull();
+    expect(parseMic('null')).toBeNull();
     expect(parseMic('[0.3]')).toBeNull();
-    expect(parseMic('{"level": "x", "muted": "yes"}')).toEqual({ level: null });
+    expect(parseMic('{"muted": "yes", "talk": ["a", 3]}')).toEqual({ talk: ['a'] });
   });
 });

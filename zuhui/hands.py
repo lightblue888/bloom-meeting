@@ -28,7 +28,8 @@ FALLBACK_TEMPLATE = (
 def app_facts() -> str:
     """软件现状（prompts/app_facts.md）：学生答软件问题以它为准。"""
     try:
-        return (PROMPTS / "app_facts.md").read_text(encoding="utf-8-sig").strip()
+        from .config import assistant_name
+        return (PROMPTS / "app_facts.md").read_text(encoding="utf-8-sig").strip().replace("@AI", assistant_name())
     except OSError:
         return "（软件现状读不到）"
 
@@ -948,7 +949,8 @@ class Hands:
     def _load_template(self) -> str:
         p = PROMPTS / "worker.md"
         try:
-            return p.read_text(encoding="utf-8-sig")
+            from .config import assistant_name
+            return p.read_text(encoding="utf-8-sig").replace("@AI", assistant_name(self.cfg))
         except OSError:
             return FALLBACK_TEMPLATE
 

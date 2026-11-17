@@ -42,7 +42,7 @@ export function Names({ text, names, colors }: { text: string; names: string[]; 
     if (hit > at) out.push(<Fragment key={`t${at}`}>{text.slice(at, hit)}</Fragment>);
     out.push(
       <span key={`n${hit}`} className="mt-name" style={nameStyle(colors?.[list.find((n) => n.toLowerCase() === lower.slice(hit, hit + len)) ?? ''])}>
-        {text.slice(hit, hit + len)}
+        <span className="mt-name-t">{text.slice(hit, hit + len)}</span>
       </span>,
     );
     at = hit + len;

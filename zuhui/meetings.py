@@ -28,7 +28,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from .config import STATE
+from .config import assistant_name, STATE
 
 
 def join_spoken(*parts: str) -> str:
@@ -61,7 +61,13 @@ def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-TITLE_MAX = 60                      # 会议名最长多少字（手改的；再长顶栏也放不下）
+TITLE_MAX = 60                      # 会议名最长多少字（手改的、按论文文件名自动起的都算；再长顶栏也放不下）
+
+
+def _clip_title(t) -> str:
+    """会议名：换行、连着的空格并成一个，超过 TITLE_MAX 截掉、末尾加省略号（论文文件名可能很长）。"""
+    t = " ".join(str(t or "").split())
+    return t if len(t) <= TITLE_MAX else t[:TITLE_MAX - 1].rstrip() + "…"
 
 
 def paper_id(path) -> str:
@@ -272,7 +278,7 @@ class Meetings:
             d.mkdir(parents=True, exist_ok=True)
             self._cur = {
                 "id": mid,
-                "title": title or f"组会 · {datetime.now().strftime('%m月%d日 %H:%M')}",
+                "title": _clip_title(title) or f"组会 · {datetime.now().strftime('%m月%d日 %H:%M')}",
                 "title_auto": True,                     # 名字是按论文自动起的；手改过就是 False，之后不再跟着论文变
                 "started": _now_iso(), "ended": None, "state": "live", "duration_s": 0,
                 "session": session,
@@ -435,7 +441,7 @@ class Meetings:
                 m["title"], m["title_auto"] = t, False
             else:
                 ps = papers_of(m)
-                m["title"] = m.get("auto_title") or (ps[0]["name"] if ps else None) or m.get("title")
+                m["title"] = _clip_title(m.get("auto_title") or (ps[0]["name"] if ps else None) or m.get("title")) or m.get("title")
                 m["title_auto"] = True
             if live:
                 self._write_meta()
@@ -651,10 +657,11 @@ class Meetings:
         m = g["meeting"]
         cfg = load()
         me = str((cfg.get("meeting") or {}).get("me") or getpass.getuser() or "我")
+        ai = assistant_name(cfg)
 
         def who(l: dict) -> str:
             w = l.get("who")
-            return me if w == "teacher" else "Claude" if w == "student" else (l.get("name") or "参会者") if w == "guest" else "系统"
+            return me if w == "teacher" else ai if w == "student" else (l.get("name") or "参会者") if w == "guest" else "系统"
 
         src = g["transcript_raw"] if version == "raw" else g["transcript"]
         lines = [l for l in src if (l.get("text") or "").strip()]
@@ -671,7 +678,7 @@ class Meetings:
             n = str(p.get("name") or "").strip()
             if n and n not in people:
                 people.append(n)
-        for n in [me, "Claude"] + [who(l) for l in lines if l.get("who") == "guest"]:
+        for n in [me, ai] + [who(l) for l in lines if l.get("who") == "guest"]:
             if n not in people:
                 people.append(n)
         if fmt == "txt":
@@ -693,9 +700,6 @@ class Meetings:
 
 
 # ---------- 整理后的干净版（删改清单 cleanup.json，见 zuhui/polish.py） ----------
-CLEANUP_KINDS = ("retract", "fact", "sensitive", "profanity", "asr", "pii")
-
-
 def _read_json(p: Path):
     try:
         return json.loads(p.read_text(encoding="utf-8"))
@@ -920,13 +924,14 @@ SUMMARY_PROMPT = """你是组会的记录员。下面是一场论文修改组会
 
 
 def summarize(cfg: dict, meeting: dict, lines: list[dict], tasks: list[dict]) -> dict:
-    """用快嘴同一个模型（DeepSeek Flash）生成纪要；失败时返回一份纯规则拼出来的兜底纪要。"""
+    """用套餐里的 Sonnet 生成纪要（claude_text，不走 API）；失败时返回一份纯规则拼出来的兜底纪要。"""
     import getpass
     me = str((cfg.get("meeting") or {}).get("me") or getpass.getuser() or "我")
+    ai = assistant_name(cfg)
 
     def who(l: dict) -> str:
         w = l.get("who")
-        return me if w == "teacher" else "Claude" if w == "student" else (l.get("name") or "参会者") if w == "guest" else "系统"
+        return me if w == "teacher" else ai if w == "student" else (l.get("name") or "参会者") if w == "guest" else "系统"
 
     transcript = "\n".join(f"[{l.get('t')}] {who(l)}：{l.get('text')}" for l in lines)
     multi = len({t.get("paper") for t in tasks if t.get("paper")}) > 1    # 会上改了不止一篇：每条标上是哪篇的
@@ -951,8 +956,8 @@ def summarize(cfg: dict, meeting: dict, lines: list[dict], tasks: list[dict]) ->
         rest = [t for t in tasks if t.get("status") != "done"]
         s = {
             "title": meeting.get("title") or "组会纪要",
-            "speakers": [me, "Claude"] + sorted({l.get("name") for l in lines if l.get("who") == "guest" and l.get("name")}),
-            "abstract": f"这场会 {me} 提了 {sum(1 for l in lines if l.get('who') == 'teacher')} 条意见，Claude 改好 {len(done)} 处，另有 {len(rest)} 条待处理。",
+            "speakers": [me, ai] + sorted({l.get("name") for l in lines if l.get("who") == "guest" and l.get("name")}),
+            "abstract": f"这场会 {me} 提了 {sum(1 for l in lines if l.get('who') == 'teacher')} 条意见，{ai} 改好 {len(done)} 处，另有 {len(rest)} 条待处理。",
             "conclusions": [f"已改：{t.get('title')}" for t in done][:5],
             "sections": [],
             "todos": [f"{t.get('title')}（{t.get('status')}）" for t in rest],

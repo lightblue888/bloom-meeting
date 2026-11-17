@@ -73,9 +73,6 @@
   font-variant-numeric: tabular-nums;
   color: var(--ink-2);
 }
-.mt-ready {
-  color: var(--faint);
-}
 .mt-state {
   display: inline-flex;
   align-items: center;
@@ -157,10 +154,6 @@
 .mt-notice-err {
   color: var(--attn-ink, var(--attn));
 }
-.mt-notice-report {
-  color: var(--brand-ink);
-}
-.mt-notice-report svg,
 .mt-notice-err svg {
   flex: none;
 }
@@ -389,16 +382,6 @@
   gap: 2px;
   overscroll-behavior: contain;
 }
-.mt-line {
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
-  gap: 10px;
-  padding: 7px 6px;
-  border-radius: var(--r-sm);
-}
-.mt-line:hover {
-  background: var(--hover);
-}
 .mt-avatar {
   width: 26px;
   height: 26px;
@@ -412,67 +395,9 @@
   background: var(--faint);
   margin-top: 1px;
 }
-.mt-line.is-teacher .mt-avatar {
-  background: var(--attn-ink, var(--amber));
-}
-.mt-line.is-student .mt-avatar {
-  background: var(--brand-ink);
-  color: var(--on-brand-ink, #fff);
-}
-.mt-line.is-system .mt-avatar {
-  background: var(--chip);
-  color: var(--mute);
-}
-.mt-line-body {
-  min-width: 0;
-}
-.mt-line-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--mute);
-  line-height: 18px;
-}
 .mt-line-who {
   font-weight: 600;
   color: var(--ink-2);
-}
-.mt-line.is-teacher .mt-line-who {
-  color: var(--attn-ink, var(--amber));
-}
-.mt-line.is-student .mt-line-who {
-  color: var(--brand-ink);
-}
-.mt-line-time {
-  font-variant-numeric: tabular-nums;
-  color: var(--faint);
-}
-.mt-tag {
-  margin-left: auto;
-  font-size: 10.5px;
-  line-height: 16px;
-  padding: 0 6px;
-  border-radius: var(--r-pill);
-  background: var(--chip);
-  color: var(--mute);
-  white-space: nowrap;
-}
-.mt-tag.is-edit {
-  background: color-mix(in srgb, var(--brand-ink) 16%, transparent);
-  color: var(--brand-ink);
-}
-.mt-tag.is-ask {
-  background: color-mix(in srgb, var(--info) 18%, transparent);
-  color: var(--info);
-}
-.mt-tag.is-status {
-  background: color-mix(in srgb, var(--attn) 18%, transparent);
-  color: var(--attn-ink, var(--attn));
-}
-.mt-tag.is-report {
-  background: color-mix(in srgb, var(--ok) 18%, transparent);
-  color: var(--ok);
 }
 .mt-line-text {
   margin: 2px 0 0;
@@ -480,10 +405,6 @@
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
-}
-.mt-line.is-system .mt-line-text {
-  color: var(--mute);
-  font-size: 12.5px;
 }
 
 /* ------------------------------------------------------------ the task board (纪要 while live) */
@@ -702,84 +623,6 @@
   color: var(--ok);
 }
 
-/* ------------------------------------------------------------ the timeline */
-.mt-timeline {
-  list-style: none;
-  margin: 0;
-  padding: 0 0 0 4px;
-  position: relative;
-}
-.mt-timeline::before {
-  content: '';
-  position: absolute;
-  left: 67px;
-  top: 8px;
-  bottom: 8px;
-  width: 1px;
-  background: var(--line-2);
-}
-.mt-tl {
-  display: grid;
-  grid-template-columns: 52px 20px minmax(0, 1fr);
-  gap: 6px;
-  padding: 5px 0;
-  align-items: start;
-  font-size: 13px;
-}
-.mt-tl-time {
-  color: var(--faint);
-  font-variant-numeric: tabular-nums;
-  font-size: 12px;
-  line-height: 20px;
-  text-align: right;
-}
-.mt-tl-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--faint);
-  margin: 6px auto 0;
-  box-shadow: 0 0 0 3px var(--bg);
-  position: relative;
-}
-.mt-tl.is-teacher .mt-tl-dot {
-  background: var(--attn-ink, var(--amber));
-}
-.mt-tl.is-student .mt-tl-dot {
-  background: var(--brand-ink);
-}
-.mt-tl.is-noted .mt-tl-dot {
-  background: var(--info);
-}
-.mt-tl.is-done .mt-tl-dot {
-  background: var(--ok);
-}
-.mt-tl.is-failed .mt-tl-dot {
-  background: var(--err, var(--rec));
-}
-.mt-tl-body {
-  min-width: 0;
-  line-height: 20px;
-}
-.mt-tl-label {
-  font-weight: 600;
-  margin-right: 8px;
-  color: var(--ink-2);
-}
-.mt-tl.is-noted .mt-tl-label {
-  color: var(--info);
-}
-.mt-tl.is-done .mt-tl-label {
-  color: var(--ok);
-}
-.mt-tl.is-failed .mt-tl-label {
-  color: var(--err, var(--rec));
-}
-.mt-tl-text {
-  color: var(--ink-2);
-  word-break: break-word;
-}
-
 /* ------------------------------------------------------------ backend not running */
 .mt-down {
   align-items: center;
@@ -808,12 +651,6 @@
   margin: 0;
   font-size: 13px;
   line-height: 1.5;
-}
-.mt-down-acts {
-  margin-top: 10px;
-}
-.mt-down-err {
-  color: var(--attn-ink, var(--attn));
 }
 
 /* ------------------------------------------------------------ 以往会议 */
@@ -876,14 +713,6 @@
   color: var(--faint);
 }
 
-/* ------------------------------------------------------------ the sidebar's two rows */
-.mw-side-row.mt-nav .mw-side-ic {
-  color: var(--mute);
-}
-.mw-side-row.mt-nav.sel .mw-side-ic {
-  color: var(--brand-ink);
-}
-
 /* ------------------------------------------------------------ who is in the meeting (top bar) */
 .mt-people {
   display: flex;
@@ -933,155 +762,6 @@
   display: block;
 }
 
-/* ------------------------------------------------------------ the annotations column */
-.mt-mid {
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  border-right: 1px solid var(--line);
-  background: var(--bg);
-}
-.mt-ann-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 4px 10px 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  overscroll-behavior: contain;
-}
-.mt-ann {
-  cursor: pointer;
-  box-shadow: none;
-  border-left-width: 3px;
-  transition: background 0.15s;
-}
-.mt-ann:hover,
-.mt-ann:focus-visible {
-  background: var(--hover);
-  outline: none;
-}
-.mt-ann.is-queued {
-  border-left-color: var(--line-2);
-}
-.mt-ann.is-working {
-  border-left-color: var(--attn);
-}
-.mt-ann.is-done {
-  border-left-color: var(--ok);
-}
-.mt-ann.is-failed {
-  border-left-color: var(--err, var(--rec));
-}
-.mt-ann-no {
-  flex: none;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 4px;
-  border-radius: 9px;
-  background: var(--chip);
-  color: var(--ink-2);
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 18px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-.mt-ann-status {
-  flex: none;
-  font-size: 10.5px;
-  font-weight: 500;
-  line-height: 18px;
-  color: var(--faint);
-  white-space: nowrap;
-}
-.mt-ann-status.is-working {
-  color: var(--attn-ink, var(--attn));
-}
-.mt-ann-status.is-done {
-  color: var(--ok);
-}
-.mt-ann-status.is-failed {
-  color: var(--err, var(--rec));
-}
-.mt-ann-said,
-.mt-ann-did {
-  margin: 7px 0 0;
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--mute);
-  word-break: break-word;
-}
-.mt-ann-said {
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.mt-ann-did {
-  color: var(--ink-2);
-}
-.mt-ann-said b,
-.mt-ann-did b {
-  display: inline-block;
-  margin-right: 6px;
-  font-weight: 600;
-  color: var(--faint);
-  font-size: 11px;
-}
-.mt-ann-did b {
-  color: var(--brand-ink);
-}
-
-/* ------------------------------------------------------------ the line still being spoken */
-.mt-line.is-partial .mt-line-text {
-  color: var(--mute);
-}
-.mt-typing {
-  display: inline-block;
-  width: 14px;
-  margin-left: 4px;
-  height: 4px;
-  border-radius: 2px;
-  background: linear-gradient(90deg, var(--faint) 30%, transparent 30% 50%, var(--faint) 50% 80%, transparent 80%);
-  vertical-align: middle;
-  animation: mt-typing 1s steps(3, end) infinite;
-}
-@keyframes mt-typing {
-  0% { clip-path: inset(0 66% 0 0); }
-  50% { clip-path: inset(0 33% 0 0); }
-  100% { clip-path: inset(0 0 0 0); }
-}
-
-/* annotation cards stay quiet: one hairline border, the state shows only on the left edge and in the status word */
-.mt-card.mt-ann,
-.mt-card.mt-ann.is-working,
-.mt-card.mt-ann.is-done,
-.mt-card.mt-ann.is-failed {
-  border-color: var(--line);
-  border-left-width: 2px;
-  border-radius: 4px;
-  background: transparent;
-  padding: 9px 10px 10px 11px;
-}
-.mt-card.mt-ann:hover,
-.mt-card.mt-ann:focus-visible {
-  background: var(--hover);
-}
-.mt-card.mt-ann.is-queued { border-left-color: var(--line-2); }
-.mt-card.mt-ann.is-working { border-left-color: var(--attn); }
-.mt-card.mt-ann.is-done { border-left-color: var(--ok); }
-.mt-card.mt-ann.is-failed { border-left-color: var(--err, var(--rec)); }
-.mt-ann .mt-card-section {
-  background: none;
-  padding: 0;
-  margin-top: 3px;
-  border-radius: 0;
-  color: var(--faint);
-}
-
 /* names carry their own color: the user light blue, Claude its terracotta */
 .mt-root {
   --mt-me: #7cc0ff;
@@ -1089,23 +769,11 @@
   --bloom: #3b82f6;        /* Bloom 的蓝（app 图标的颜色）：按钮、选中框、进度这些界面强调色 */
   --bloom-light: #60a5fa;
 }
-.mt-line.is-teacher .mt-line-who,
-.mt-person.is-me .mt-person-name,
-.mt-ann-said b {
+.mt-person.is-me .mt-person-name {
   color: var(--mt-me);
 }
-.mt-line.is-student .mt-line-who,
-.mt-person.is-claude .mt-person-name,
-.mt-ann-did b {
+.mt-person.is-claude .mt-person-name {
   color: var(--mt-claude);
-}
-.mt-line.is-teacher .mt-avatar:not(.is-img):not(.is-flower) {
-  background: var(--mt-me);
-  color: #0f172a;
-}
-.mt-line.is-student .mt-avatar:not(.is-img):not(.is-flower) {
-  background: var(--mt-claude);
-  color: #fff;
 }
 
 
@@ -1292,6 +960,15 @@ html:root[data-theme="dark"] {
   flex: none;
   display: block;
 }
+/* no photo of your own: Bloom's flower, like everyone without one in the meeting */
+.mt-rail-me.is-flower {
+  box-sizing: border-box;
+  padding: 3px;
+  background: #26262a;
+}
+.mt-rail-me.is-flower svg {
+  display: block;
+}
 .mt-rail-list {
   display: flex;
   flex-direction: column;
@@ -1471,27 +1148,6 @@ html:root[data-theme="dark"] .app.mw,
 .mt-people.is-stack:focus-within .mt-status-pop {
   display: flex;
 }
-.mt-pop-person {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-.mt-pop-person .mt-avatar {
-  width: 22px;
-  height: 22px;
-  margin-top: 0;
-}
-.mt-pop-person.is-me .mt-person-name {
-  color: var(--mt-me);
-}
-.mt-pop-person.is-claude .mt-person-name {
-  color: var(--mt-claude);
-}
-.mt-pop-sep {
-  height: 1px;
-  background: var(--line);
-  margin: 3px 0;
-}
 
 
 /* the humans' stack (more than three people); Claude stays a chip of its own beside it */
@@ -1571,11 +1227,6 @@ html:root[data-theme="dark"] .app.mw,
   background: var(--mt-claude);
   color: #fff;
 }
-.mt-line-time {
-  font-size: 12px;
-  color: var(--faint);
-  font-variant-numeric: tabular-nums;
-}
 .mt-line-text {
   margin: 4px 0 0;
   font-size: 14px;
@@ -1652,33 +1303,6 @@ body.mw-resizing .mt-diff {
 /* ------------------------------------------------------------ 回顾: delete a meeting (asks once) */
 .mt-hitem {
   position: relative;
-}
-.app .mt-hdel {
-  position: absolute;
-  right: 40px;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 2;
-  width: 30px;
-  height: 30px;
-  min-height: 30px;
-  padding: 0;
-  border-radius: 6px;
-  background: none;
-  border: 0;
-  box-shadow: none;
-  color: var(--faint);
-  justify-content: center;
-  opacity: 0;
-  transition: opacity 0.12s, background 0.12s, color 0.12s;
-}
-.mt-hitem:hover .mt-hdel,
-.app .mt-hdel:focus-visible {
-  opacity: 1;
-}
-.app .mt-hdel:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--rec) 14%, transparent);
-  color: var(--rec);
 }
 .mt-hdel-ask {
   position: absolute;
@@ -1822,24 +1446,6 @@ body.mw-resizing .mt-diff {
   color: var(--ink-2);
   user-select: all;
 }
-.app .mt-invite-mini {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 26px;
-  padding: 0 8px;
-  border-radius: 6px;
-  border: 0;
-  background: transparent;
-  color: var(--ink-2);
-  font-size: 12px;
-  cursor: pointer;
-}
-.app .mt-invite-mini:hover {
-  background: var(--hover);
-  color: var(--ink);
-}
 .app .mt-invite-all {
   display: flex;
   align-items: center;
@@ -1863,12 +1469,6 @@ body.mw-resizing .mt-diff {
 .app .mt-invite-all:active {
   transform: translateY(1px);
 }
-.mt-invite-note {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--mute);
-}
 .mt-invite-warn {
   margin: 0;
   font-size: 12px;
@@ -1876,104 +1476,6 @@ body.mw-resizing .mt-diff {
   color: var(--attn-ink, var(--attn));
 }
 
-/* ------------------------------------------------------------ 回顾: delete a meeting (asks once) */
-.mt-hitem {
-  position: relative;
-}
-.app .mt-hdel {
-  position: absolute;
-  right: 40px;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 2;
-  width: 30px;
-  height: 30px;
-  min-height: 30px;
-  padding: 0;
-  border-radius: 6px;
-  background: none;
-  border: 0;
-  box-shadow: none;
-  color: var(--faint);
-  justify-content: center;
-  opacity: 0;
-  transition: opacity 0.12s, background 0.12s, color 0.12s;
-}
-.mt-hitem:hover .mt-hdel,
-.app .mt-hdel:focus-visible {
-  opacity: 1;
-}
-.app .mt-hdel:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--rec) 14%, transparent);
-  color: var(--rec);
-}
-.mt-hdel-ask {
-  position: absolute;
-  right: 36px;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 6px 4px 12px;
-  border-radius: 8px;
-  background: var(--panel);
-  border: 1px solid var(--line-2);
-  font-size: 13px;
-  color: var(--ink-2);
-}
-.app .mt-hdel-yes,
-.app .mt-hdel-no {
-  min-height: 26px;
-  height: 26px;
-  padding: 0 12px;
-  border-radius: 6px;
-  font-size: 13px;
-  box-shadow: none;
-}
-.app .mt-hdel-yes {
-  background: var(--rec);
-  border-color: var(--rec);
-  color: #fff;
-  font-weight: 600;
-}
-.app .mt-hdel-no {
-  background: none;
-  border: 1px solid var(--line-2);
-  color: var(--ink-2);
-}
-
-
-/* the title row: the title's box fills it, 新增 sits at its end */
-.mt-title-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-  height: 24px;
-}
-/* 新增 is an ordinary top-bar button now (same height, type and frame as 邀请), first in the right-hand row */
-.app .mt-paper-btn {
-  flex: none;
-}
-
-/* ------------------------------------------------------------ 邀请: the link to this user's room on the relay */
-.mt-invite {
-  position: relative;
-  flex: none;
-}
-.app .mt-btn.is-primary {
-  background: var(--bloom, #3b82f6);
-  border-color: var(--bloom, #3b82f6);
-  color: #fff;
-}
-.app .mt-btn.is-primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--bloom, #3b82f6) 88%, #fff);
-}
-.app .mt-invite-btn.is-open {
-  background: var(--hover);
-}
 .mt-invite-pop {
   position: absolute;
   right: 0;
@@ -1988,38 +1490,11 @@ body.mw-resizing .mt-diff {
   padding: 14px 14px 12px;
   animation: mtPop 0.14s cubic-bezier(0.3, 1.2, 0.4, 1);
 }
-@keyframes mtPop {
-  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
-  to { opacity: 1; transform: none; }
-}
 .mt-invite-head {
   font-weight: 600;
   font-size: 13px;
   margin-bottom: 8px;
   color: var(--ink);
-}
-.mt-invite-link {
-  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.5;
-  padding: 8px 10px;
-  border-radius: 7px;
-  background: var(--bg-2);
-  border: 1px solid var(--line);
-  color: var(--ink-2);
-  word-break: break-all;
-  user-select: all;
-}
-.mt-invite-row {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 10px;
-}
-.mt-invite-note {
-  margin: 10px 0 0;
-  font-size: 12px;
-  line-height: 1.55;
-  color: var(--mute);
 }
 .mt-invite-warn {
   margin: 8px 0 0;
@@ -2156,9 +1631,6 @@ body.mw-resizing .mt-diff {
 .mt-hp-text {
   grid-column: 1 / -1;
   color: var(--ink-2);
-}
-.mt-hp-more {
-  margin-top: 12px;
 }
 @media (max-width: 820px) {
   .mt-hsplit {
@@ -2397,193 +1869,13 @@ mark.mt-hl {
   box-shadow: inset 2px 0 0 var(--bloom-light, #60a5fa);
 }
 
-/* 第 21 条：干净版 / 原始版，删改清单 */
+/* the transcript's head row; the groups in 分享's menu */
 .mt-right-head {
   align-items: center;
-}
-.mt-ver {
-  margin-left: auto;
-  display: inline-flex;
-  padding: 2px;
-  gap: 2px;
-  border-radius: 7px;
-  background: var(--ctl-bg);
-  border: 1px solid var(--line);
-}
-.app .mt-ver button {
-  min-height: 20px;
-  height: 20px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  box-shadow: none;
-  font-size: 11.5px;
-  color: var(--mute);
-}
-.app .mt-ver button:hover:not(:disabled) {
-  background: transparent;
-  color: var(--ink);
-}
-.app .mt-ver button.is-sel,
-.app .mt-ver button.is-sel:hover:not(:disabled) {
-  background: var(--line-2);
-  color: var(--ink);
-  font-weight: 600;
-}
-.app .mt-edits-btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 0 12px 8px;
-  min-height: 28px;
-  padding: 0 10px;
-  border-radius: var(--r-sm);
-  background: transparent;
-  border: 1px dashed var(--line-2);
-  box-shadow: none;
-  font-size: 12px;
-  color: var(--ink-2);
-}
-.app .mt-edits-btn:hover:not(:disabled),
-.app .mt-edits-btn.is-open {
-  background: var(--hover);
-  border-style: solid;
-}
-.mt-edits-n {
-  margin-right: auto;
-  color: var(--faint);
-  font-variant-numeric: tabular-nums;
-}
-.mt-edits {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.mt-edit {
-  padding: 9px 11px 10px;
-  border-radius: 8px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-}
-.mt-edit.is-restored {
-  opacity: 0.72;
-}
-.mt-edit-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-}
-.mt-edit-kind {
-  padding: 1px 7px;
-  border-radius: 6px;
-  font-size: 11.5px;
-  font-weight: 600;
-  background: rgba(255, 255, 255, 0.07);
-  color: var(--ink-2);
-}
-.mt-edit-kind.is-retract { color: #b9dcff; background: rgba(124, 192, 255, 0.13); }
-.mt-edit-kind.is-fact { color: #fcd34d; background: rgba(251, 191, 36, 0.13); }
-.mt-edit-kind.is-sensitive { color: #f0b49c; background: rgba(217, 119, 87, 0.15); }
-.mt-edit-kind.is-profanity { color: #fca5a5; background: rgba(239, 68, 68, 0.14); }
-.mt-edit-t {
-  color: var(--faint);
-  font-variant-numeric: tabular-nums;
-}
-.mt-edit-st {
-  color: var(--ok);
-  font-size: 11.5px;
-}
-.app .mt-edit-act {
-  margin-left: auto;
-  min-height: 24px;
-  height: 24px;
-  padding: 0 9px;
-  border-radius: 6px;
-  font-size: 12px;
-  background: var(--ctl-bg);
-  border: 1px solid var(--line-2);
-  box-shadow: none;
-}
-.mt-edit-text {
-  margin: 7px 0 0;
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--ink);
-  overflow-wrap: anywhere;
-}
-.mt-edit-text del {
-  color: #e58a78;
-  background: rgba(229, 138, 120, 0.12);
-  text-decoration-thickness: 1px;
-  border-radius: 3px;
-  padding: 0 2px;
-}
-.mt-edit-text ins {
-  color: #8ec48a;
-  background: rgba(126, 184, 120, 0.14);
-  text-decoration: none;
-  border-radius: 3px;
-  padding: 0 2px;
-}
-.mt-edit.is-restored .mt-edit-text del {
-  text-decoration: none;
-  color: var(--ink);
-  background: none;
-}
-.mt-edit.is-restored .mt-edit-text ins,
-.mt-edit.is-restored .mt-edit-arrow,
-.mt-edit.is-restored .mt-edit-gone {
-  display: none;
-}
-.mt-edit-arrow {
-  margin: 0 6px;
-  color: var(--faint);
-}
-.mt-edit-gone {
-  margin-left: 6px;
-  font-size: 12px;
-  color: var(--faint);
-}
-.mt-edit-why {
-  margin: 5px 0 0;
-  font-size: 12px;
-  line-height: 1.55;
-  color: var(--mute);
-}
-.mt-edit-err {
-  font-size: 12px;
-  color: var(--err, var(--rec));
-}
-.mt-edits.is-compact .mt-edit {
-  background: var(--bg-2);
-}
-.mt-hp-trhead .mt-ver {
-  margin: 18px 0 8px auto;
-}
-.mt-hp-edits {
-  margin: 0 0 12px;
-}
-.mt-hp-edits .mt-edits-btn {
-  margin: 0 0 8px;
 }
 .mt-share-group {
   display: flex;
   flex-direction: column;
-}
-.mt-share-group + .mt-share-group {
-  margin-top: 4px;
-  padding-top: 4px;
-  border-top: 1px solid var(--line);
-}
-.mt-share-h {
-  padding: 4px 10px 2px;
-  font-size: 11px;
-  color: var(--faint);
 }
 /* 存录屏: its own group under the transcript's; a spinner while the backend copies the file */
 .mt-share-pop > button + .mt-share-group {
@@ -2661,7 +1953,9 @@ mark.mt-hl {
   width: max-content;
   max-width: min(480px, calc(100vw - 24px));
 }
-.mt-person.is-me .mt-card-pop {
+.mt-person.is-me .mt-card-pop,
+.mt-stack .mt-card-pop.is-list {
+  /* the list (more than three people) holds your own card too: as wide, or 转写 FunASR breaks two letters a line */
   min-width: 300px;
   width: max-content;
   max-width: min(440px, calc(100vw - 24px));
@@ -2677,52 +1971,6 @@ mark.mt-hl {
   font-size: 11.5px;
   color: var(--ink-2);
   background: rgba(255, 255, 255, 0.07);
-}
-.mt-mopts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 2px 0 4px 70px;
-}
-.mt-mopts-h {
-  flex-basis: 100%;
-  font-size: 11px;
-  color: var(--faint);
-  padding: 4px 0 0;
-}
-.app .mt-mopt {
-  min-height: 26px;
-  height: 26px;
-  padding: 0 9px 0 6px;
-  gap: 5px;
-  border-radius: 6px;
-  font-size: 12px;
-  background: var(--ctl-bg);
-  border: 1px solid var(--line);
-  box-shadow: none;
-  color: var(--ink-2);
-}
-.app .mt-mopt:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--bloom, #3b82f6) 60%, var(--line-2));
-  color: var(--ink);
-}
-.app .mt-mopt.is-cur,
-.app .mt-mopt.is-cur:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--bloom, #3b82f6) 18%, transparent);
-  border-color: color-mix(in srgb, var(--bloom, #3b82f6) 55%, transparent);
-  color: var(--ink);
-  font-weight: 600;
-}
-.mt-mopt svg {
-  color: var(--bloom-light, #60a5fa);
-}
-.mt-mopt-sp {
-  width: 12px;
-}
-.mt-card-err {
-  font-size: 12px;
-  color: var(--err, var(--rec));
-  white-space: normal;
 }
 
 /* 第 12 条：回顾列表点了才换；悬停只让底色亮一点，不出框 */
@@ -3175,10 +2423,6 @@ mark.mt-hl {
 .mt-now.is-off {
   grid-template-columns: 6px minmax(0, 1fr);
 }
-.mt-now-k {
-  color: var(--mute);
-  white-space: nowrap;
-}
 .mt-now-v {
   flex: 1;
   min-width: 0;
@@ -3232,7 +2476,7 @@ mark.mt-hl {
   }
 }
 /* Claude's bubbles all keep Claude's colour (2026-11-12, the user: one colour, the kind is in the chip). The three kinds of Claude's words: 随口 (DeepSeek filling in, grey), 思考 (DeepSeek's own thinking, blue), Claude (the
-   background Claude's findings and revisions, Claude's orange on a warm bubble) — the bar, the chip, the legend */
+   background Claude's findings and revisions, Claude's orange on a warm bubble) — the bar and the chip */
 .mt-chip.is-cat {
   font-weight: 600;
   color: #fff;
@@ -3244,37 +2488,6 @@ mark.mt-hl {
   background: #2f6fde;
 }
 .mt-chip.is-cat.is-claude {
-  background: #2f6fde;
-}
-.mt-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 14px;
-  margin: 0 16px 8px;
-  font-size: 11.5px;
-  color: var(--mute);
-}
-.mt-legend-i {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-.mt-legend-i b {
-  color: var(--ink-2);
-  font-weight: 600;
-}
-.mt-legend-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-}
-.mt-legend-dot.is-quick {
-  background: #8a887f;
-}
-.mt-legend-dot.is-think {
-  background: #2f6fde;
-}
-.mt-legend-dot.is-claude {
   background: #2f6fde;
 }
 /* the steps around a reply: grey, small, one per line — 00:48 · 派任务 T1 … / 01:02 · 联网搜 … / 01:05 · 后台汇报 … */
@@ -3305,24 +2518,7 @@ mark.mt-hl {
   line-height: 1.5;
   color: var(--faint);
 }
-/* "让 Opus 深想" on a fast answer: a small outlined button among the chips; once sent, a quiet chip */
-.app button.mt-chip.mt-deepen {
-  border: 1px solid color-mix(in srgb, var(--mt-claude) 55%, transparent);
-  background: transparent;
-  color: var(--mt-claude);
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-  line-height: 16px;
-}
-.app button.mt-chip.mt-deepen:hover {
-  background: color-mix(in srgb, var(--mt-claude) 14%, transparent);
-}
-.mt-chip.is-deepened {
-  color: var(--mt-claude);
-}
 
-/* "Claude 现在" live log (2026-11-12): the background's steps as they happen, newest last, one grey line each */
 /* steps under a bubble: more than 5 fold; "查看全部 12 条" / "只看最近 5 条" is a quiet text button above them */
 .app button.mt-steps-more {
   display: block;
@@ -3350,19 +2546,6 @@ mark.mt-hl {
 }
 @media (prefers-reduced-motion: reduce) {
   .mt-step.is-live b {
-    animation: none;
-  }
-}
-.mt-now-log .mt-step {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.mt-now-log .mt-step.is-live b {
-  animation: mt-blink 1.6s ease-in-out infinite;
-}
-@media (prefers-reduced-motion: reduce) {
-  .mt-now-log .mt-step.is-live b {
     animation: none;
   }
 }
@@ -3543,9 +2726,8 @@ mark.mt-hl {
   line-height: 1.3;
 }
 
-/* 自己头像旁的麦克风音量（三根条，和访客页同一套样式）：说话时跳，没在录音时不显示。点一下静音（换成划掉的麦克风），
-   再点一下打开 */
-.app .mt-mic-lvl {
+/* 你静音时名字旁边那个划掉的麦克风（没静音时什么都没有，不占位置）：点一下取消静音。静音开关平时在自己的卡片里 */
+.app .mt-mic-off {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -3557,49 +2739,20 @@ mark.mt-hl {
   padding: 0;
   border: 0;
   border-radius: 6px;
-  background: transparent;
+  background: color-mix(in srgb, var(--err) 14%, transparent);
   box-shadow: none;
   color: var(--err);
   cursor: pointer;
   transition: background-color 0.12s;
 }
-.app .mt-mic-lvl:hover:not(:disabled) {
-  background: var(--hover);
-}
-.app .mt-mic-lvl:active:not(:disabled) {
-  background: var(--press);
-}
-/* nothing being recorded (before the meeting): the slot stays, empty, so the meeting starting doesn't push the row */
-.app .mt-mic-lvl.is-idle {
-  visibility: hidden;
-}
-.app .mt-mic-lvl.is-muted {
-  background: color-mix(in srgb, var(--err) 14%, transparent);
-}
-.app .mt-mic-lvl.is-muted:hover:not(:disabled) {
+.app .mt-mic-off:hover {
   background: color-mix(in srgb, var(--err) 22%, transparent);
 }
-.mt-mic-off {
+.app .mt-mic-off svg {
   display: block;
 }
-.mt-mic-bars {
-  display: inline-flex;
-  align-items: flex-end;
-  gap: 2px;
-  height: 12px;
-}
-.mt-mic-bars i {
-  width: 3px;
-  border-radius: 2px;
-  background: #22c55e;
-  height: calc(3px + 9px * var(--lv, 0));
-  transition: height 0.07s linear;
-}
-.mt-mic-bars i:nth-child(2) {
-  height: calc(3px + 9px * min(1, var(--lv, 0) * 1.45));
-}
-.mt-mic-bars i:nth-child(3) {
-  height: calc(3px + 9px * var(--lv, 0) * 0.65);
+.app .mt-card-act.is-muted {
+  color: var(--err);
 }
 
 /* 开会 / 散会 share one slot as wide as the wider of the two (the other one is laid in the same cell, unseen): the
@@ -3607,10 +2760,6 @@ mark.mt-hl {
 .mt-acts-slot {
   display: inline-flex;
   align-items: center;
-}
-.mt-acts-ghost {
-  visibility: hidden;
-  pointer-events: none;
 }
 
 /* ------------------------------------------------------------ talking right now (the guest page knows it from the
@@ -3630,4 +2779,38 @@ mark.mt-hl {
 @media (prefers-reduced-motion: reduce) {
   .mt-person.is-speaking .mt-avatar,
   .mt-stack-item.is-speaking { animation: none; }
+}
+
+/* 用户起的名字、会议名再长也不撑破版面：一行放不下就省略号（2026-11-17） */
+.mt-card-head {
+  min-width: 0;
+}
+.mt-card-name {
+  min-width: 0;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mt-line-who,
+.mt-hp-who {
+  display: inline-block;
+  max-width: 12em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.mt-name {
+  max-width: 12em;
+}
+.mt-name-t {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mt-hp-title,
+.mt-sum-title {
+  overflow-wrap: anywhere;
 }

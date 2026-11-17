@@ -48,6 +48,7 @@ export const pane = (id: string) => PANES.find((p) => p.id === id);
 export const MOVED: Record<string, string> = { cloud: 'speech', 'speech.cloud': 'speech' };
 
 export const SECTIONS: Record<string, Key> = {
+  'general.profile': 'settings.general.profile',
   'general.app': 'settings.general.app',
   'general.about': 'settings.general.about',
   'speech.models': 'speech.section.models',
@@ -61,6 +62,9 @@ const whole = (id: string, detail?: Key): Entry => ({ id, kind: 'section', secti
 
 export const ENTRIES: Entry[] = [
   // General
+  row('general.avatar', 'general.profile', 'settings.general.avatar'),
+  row('general.name', 'general.profile', 'settings.general.name'),
+  row('general.ai_name', 'general.profile', 'settings.general.ai_name', { detail: 'settings.general.ai_name.detail' }),
   row('general.login', 'general.app', 'settings.general.login', { detail: 'settings.general.login.detail' }),
   row('general.language', 'general.app', 'settings.general.language'),
   whole('general.about'),

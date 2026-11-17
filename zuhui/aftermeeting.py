@@ -29,7 +29,7 @@ POSTMEETING = STATE / "postmeeting.json"
 STATS = STATE / "postmeeting_stats.json"
 STEPS = (("save", "结束会议"), ("transcript", "转写"), ("polish", "整理"), ("summary", "纪要"))
 # 没有实测记录时的估计（2026-11-11 实测：录屏收尾 10~40 秒；重转写 Fun-ASR-Nano 低优先级 0.45 倍（机器闲）~0.95 倍（满载）说话时长；
-# 整理 DeepSeek Flash 先想再挑 70~100 秒；纪要 10~20 秒）
+# 整理 70~100 秒（当时还是 DeepSeek Flash，现在是套餐里的 Sonnet）；纪要 10~20 秒）
 DEFAULT_RATE = {"save": (15.0, 0.0), "transcript": (20.0, 0.7), "polish": (25.0, 0.5), "summary": (12.0, 0.02)}
 _pipe_lock = threading.Lock()              # 一次只跑一场的收尾（上一场还在转，下一场散了就排队）
 

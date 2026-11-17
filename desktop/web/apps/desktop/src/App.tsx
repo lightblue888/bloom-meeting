@@ -14,6 +14,7 @@ import { SidebarGlyph } from './components/glyphs';
 import { tidy, useMenu, type MenuEntry } from './components/Menu';
 import { SettingsView } from './components/SettingsView';
 import { Sidebar, type Page } from './components/Sidebar';
+import { meetingApi } from './meetingApi';
 import { Tooltip } from './components/Tooltip';
 import { MeetingCurrent } from './components/MeetingCurrent';
 import { MeetingHistory } from './components/MeetingHistory';
@@ -114,7 +115,32 @@ export default function App() {
     return () => clearTimeout(h);
   }, [page, sideHidden]);
 
+  // Dev (the simulated meetings Bloom is tested with) only where there are some: a fresh install has none, and showed an
+  // empty page. null until the backend answers (it may come up after the window): asked again every few seconds.
+  const [hasDev, setHasDev] = useState<boolean | null>(null);
+  useEffect(() => {
+    let alive = true;
+    let timer = 0;
+    const look = () =>
+      meetingApi.devRuns().then(
+        (r) => {
+          if (alive) setHasDev(Array.isArray(r) && r.length > 0);
+        },
+        () => {
+          if (alive) timer = window.setTimeout(look, 5000);
+        },
+      );
+    void look();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, []);
+  useEffect(() => {
+    if (hasDev === false && page === 'dev') setPage('meeting');
+  }, [hasDev, page]);
   const go = (p: Page) => {
+    if (p === 'dev' && !hasDev) return;
     setScreen('main');
     setPage(p);
   };
@@ -177,7 +203,7 @@ export default function App() {
       </header>
 
       <div className={`mw-side-col ${sideOff ? 'hidden' : ''}`}>
-        {!sideOff && <Sidebar page={mainScreen ? page : null} onGo={go} onSettings={() => setScreen('settings')} />}
+        {!sideOff && <Sidebar page={mainScreen ? page : null} dev={!!hasDev} onGo={go} onSettings={() => setScreen('settings')} />}
       </div>
 
       {screen === 'settings' && status && (

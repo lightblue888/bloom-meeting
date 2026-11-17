@@ -17,9 +17,7 @@ import { stepK, stepV } from './stepText';
 import {
   avatarUrl,
   cleanTitle,
-  hasCleanup,
   meetingApi,
-  type CleanupItem,
   type Devices,
   type Invite,
   fmtDuration,
@@ -45,7 +43,7 @@ import { SummaryView, TaskBoard, TodoList } from './MeetingSummary';
 import { Highlight } from './Highlight';
 import { CLAUDE_COLOR, colorsById, colorsByName, Flower, HOST_COLOR, ownPhoto } from './Flower';
 
-export type Tab = 'diff' | 'notes' | 'todos' | 'video' | 'timeline';
+export type Tab = 'diff' | 'notes' | 'todos' | 'video';
 // the transcript is where you see what Claude does (each reply's kind, the background work): wide by default
 const TR_DEFAULT = 600;
 const TR_MIN = 320;
@@ -70,8 +68,6 @@ interface PaperState {
   live?: boolean;
 }
 
-export type Version = 'clean' | 'raw';
-
 export function MeetingLayout({
   meeting,
   titlePrefix,
@@ -83,9 +79,6 @@ export function MeetingLayout({
   onSwitchPaper,
   onAddPaper,
   transcript,
-  raw,
-  cleanup,
-  onRestore,
   partial,
   people,
   suggest,
@@ -134,12 +127,6 @@ export function MeetingLayout({
   onAddPaper?: (() => void) | null;
   /** the transcript: after the cleanup, the clean version */
   transcript: Line[];
-  /** the transcript as said (only once the cleanup has run) */
-  raw?: Line[] | null;
-  /** the cleanup's edits; null / empty: no 干净版 / 原始版 switch, no 删改清单 — the column looks as it always did */
-  cleanup?: CleanupItem[] | null;
-  /** 恢复 / 撤销恢复 on the 删改清单 */
-  onRestore?: (ids: string[], restored: boolean) => Promise<void>;
   /** the line being spoken right now, not yet finished (live only) */
   partial?: PartialLine | null;
   /** who is in the meeting: the user, Claude, anyone who joined by link */
@@ -321,6 +308,14 @@ export function MeetingLayout({
 
   // ---------------------------------------------------------------- the transcript column's width
   // 600 px by default, dragged between 320 and 1000, remembered; a double-click puts it back
+  // a narrow window (a 1024-px laptop, the guest page in a browser): the transcript never takes more than 42 % of it,
+  // the paper keeps the room (a width dragged on a wide window comes back when the window is wide again)
+  const [vw, setVw] = useState(() => (typeof window === 'undefined' ? 1600 : window.innerWidth));
+  useEffect(() => {
+    const on = () => setVw(window.innerWidth);
+    window.addEventListener('resize', on);
+    return () => window.removeEventListener('resize', on);
+  }, []);
   const [trW, setTrW] = useState(() => {
     const v = Number(localStorage.getItem(TR_KEY));
     return v >= TR_MIN && v <= TR_MAX ? v : TR_DEFAULT;
@@ -352,11 +347,6 @@ export function MeetingLayout({
   }, [setTr]);
   const resetTr = useCallback(() => setTr(TR_DEFAULT), [setTr]);
 
-  // ---------------------------------------------------------------- clean / raw transcript
-  const cleaned = hasCleanup(cleanup) && Array.isArray(raw);
-  const [version, setVersion] = useState<Version>('clean');
-  const lines = cleaned && version === 'raw' ? raw! : transcript;
-
   // ---------------------------------------------------------------- the recording
   const vid = useRef<HTMLVideoElement>(null);
   const [vtime, setVtime] = useState<number | null>(null);
@@ -380,9 +370,9 @@ export function MeetingLayout({
   const playing = useMemo(() => {
     if (vtime == null || !videoSrc) return null;
     let best: Line | null = null;
-    for (const l of lines) if (l.vt != null && l.vt <= vtime + 0.25 && (!best || l.vt >= (best.vt ?? 0))) best = l;
+    for (const l of transcript) if (l.vt != null && l.vt <= vtime + 0.25 && (!best || l.vt >= (best.vt ?? 0))) best = l;
     return best;
-  }, [lines, vtime, videoSrc]);
+  }, [transcript, vtime, videoSrc]);
   // 纪要 is built when the page is idle (or when it is opened, whichever comes first), then stays (hidden) like the
   // paper and the recording: the first switch to it is a repaint too
   const [notesSeen, setNotesSeen] = useState(false);
@@ -458,7 +448,7 @@ export function MeetingLayout({
         {actions && <div className="mt-head-acts">{actions}</div>}
       </header>
       {notice && <div className="mt-notice">{notice}</div>}
-      <div className="mt-cols" style={{ gridTemplateColumns: `minmax(0, 1fr) ${trW}px` }}>
+      <div className="mt-cols" style={{ gridTemplateColumns: `minmax(0, 1fr) ${Math.max(TR_MIN, Math.min(trW, Math.round(vw * 0.42)))}px` }}>
         <section className="mt-left" aria-label={t('meeting.left.label')}>
           {left ?? (
             <>
@@ -543,7 +533,7 @@ export function MeetingLayout({
         </section>
         <Transcript
           uiLang={appI18n().lang}
-          lines={lines}
+          lines={transcript}
           partial={live ? partial : null}
           people={who}
           follow={live}
@@ -552,11 +542,6 @@ export function MeetingLayout({
           active={playing}
           tick={vtime == null ? 0 : Math.floor(vtime)}
           onPick={videoSrc ? playAt : undefined}
-          version={cleaned ? version : null}
-          onVersion={setVersion}
-          cleanup={cleaned ? cleanup : null}
-          raw={raw ?? null}
-          onRestore={onRestore}
           brain={live ? brain ?? null : null}
           board={live ? board : null}
           offline={!live}
@@ -942,6 +927,7 @@ const People = memo(function People({ people, status, onRole, active, uiLang: _u
   // the live page only (a past meeting has no status); a boolean, so the poll's fresh `status` object every 1.5 s
   // doesn't refetch anything
   const hasStatus = !!status;
+  const mic = useMic(active && hasStatus);
   const loadModels = useCallback(() => {
     if (!hasStatus) return;
     meetingApi.models().then((m) => setModels(m), () => setModels(null));
@@ -965,7 +951,9 @@ const People = memo(function People({ people, status, onRole, active, uiLang: _u
     ? (Object.values(lv) as { level: Level }[])
     : [];
   const overall: Level = rows.some((x) => x.level === 'bad') ? 'bad' : rows.some((x) => x.level === 'wait') ? 'wait' : rows.some((x) => x.level === 'busy') ? 'busy' : 'ok';
-  const kind = (p: Participant) => `${p.you ? 'is-me' : p.id === 'claude' ? 'is-claude' : rank(p) === 'cohost' ? 'is-cohost' : ''}${p.speaking ? ' is-speaking' : ''}`;
+  // talking: the guest page knows it from the voice room (p.speaking); the host's page from /api/mic/stream (mic.talk)
+  const talking = (p: Participant) => !!p.speaking || mic.talk.has(p.id) || (!p.you && p.id !== 'claude' && mic.talk.has(p.name));
+  const kind = (p: Participant) => `${p.you ? 'is-me' : p.id === 'claude' ? 'is-claude' : rank(p) === 'cohost' ? 'is-cohost' : ''}${talking(p) ? ' is-speaking' : ''}`;
   const colorOf = colorsById(people);
   // 'teacher' is the older name of a co-host (meetings before 2026-11-17)
   const rank = (p: Participant) => { const r = p.rank ?? (p.you ? 'host' : p.id === 'claude' ? 'assistant' : 'participant'); return r === 'teacher' ? 'cohost' : r; };
@@ -1150,6 +1138,19 @@ const People = memo(function People({ people, status, onRole, active, uiLang: _u
       </span>
       {p.id === 'claude' && claudeRows()}
       {p.you && meRows()}
+      {p.you && hasStatus && (
+        <button
+          className={`mt-card-act ${mic.muted ? 'is-muted' : ''}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            void mic.toggle();
+          }}
+          aria-pressed={mic.muted}
+          data-testid="mic-mute"
+        >
+          {t(mic.muted ? 'meeting.mic.unmute' : 'meeting.mic.mute')}
+        </button>
+      )}
       {!p.you && p.id !== 'claude' && onRole && (
         <button className="mt-card-act" onClick={() => onRole(p.name, rank(p) === 'cohost' ? 'participant' : 'cohost')} data-testid={`role-${p.id}`}>
           {t(rank(p) === 'cohost' ? 'meeting.rank.unset' : 'meeting.rank.set')}
@@ -1191,7 +1192,7 @@ const People = memo(function People({ people, status, onRole, active, uiLang: _u
     >
       <Avatar person={p} color={colorOf[p.id]} />
       <span className="mt-person-name" style={{ color: colorOf[p.id] }}>{p.name}</span>
-      {p.you && <MicMeter active={active} />}
+      {p.you && hasStatus && mic.muted && <MutedMark onUnmute={mic.toggle} />}
       {p.id === 'claude' && rows.length > 0 && <span className={`mt-status-dot is-${overall}`} aria-hidden="true" />}
       <span className={`mt-status-pop mt-card-pop ${p.id === 'claude' ? 'is-claude' : ''}`} role="dialog" aria-label={p.name}>
         {card(p)}
@@ -1234,38 +1235,36 @@ const People = memo(function People({ people, status, onRole, active, uiLang: _u
           ))}
         </span>
       </span>
-      {humans.some((p) => p.you) && <MicMeter active={active} />}
+      {hasStatus && mic.muted && humans.some((p) => p.you) && <MutedMark onUnmute={mic.toggle} />}
       {claude && chip(claude)}
     </div>
   );
 });
 
-/** The host's own mic beside their avatar: the same three level bars guests see on their phones, and the mute switch —
- *  a click mutes (the bars give way to a crossed-out microphone), another click unmutes. The level goes straight from
- *  /api/mic/stream into a CSS variable (no React state), so it never re-renders the people row; only the mute state
- *  is React's. Shown while something is being recorded, or while muted; otherwise its slot stays, empty (the row
- *  doesn't shift when the meeting starts). */
-function MicMeter({ active }: { active: boolean }) {
-  const ref = useRef<HTMLButtonElement>(null);
+const SILENT: ReadonlySet<string> = new Set();
+
+/** Your microphone's mute switch and who is talking now, from /api/mic/stream (on the guest page: the guest's own mute).
+ *  Both are React state, replaced only when they change (the stream itself pushes only changes). */
+function useMic(on: boolean) {
   const [muted, setMuted] = useState(false);
-  const [rec, setRec] = useState(false);
+  const [talk, setTalk] = useState<ReadonlySet<string>>(SILENT);
   const busy = useRef(false);
+  const mutedRef = useRef(false);
+  mutedRef.current = muted;
   useEffect(() => {
-    if (!active) {
-      setRec(false);
+    if (!on) {
+      setTalk(SILENT);
       return;
     }
     return watchMic((s) => {
       if (typeof s.muted === 'boolean' && !busy.current) setMuted(s.muted);
-      setRec(s.level !== null);
-      if (s.level !== null) ref.current?.style.setProperty('--lv', String(s.level));
+      const now = s.talk;
+      if (now) setTalk((prev) => (prev.size === now.length && now.every((x) => prev.has(x)) ? prev : now.length ? new Set(now) : SILENT));
     });
-  }, [active]);
-  const toggle = async (e: ReactMouseEvent) => {
-    // the click is the switch's alone: the person's card around it doesn't take it as its own
-    e.stopPropagation();
+  }, [on]);
+  const toggle = useCallback(async () => {
     if (busy.current) return;
-    const want = !muted;
+    const want = !mutedRef.current;
     busy.current = true;
     setMuted(want);
     try {
@@ -1275,33 +1274,30 @@ function MicMeter({ active }: { active: boolean }) {
     } finally {
       busy.current = false;
     }
-  };
+  }, []);
+  return { muted, talk, toggle };
+}
+
+/** beside your name while your microphone is muted (nothing there otherwise, so nothing shifts): a crossed-out
+ *  microphone; a click unmutes. The switch itself is in your card. */
+function MutedMark({ onUnmute }: { onUnmute: () => void }) {
   return (
     <button
-      ref={ref}
       type="button"
-      className={`mt-mic-lvl ${muted ? 'is-muted' : ''} ${!rec && !muted ? 'is-idle' : ''}`}
-      aria-hidden={!rec && !muted ? true : undefined}
-      tabIndex={!rec && !muted ? -1 : undefined}
-      onClick={(e) => void toggle(e)}
-      aria-pressed={muted}
-      aria-label={t(muted ? 'meeting.mic.unmute' : 'meeting.mic.mute')}
-      data-testid="mic-level"
-      data-muted={muted ? '1' : '0'}
+      className="mt-mic-off"
+      onClick={(e) => {
+        e.stopPropagation();
+        onUnmute();
+      }}
+      aria-label={t('meeting.mic.unmute')}
+      title={t('meeting.mic.unmute')}
+      data-testid="mic-muted"
     >
-      {muted ? (
-        <svg className="mt-mic-off" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
-          <rect x="5.5" y="1.8" width="5" height="8.4" rx="2.5" />
-          <path d="M3.2 7.8a4.8 4.8 0 0 0 9.6 0M8 12.6v1.8" />
-          <path d="M2.4 2.4l11.2 11.2" />
-        </svg>
-      ) : (
-        <span className="mt-mic-bars" aria-hidden="true">
-          <i />
-          <i />
-          <i />
-        </span>
-      )}
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
+        <rect x="5.5" y="1.8" width="5" height="8.4" rx="2.5" />
+        <path d="M3.2 7.8a4.8 4.8 0 0 0 9.6 0M8 12.6v1.8" />
+        <path d="M2.4 2.4l11.2 11.2" />
+      </svg>
     </button>
   );
 }
@@ -1312,7 +1308,7 @@ function RoleSuggest({ list, onRole }: { list: { name: string }[]; onRole: RoleA
   if (!first) return null;
   return (
     <div className="mt-suggest" role="status" data-testid="role-suggest">
-      <span className="mt-name">{first.name}</span>
+      <span className="mt-name"><span className="mt-name-t">{first.name}</span></span>
       <span>{t('meeting.rank.suggest')}</span>
       <button className="mt-suggest-yes" onClick={() => onRole(first.name, 'cohost')}>
         {t('meeting.rank.restore')}
@@ -1327,8 +1323,7 @@ function RoleSuggest({ list, onRole }: { list: { name: string }[]; onRole: RoleA
 /** 逐字稿栏：谁说了什么。同一个人连着说的话并成一轮，一轮只出一次"头像 + 名字 + 时间"，下面每句一个自然段
     （换人、插了系统行、或隔了 90 秒以上才另起一轮）。新行自动滚到底，上滚就停住；搜索框过滤；正在说的那半句
     接在当前这一轮末尾，颜色淡一点。左缘那条细线可以拖宽窄。回顾里有录屏时：点一句话，录屏从那一刻放；
-    放的时候正在说的那句亮起来，轻轻地留在视野里（你自己在滚的时候不抢）。整理过的逐字稿：干净版 / 原始版，
-    和一份删改清单（每条可以恢复 / 撤销恢复）。 */
+    放的时候正在说的那句亮起来，轻轻地留在视野里（你自己在滚的时候不抢）。 */
 interface Turn {
   who: Line['who'];
   /** a guest's name (guests are told apart by name) */
@@ -1336,8 +1331,6 @@ interface Turn {
   t: string;
   lines: Line[];
 }
-
-const KINDS = ['retract', 'fact', 'sensitive', 'profanity', 'pii'];
 
 /** Where each of Claude's words came from — three kinds, each with its own name and colour:
  *  quick  随口   — the fast model (DeepSeek) filling in: hello, got it, "记下了", "稍等我查一下", "还在查"
@@ -1388,8 +1381,6 @@ function peelHolds(text: string): [string, string] {
   }
   return [head, rest];
 }
-
-export { stepK, stepV } from './stepText';
 
 /** one of Claude's lines → one or two pieces, each a single kind (cat) with what it was doing (detail) */
 export function splitClaude(l: Line): ShownLine[] {
@@ -1446,12 +1437,12 @@ const secs = (s: number) => (s < 1 ? s.toFixed(1) : String(Math.round(s)));
 
 /** the chips on a piece of Claude's: its kind (随口 / 思考), the model's full name, how long it took. No "让 Opus 深想"
  *  button any more (2026-11-13, the user): you hand a question to Opus by saying so ("再想想""让 Opus 看看") */
-function ClaudeChips({ l }: { l: ShownLine; live?: boolean }) {
+function ClaudeChips({ l }: { l: ShownLine }) {
   const cat = l.cat ?? 'quick';
   return (
     <span className="mt-chips">
       <span className={`mt-chip is-cat is-${cat}`}>{t(`meeting.ai.cat.${cat}`)}</span>
-      <span className="mt-chip is-by">{l.model || (cat === 'claude' ? 'Claude Opus 5.5' : 'Claude Haiku 5.5')}</span>
+      {l.model && <span className="mt-chip is-by">{l.model}</span>}
       {(cat === 'claude' || l.quick) && l.took != null ? (
         <span className="mt-chip is-time">{t('meeting.ai.took', { s: secs(l.took) })}</span>
       ) : l.lead && l.lat != null ? (
@@ -1521,7 +1512,7 @@ const lookupName = (d: Lookup) => {
  *  looking up, which revision it is on). The steps themselves hang under the transcript's bubbles (LiveDeep / LiveEdit).
  *  Several things at once read as one short line: "在查 3 件：问题定义写法、FinTS 次数 等；在改 T3：…；还有 2 条排队".
  *  Each lookup's short name is Haiku's, made once when it starts; the line is put together here, so it never lags. */
-function ClaudeNow({ brain, board }: { brain: Brain; board: Board | null }) {
+function ClaudeNow({ brain, board, ai }: { brain: Brain; board: Board | null; ai: string }) {
   useTick(1000);
   const edits =
     brain.edits ??
@@ -1529,7 +1520,7 @@ function ClaudeNow({ brain, board }: { brain: Brain; board: Board | null }) {
       .filter((x) => x.status === 'working')
       .map((w) => ({ id: w.id, idx: w.idx, title: w.title, started: w.progress?.started, edits: w.progress?.edits ?? 0 }));
   const queued = brain.queued ?? board?.counts?.queued ?? 0;
-  const front = brain.front === 'muted' ? t('meeting.ai.muted') : t(`meeting.ai.${brain.front}`);
+  const front = brain.front === 'muted' ? t('meeting.ai.muted', { ai }) : t(`meeting.ai.${brain.front}`);
   const back: string[] = [];
   const looks = lookupsOf(brain);
   const dp = looks[looks.length - 1] ?? null;
@@ -1558,12 +1549,12 @@ function ClaudeNow({ brain, board }: { brain: Brain; board: Board | null }) {
     <div className="mt-now" role="status" aria-live="polite" data-testid="claude-now">
       <div className="mt-now-row">
         <span className={`mt-now-dot is-${brain.front}`} aria-hidden="true" />
-        <span className="mt-now-m">{brain.front_model || 'Claude Haiku 5.5'}</span>
+        {brain.front_model && <span className="mt-now-m">{brain.front_model}</span>}
         <span className="mt-now-v">{front}</span>
       </div>
       <div className="mt-now-row">
         <span className={`mt-now-dot ${back.length ? 'is-busy' : 'is-idle'}`} aria-hidden="true" />
-        <span className="mt-now-m">{(dp ? dp.model || brain.deep_model : brain.edit_model) || brain.back_model || 'Claude'}</span>
+        <span className="mt-now-m">{(dp ? dp.model || brain.deep_model : brain.edit_model) || brain.back_model || t('meeting.ai.back')}</span>
         <span className="mt-now-v">
           {back.length ? back.join('；') : t('meeting.ai.back_idle')}
           {tail && <span className="mt-now-notes">{tail}</span>}
@@ -1589,7 +1580,7 @@ function LiveDeep({ deep, brain, Head }: { deep: Lookup; brain: Brain | null; He
           {Head()}
           <span className="mt-chips">
             <span className={`mt-chip is-cat is-${deep.quick ? 'think' : 'claude'}`}>{t(`meeting.ai.cat.${deep.quick ? 'think' : 'claude'}`)}</span>
-            <span className="mt-chip is-by">{deep.model || 'Claude Opus 5.5'}</span>
+            {deep.model && <span className="mt-chip is-by">{deep.model}</span>}
             <span className="mt-chip is-time">
               {deep.state === 'done' ? t('meeting.ai.deep_wait') : t('meeting.ai.deep_secs', { s: String(secs) })}
             </span>
@@ -1622,8 +1613,8 @@ function LiveEdit({ w, brain }: { w: LiveEditInfo; brain: Brain | null }) {
   );
 }
 
-// memoized: the 1.5 s poll and the clock re-render the page; the transcript only when its lines, the half-said line,
-// the playing line or the cleanup actually change (the poll keeps unchanged parts identical: useDismiss.keep)
+// memoized: the 1.5 s poll and the clock re-render the page; the transcript only when its lines, the half-said line
+// or the playing line actually change (the poll keeps unchanged parts identical: useDismiss.keep)
 export const Transcript = memo(function Transcript({
   lines,
   partial,
@@ -1634,11 +1625,6 @@ export const Transcript = memo(function Transcript({
   active,
   tick,
   onPick,
-  version,
-  onVersion,
-  cleanup,
-  raw,
-  onRestore,
   brain,
   board,
   offline,
@@ -1666,15 +1652,8 @@ export const Transcript = memo(function Transcript({
   tick?: number;
   /** a click on a line: play the recording from there */
   onPick?: (l: Line) => void;
-  /** null: no cleanup, no switch */
-  version: Version | null;
-  onVersion: (v: Version) => void;
-  cleanup: CleanupItem[] | null | undefined;
-  raw: Line[] | null;
-  onRestore?: (ids: string[], restored: boolean) => Promise<void>;
 }) {
   const [q, setQ] = useState('');
-  const [list, setList] = useState(false);
   const box = useRef<HTMLDivElement>(null);
   const stuck = useRef(true);
   /** when the user last moved the column themselves (the playing line doesn't pull it back for a while after) */
@@ -1705,7 +1684,7 @@ export const Transcript = memo(function Transcript({
   // runs after layout, before paint: no jump, no lag). Only the user scrolling up lets go; scrolling back to the bottom
   // sticks again. Scrolls nobody asked for (scroll anchoring, a re-sort) never let go.
   const inner = useRef<HTMLDivElement>(null);
-  const following = follow && !q.trim() && !list;
+  const following = follow && !q.trim();
   const followRef = useRef(following);
   followRef.current = following;
   const lastTop = useRef(0);
@@ -1728,7 +1707,7 @@ export const Transcript = memo(function Transcript({
     ro.observe(el);
     if (inner.current) ro.observe(inner.current);
     return () => ro.disconnect();
-    // the content box comes and goes with the empty state and the cleanup list
+    // the content box comes and goes with the empty state
   }, [pin, following, turns.length === 0 && !saying]);
   /** the user is moving the column (wheel, touch, keys, the scrollbar or a text selection dragged past its edge) */
   const intentAt = useRef(0);
@@ -1760,7 +1739,7 @@ export const Transcript = memo(function Transcript({
   // you are scrolling the column yourself
   useEffect(() => {
     const el = box.current;
-    if (!el || !active || list) return;
+    if (!el || !active) return;
     if (Date.now() - userAt.current < 4000) return;
     const now = el.querySelector('.mt-line-text.is-now') as HTMLElement | null;
     if (!now) return;
@@ -1768,7 +1747,7 @@ export const Transcript = memo(function Transcript({
     const r = now.getBoundingClientRect();
     if (r.top >= b.top + b.height * 0.1 && r.bottom <= b.bottom - b.height * 0.25) return;
     el.scrollTo({ top: el.scrollTop + (r.top - b.top) - b.height * 0.3, behavior: 'smooth' });
-  }, [active, tick, list]);
+  }, [active, tick]);
   const onScroll = () => {
     const el = box.current;
     if (!el) return;
@@ -1812,7 +1791,7 @@ export const Transcript = memo(function Transcript({
       <header className="mt-turn-head">
         <Avatar person={personOf(w, name)} color={c} />
         <span className="mt-line-who" style={{ color: c }}>{nameOf(w, name)}</span>
-        {w === 'student' && first && <ClaudeChips l={first as ShownLine} live={!!brain} />}
+        {w === 'student' && first && <ClaudeChips l={first as ShownLine} />}
       </header>
     );
   };
@@ -1864,22 +1843,12 @@ export const Transcript = memo(function Transcript({
   const pickable = (l: Line) => !!onPick && l.vt != null;
   // the playing line: Claude's lines are split into pieces (new objects), so compare by place, not identity
   const isNow = (l: Line) => !!active && l.sec === active.sec && l.who === active.who && (l.vt ?? null) === (active.vt ?? null);
-  const n = cleanup?.length ?? 0;
   return (
     <aside className={`mt-right ${bare ? 'is-bare' : ''}`} aria-label={ut('meeting.transcript')}>
       {!bare && <div className="mt-divider" onMouseDown={onDrag} onDoubleClick={onResetWidth} aria-hidden="true" />}
       <div className="mt-right-head">
         <h2>{ut('meeting.transcript')}</h2>
         <span className="mt-right-n">{lines.length ? i18n().formatNumber(lines.length) : ''}</span>
-        {version && (
-          <span className="mt-ver" role="group" aria-label={t('meeting.clean.version')} data-testid="transcript-version">
-            {(['clean', 'raw'] as const).map((v) => (
-              <button key={v} className={version === v ? 'is-sel' : ''} aria-pressed={version === v} onClick={() => onVersion(v)} data-testid={`transcript-${v}`}>
-                {t(`meeting.clean.${v}`)}
-              </button>
-            ))}
-          </span>
-        )}
       </div>
       <div className="mt-search">
         <Icon name="search" size={14} />
@@ -1891,7 +1860,7 @@ export const Transcript = memo(function Transcript({
         )}
       </div>
       {brain ? (
-        <ClaudeNow brain={brain} board={board ?? null} />
+        <ClaudeNow brain={brain} board={board ?? null} ai={claude?.name || t('meeting.who.student')} />
       ) : offline ? (
         // not in a meeting (2026-11-13: the user looked at an ended meeting and couldn't find the strip at all)
         <div className="mt-now is-off" data-testid="claude-now">
@@ -1901,194 +1870,126 @@ export const Transcript = memo(function Transcript({
           </div>
         </div>
       ) : null}
-      {version && n > 0 && (
-        <button className={`mt-edits-btn ${list ? 'is-open' : ''}`} onClick={() => setList((v) => !v)} aria-expanded={list} data-testid="cleanup-toggle">
-          <span>{t('meeting.clean.list')}</span>
-          <span className="mt-edits-n">{t('meeting.clean.count', { n: i18n().formatNumber(n) })}</span>
-          <Icon name={list ? 'chevron-up' : 'chevron-down'} size={12} />
-        </button>
-      )}
-      {list && version && cleanup ? (
-        <div className="mt-lines mt-edits-box" data-testid="cleanup-list">
-          <CleanupList items={cleanup} raw={raw} onRestore={onRestore} />
-        </div>
-      ) : (
-        <div
-          className="mt-lines"
-          ref={box}
-          onScroll={onScroll}
-          onWheel={onWheel}
-          onPointerDown={onPointerDown}
-          onTouchMove={intent}
-          onKeyDown={onKeyDown}
-          data-testid="transcript"
-        >
-          {turns.length === 0 && !saying ? (
-            <div className="mt-empty">
-              {q.trim() ? <p>{t('meeting.transcript.no_match')}</p> : null}
-            </div>
-          ) : (
-            <div className="mt-lines-in" ref={inner}>
-              {turns.map((u, i) => (
-                <Fragment key={i}>
-                {u.who === 'system' ? (
-                  <p key={i} className="mt-sysline">
-                    {u.lines.map((l) => l.text).join(' ')}
-                  </p>
-                ) : (
-                  <section
-                    key={i}
-                    className={`mt-turn is-${u.who} ${u.who === 'student' ? `is-cat-${(u.lines[0] as ShownLine).cat ?? 'quick'}` : ''}`}
-                    style={{ '--who': colorOf(u.who, u.name) } as CSSProperties}
-                  >
-                    <time className="mt-turn-t">{u.t}</time>
-                    <div className="mt-turn-main">
-                    {head(u.who, u.name, u.lines[0])}
-                    {(() => {
-                      const f = u.lines[0] as ShownLine;
-                      return f.stepsFirst && f.shownSteps?.length ? <Steps steps={f.shownSteps} t0={u.t} /> : null;
-                    })()}
-                    <div className="mt-bubble">
-                    {u.lines.map((l, k) =>
-                      pickable(l) ? (
-                        <p
-                          key={k}
-                          className={`mt-line-text is-pick ${isNow(l) ? 'is-now' : ''}`}
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => onPick!(l)}
-                          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onPick!(l))}
-                          data-testid="transcript-line"
-                        >
-                          <Highlight text={l.text} q={q} />
-                        </p>
-                      ) : (
-                        <p key={k} className="mt-line-text">
-                          <Highlight text={l.text} q={q} />
-                        </p>
-                      ),
-                    )}
-                    {/* only what was said: the AI's own judgments on a line (l.skip, "不是在跟它说", "你们在互相说") stay
-                        in the data for the logs and are never drawn here */}
-                    {u.lines.map((l, k) =>
-                      l.cut ? (
-                        <p key={`c${k}`} className="mt-aside" data-testid="transcript-cut">
-                          {t('meeting.ai.cut')}
-                        </p>
-                      ) : null,
-                    )}
-                    {saying && lastIsMe && i === turns.length - 1 && (
-                      <p className="mt-line-text is-partial" data-testid="transcript-partial">
-                        {saying.text}
-                      </p>
-                    )}
-                    </div>
-                    {(() => {
-                      const f = u.lines[0] as ShownLine;
-                      return !f.stepsFirst && f.shownSteps?.length ? <Steps steps={f.shownSteps} t0={u.t} /> : null;
-                    })()}
-                    {(() => {
-                      const ed = liveEdit(u);
-                      return ed ? <LiveEdit w={ed} brain={brain ?? null} /> : null;
-                    })()}
-                    </div>
-                  </section>
-                )}
-                {(lookAt.get(i) ?? []).map((d) => (
-                  <LiveDeep key={`d${d.id ?? d.t0}`} deep={d} brain={brain ?? null} Head={claudeWho} />
-                ))}
-                </Fragment>
-              ))}
-              {liveEditsEnd.map((w) => (
-                <section key={`w${w.idx}`} className="mt-turn is-student is-cat-claude is-live-edit">
-                  <time className="mt-turn-t" />
+      <div
+        className="mt-lines"
+        ref={box}
+        onScroll={onScroll}
+        onWheel={onWheel}
+        onPointerDown={onPointerDown}
+        onTouchMove={intent}
+        onKeyDown={onKeyDown}
+        data-testid="transcript"
+      >
+        {turns.length === 0 && !saying ? (
+          <div className="mt-empty">
+            {q.trim() ? <p>{t('meeting.transcript.no_match')}</p> : null}
+          </div>
+        ) : (
+          <div className="mt-lines-in" ref={inner}>
+            {turns.map((u, i) => (
+              <Fragment key={i}>
+              {u.who === 'system' ? (
+                <p key={i} className="mt-sysline">
+                  {u.lines.map((l) => l.text).join(' ')}
+                </p>
+              ) : (
+                <section
+                  key={i}
+                  className={`mt-turn is-${u.who} ${u.who === 'student' ? `is-cat-${(u.lines[0] as ShownLine).cat ?? 'quick'}` : ''}`}
+                  style={{ '--who': colorOf(u.who, u.name) } as CSSProperties}
+                >
+                  <time className="mt-turn-t">{u.t}</time>
                   <div className="mt-turn-main">
-                    <header className="mt-turn-head">
-                      {claudeWho()}
-                      <span className="mt-chips">
-                        <span className="mt-chip is-by">{brain?.edit_model || 'Claude Opus 5.5'}</span>
-                        <span className="mt-chip is-time">{t('meeting.ai.working', { id: '', title: w.title })}</span>
-                      </span>
-                    </header>
-                    <LiveEdit w={w} brain={brain ?? null} />
+                  {head(u.who, u.name, u.lines[0])}
+                  {(() => {
+                    const f = u.lines[0] as ShownLine;
+                    return f.stepsFirst && f.shownSteps?.length ? <Steps steps={f.shownSteps} t0={u.t} /> : null;
+                  })()}
+                  <div className="mt-bubble">
+                  {u.lines.map((l, k) =>
+                    pickable(l) ? (
+                      <p
+                        key={k}
+                        className={`mt-line-text is-pick ${isNow(l) ? 'is-now' : ''}`}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => onPick!(l)}
+                        onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onPick!(l))}
+                        data-testid="transcript-line"
+                      >
+                        <Highlight text={l.text} q={q} />
+                      </p>
+                    ) : (
+                      <p key={k} className="mt-line-text">
+                        <Highlight text={l.text} q={q} />
+                      </p>
+                    ),
+                  )}
+                  {/* only what was said: the AI's own judgments on a line (l.skip, "不是在跟它说", "你们在互相说") stay
+                      in the data for the logs and are never drawn here */}
+                  {u.lines.map((l, k) =>
+                    l.cut ? (
+                      <p key={`c${k}`} className="mt-aside" data-testid="transcript-cut">
+                        {t('meeting.ai.cut')}
+                      </p>
+                    ) : null,
+                  )}
+                  {saying && lastIsMe && i === turns.length - 1 && (
+                    <p className="mt-line-text is-partial" data-testid="transcript-partial">
+                      {saying.text}
+                    </p>
+                  )}
                   </div>
-                </section>
-              ))}
-              {lookEnd.map((d) => (
-                <LiveDeep key={`e${d.id ?? d.t0}`} deep={d} brain={brain ?? null} Head={claudeWho} />
-              ))}
-              {saying && !lastIsMe && (
-                <section className="mt-turn is-teacher" style={{ '--who': colorOf('teacher') } as CSSProperties}>
-                  <time className="mt-turn-t">{saying.t}</time>
-                  <div className="mt-turn-main">
-                    {head('teacher')}
-                    <div className="mt-bubble">
-                      <p className="mt-line-text is-partial" data-testid="transcript-partial">
-                        {saying.text}
-                      </p>
-                    </div>
+                  {(() => {
+                    const f = u.lines[0] as ShownLine;
+                    return !f.stepsFirst && f.shownSteps?.length ? <Steps steps={f.shownSteps} t0={u.t} /> : null;
+                  })()}
+                  {(() => {
+                    const ed = liveEdit(u);
+                    return ed ? <LiveEdit w={ed} brain={brain ?? null} /> : null;
+                  })()}
                   </div>
                 </section>
               )}
-            </div>
-          )}
-        </div>
-      )}
+              {(lookAt.get(i) ?? []).map((d) => (
+                <LiveDeep key={`d${d.id ?? d.t0}`} deep={d} brain={brain ?? null} Head={claudeWho} />
+              ))}
+              </Fragment>
+            ))}
+            {liveEditsEnd.map((w) => (
+              <section key={`w${w.idx}`} className="mt-turn is-student is-cat-claude is-live-edit">
+                <time className="mt-turn-t" />
+                <div className="mt-turn-main">
+                  <header className="mt-turn-head">
+                    {claudeWho()}
+                    <span className="mt-chips">
+                      {brain?.edit_model && <span className="mt-chip is-by">{brain.edit_model}</span>}
+                      <span className="mt-chip is-time">{t('meeting.ai.working', { id: '', title: w.title })}</span>
+                    </span>
+                  </header>
+                  <LiveEdit w={w} brain={brain ?? null} />
+                </div>
+              </section>
+            ))}
+            {lookEnd.map((d) => (
+              <LiveDeep key={`e${d.id ?? d.t0}`} deep={d} brain={brain ?? null} Head={claudeWho} />
+            ))}
+            {saying && !lastIsMe && (
+              <section className="mt-turn is-teacher" style={{ '--who': colorOf('teacher') } as CSSProperties}>
+                <time className="mt-turn-t">{saying.t}</time>
+                <div className="mt-turn-main">
+                  {head('teacher')}
+                  <div className="mt-bubble">
+                    <p className="mt-line-text is-partial" data-testid="transcript-partial">
+                      {saying.text}
+                    </p>
+                  </div>
+                </div>
+              </section>
+            )}
+          </div>
+        )}
+      </div>
     </aside>
   );
 });
-
-/** 删改清单: what the cleanup changed, one entry per edit — what kind, when, the words before and after, why —
- *  with 恢复 (the clean version shows the original words again) / 撤销恢复. */
-export function CleanupList({ items, raw, onRestore, compact }: { items: CleanupItem[]; raw: Line[] | null; onRestore?: (ids: string[], restored: boolean) => Promise<void>; compact?: boolean }) {
-  const [busy, setBusy] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const go = async (x: CleanupItem) => {
-    if (!onRestore) return;
-    setBusy(x.id);
-    setErr(null);
-    try {
-      await onRestore([x.id], !x.restored);
-    } catch (e) {
-      setErr(String((e as Error)?.message ?? e));
-    } finally {
-      setBusy(null);
-    }
-  };
-  return (
-    <ol className={`mt-edits ${compact ? 'is-compact' : ''}`}>
-      {items.map((x) => {
-        const line = raw?.[x.line];
-        const kind = KINDS.includes(x.kind) ? x.kind : 'other';
-        return (
-          <li key={x.id} className={`mt-edit is-${kind} ${x.restored ? 'is-restored' : ''}`} data-testid={`cleanup-${x.id}`}>
-            <div className="mt-edit-head">
-              <span className={`mt-edit-kind is-${kind}`}>{t(`meeting.clean.kind.${kind}`)}</span>
-              {line?.t && <span className="mt-edit-t">{line.t}</span>}
-              {x.restored && <span className="mt-edit-st">{t('meeting.clean.restored')}</span>}
-              {onRestore && (
-                <button className="mt-edit-act" onClick={() => void go(x)} disabled={busy === x.id} data-testid={`cleanup-act-${x.id}`}>
-                  {busy === x.id ? <span className="mw-spinner sm" aria-hidden="true" /> : null}
-                  {t(x.restored ? 'meeting.clean.unrestore' : 'meeting.clean.restore')}
-                </button>
-              )}
-            </div>
-            <p className="mt-edit-text">
-              <del>{x.before}</del>
-              {x.after ? (
-                <>
-                  <span className="mt-edit-arrow" aria-hidden="true">→</span>
-                  <ins>{x.after}</ins>
-                </>
-              ) : (
-                <span className="mt-edit-gone">{t('meeting.clean.removed')}</span>
-              )}
-            </p>
-            {x.reason && <p className="mt-edit-why">{x.reason}</p>}
-          </li>
-        );
-      })}
-      {err && <li className="mt-edit-err">{err}</li>}
-    </ol>
-  );
-}

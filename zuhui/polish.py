@@ -7,8 +7,8 @@
   sensitive  不宜传播 —— 涉及他人的私下评价、人身攻击、隐私（电话、地址、账号、密码、金额等）、不打算公开的打算：删掉
   profanity  脏话 —— 规则找（zuhui/normalize.py），直接删；开会时实时显示的那一版已经删过了
 
-retract / fact / sensitive 由 DeepSeek V4 Flash 看整场逐字稿挑出来（config.json 的 polish.model 可改，默认 deepseek-flash；
-密钥和接口地址同快嘴）。模型给的每一条都要过检查：line 得有、before 得是原文里一字不差的一截、after 只能删字不能加字、
+retract / fact / sensitive 由套餐里的 Sonnet 看整场逐字稿挑出来（claude_text，不走 API；config.json 的 polish.model
+可换别的 claude- 模型）。模型给的每一条都要过检查：line 得有、before 得是原文里一字不差的一截、after 只能删字不能加字、
 同一行里的条目不能重叠；不合格的丢掉。模型调不通：只做脏话这一类，照样写文件（note 里说明）。
 
   python -m zuhui.polish <会议id> [--dry]      整理一场会（--dry 只打印，不写文件）
@@ -59,9 +59,9 @@ PROMPT = """你在整理一场组会的逐字稿，整理后的干净版要发�
 一行里有几处就分几条；没有要删改的就输出 {{"items": []}}。说到人时写名字，不写"老师""学生"。"""
 
 
-def _who(l: dict, me: str) -> str:
+def _who(l: dict, me: str, ai: str = "Claude") -> str:
     w = l.get("who")
-    return me if w == "teacher" else "Claude" if w == "student" else (l.get("name") or "参会者") if w == "guest" else "系统"
+    return me if w == "teacher" else ai if w == "student" else (l.get("name") or "参会者") if w == "guest" else "系统"
 
 
 def _is_subseq(small: str, big: str) -> bool:
@@ -114,7 +114,9 @@ def _llm_items(cfg: dict, raw: list[dict], me: str, model: str, thinking: bool =
     from .claude_text import SONNET, ask_json
     if not str(model).startswith("claude-"):
         model = SONNET
-    lines = [f"#{i} [{l.get('t')}] {_who(l, me)}：{l.get('text')}" for i, l in enumerate(raw)
+    from .config import assistant_name
+    ai = assistant_name(cfg)
+    lines = [f"#{i} [{l.get('t')}] {_who(l, me, ai)}：{l.get('text')}" for i, l in enumerate(raw)
              if (l.get("text") or "").strip() and l.get("who") in ("teacher", "student", "guest")]
     t0 = time.time()
     data = ask_json(_terms_block() + "\n".join(lines), system=PROMPT.format(me=me), model=model,

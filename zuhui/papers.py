@@ -137,12 +137,6 @@ def _pdf_text(src: Path) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
-def _pdf_to_md(src: Path, dst: Path) -> int:
-    text = _pdf_text(src)
-    dst.write_text(text, encoding="utf-8")
-    return len(text)
-
-
 def _pdf_precheck(src: Path) -> None:
     """转之前先挡掉加密的和扫描件（MinerU 跑一遍要几十秒，别白跑）。"""
     import fitz
@@ -217,7 +211,7 @@ def _legacy_edited(src: Path, legacy: Path, ext: str, pandoc: str | None) -> boo
                 return True                    # 不是我们抽的（你自己的 Markdown）
             import fitz
             doc = fitz.open(str(src))
-            fresh = [f"# {src.stem}", ""]   # 旧版 _pdf_to_md 的输出，原样重算一遍对比
+            fresh = [f"# {src.stem}", ""]   # 最早那版 PDF 抽字的输出，原样重算一遍对比（现在的 _pdf_text 在下面另比）
             for pno, page in enumerate(doc, 1):
                 paras = []
                 for b in sorted(page.get_text("blocks"), key=lambda b: (round(b[1] / 5), b[0])):

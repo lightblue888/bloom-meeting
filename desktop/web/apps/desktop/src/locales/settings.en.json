@@ -173,5 +173,11 @@
   "st.settings.provider.err.key": "The API key can't be empty or contain spaces.",
   "st.settings.provider.err.base_url": "The endpoint must start with https:// and not end in /v1.",
   "st.settings.provider.err.model": "Model names may only use letters, digits and . - _ [ ] : /",
-  "st.settings.provider.err.failed": "Couldn't save. Try again."
+  "st.settings.provider.err.failed": "Couldn't save. Try again.",
+  "st.settings.general.color": "My colour",
+  "st.settings.general.ai_color": "AI colour",
+  "st.settings.kw.general.color": "colour, color, name colour",
+  "st.settings.kw.general.ai_color": "colour, color, AI colour",
+  "st.settings.profile.err.color": "That colour didn't work; pick again.",
+  "st.settings.provider.unset": "Not set yet. Pick a provider, paste an API key and save."
 }

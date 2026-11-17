@@ -238,7 +238,8 @@ SOFTWARE: list[tuple[str, list[str]]] = [
     ("Haiku", [r"haiku"]),
     ("Fable", [r"fable"]),
     ("@ME", []),                     # 你的名字（config.json meeting.me）；听错成什么写在 meeting.me_asr（正则列表）
-    ("Bloom", [r"bloom", r"broom", r"blume", r"(?<!light )(?<!like )(?<!lite )blue", "布鲁姆"]),
+    ("Bloom", [r"bloom", r"blume", "布鲁姆",
+               "zh:" + r"(?<!light )(?<!like )(?<!lite )(?:blue|broom)"]),   # zh:：只在中文句子里换（英文里 blue 就是蓝色）
     ("Blurt", [r"blurt"]),
     ("GitHub", [r"git\s*hub", "吉特哈布"]),
     ("LaTeX", [r"latex", r"la\s*tex"]),
@@ -303,6 +304,15 @@ def _me() -> str:
         return ME_DEFAULT
 
 
+def _ai() -> str:
+    """会上那位 AI 叫什么（设置里起的，没起按模型来源）。"""
+    try:
+        from .config import assistant_name
+        return assistant_name()
+    except Exception:
+        return "AI"
+
+
 def _rx(pat: str) -> re.Pattern:
     """英文的样子按词边界、不分大小写；中文的样子原样找。"""
     if re.search(r"[A-Za-z]", pat) and not re.search(r"[一-鿿぀-ヿ]", pat):
@@ -315,14 +325,14 @@ def _software_rules() -> list[tuple[re.Pattern, str]]:
         lm = LEARNED.stat().st_mtime_ns
     except OSError:
         lm = None
-    key = (lm, _me())
+    key = (lm, _me(), _ai())
     if _sw_cache["key"] == key:
         return _sw_cache["rules"]
-    me = key[1]
-    rules: list[tuple[re.Pattern, str]] = []
+    me, ai = key[1], key[2]
+    rules: list[tuple[re.Pattern, str, bool]] = []
     for r in learned_rules():                    # 学到的规则先换（只有证据够的才在里面，见 learn()）
         try:
-            rules.append((re.compile(r["pattern"]), r["to"]))
+            rules.append((re.compile(r["pattern"]), r["to"], False))
         except (re.error, KeyError, TypeError):
             pass
     for to, pats in SOFTWARE:
@@ -330,9 +340,12 @@ def _software_rules() -> list[tuple[re.Pattern, str]]:
             if not me:
                 continue
             to, pats = me, _me_asr()
+        if to.startswith("Claude") and ai.lower() != "claude":   # AI 不叫 Claude：cloud 就是 cloud，别改成 Claude
+            continue
         for p in pats:
+            zh = p.startswith("zh:")
             try:
-                rules.append((_rx(p), to))
+                rules.append((_rx(p[3:] if zh else p), to, zh))
             except re.error:
                 pass
     _sw_cache.update(key=key, rules=rules)
@@ -351,14 +364,26 @@ def software_correct(text: str) -> str:
     """软件 / AI 名字写对（normalize.live 调，在命令和型号整形之前）。"""
     if not text:
         return text
-    for rx, to in _software_rules():
+    cjk = bool(re.search(r"[一-鿿]", text))
+    for rx, to, zh_only in _software_rules():
+        if zh_only and not cjk:
+            continue
         text = rx.sub(to, text)
     return re.sub(r"(?<![A-Za-z])[A-Za-z]{3,}(?![A-Za-z])", _case, text)
 
 
-# 热词：Fun-ASR-Nano 的提示最多 24 个（每个都占 512 个 token 里的位置），软件名和论文术语各占一半
-SOFTWARE_HOT = ["Claude", "Claude Code", "DeepSeek", "Opus", "Bloom", "@ME", "Desktop", "GitHub", "LaTeX", "Markdown",
-                "对话模型", "改稿模型", "逐字稿", "subagent", "Flash", "PyTorch", "Tauri", "LiveKit", "MinerU", "GPT-SoVITS"]
+# 热词：Fun-ASR-Nano 的提示最多 24 个（每个都占 512 个 token 里的位置），软件名和论文术语各占一半。
+# 默认只放谁都用得上的：AI 的名字、你的名字、软件名、写论文常说的；自己常说的别的词写在 config.json 的 meeting.hotwords。
+SOFTWARE_HOT = ["@AI", "Bloom", "@ME", "LaTeX", "Markdown", "对话模型", "改稿模型", "逐字稿"]
+
+
+def _own_hot() -> list[str]:
+    try:
+        from .config import load
+        v = (load().get("meeting") or {}).get("hotwords") or []
+        return [str(x) for x in v if str(x).strip()][:12] if isinstance(v, list) else []
+    except Exception:
+        return []
 
 
 LEARNED_HOT_MAX = 6          # 散会后学到的热词最多占这么多个（排在软件词后、论文术语前）
@@ -377,8 +402,8 @@ def learned_hot(n: int = LEARNED_HOT_MAX, days: float = 30.0) -> list[str]:
 
 
 def merged_hotwords(paper_hot: list[str] | None, n: int = MAX_HOTWORDS, software: int = 10) -> list[str]:
-    me = _me()
-    sw = [me if w == "@ME" else w for w in SOFTWARE_HOT]
+    me, ai = _me(), _ai()
+    sw = [me if w == "@ME" else ai if w == "@AI" else w for w in SOFTWARE_HOT] + _own_hot()
     out: list[str] = []
     for w in sw[:software] + learned_hot() + list(paper_hot or []) + sw[software:]:
         if w and w not in out:

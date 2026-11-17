@@ -65,7 +65,9 @@ export const ENTRIES: Entry[] = [
   // General
   row('general.avatar', 'general.profile', 'settings.general.avatar'),
   row('general.name', 'general.profile', 'settings.general.name'),
+  row('general.color', 'general.profile', 'settings.general.color'),
   row('general.ai_name', 'general.profile', 'settings.general.ai_name', { detail: 'settings.general.ai_name.detail' }),
+  row('general.ai_color', 'general.profile', 'settings.general.ai_color'),
   row('general.source', 'general.model_source', 'settings.general.source'),
   row('general.api_key', 'general.model_source', 'settings.general.api_key'),
   row('general.base_url', 'general.model_source', 'settings.general.base_url'),

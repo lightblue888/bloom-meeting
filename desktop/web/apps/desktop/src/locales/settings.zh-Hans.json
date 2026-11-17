@@ -173,5 +173,11 @@
   "st.settings.provider.err.key": "API key 不能为空，也不能有空格。",
   "st.settings.provider.err.base_url": "接口地址要以 https:// 开头，末尾不要带 /v1。",
   "st.settings.provider.err.model": "模型名只能有字母、数字和 . - _ [ ] : /",
-  "st.settings.provider.err.failed": "保存失败，请重试。"
+  "st.settings.provider.err.failed": "保存失败，请重试。",
+  "st.settings.general.color": "我的颜色",
+  "st.settings.general.ai_color": "AI 的颜色",
+  "st.settings.kw.general.color": "颜色, 名字颜色, 配色, 头像颜色",
+  "st.settings.kw.general.ai_color": "颜色, AI 颜色, 配色",
+  "st.settings.profile.err.color": "颜色不对，请重选。",
+  "st.settings.provider.unset": "还没设置。选一个服务商，填上 API key 再保存。"
 }

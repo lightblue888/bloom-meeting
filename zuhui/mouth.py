@@ -322,7 +322,7 @@ class Mouth:
         self.venv = str(m.get("indextts_venv") or "")
         self.edge_voice = str(m.get("edge_voice") or "zh-CN-YunxiNeural")
         self.edge_rate = str(m.get("edge_rate") or "+8%")
-        self.sapi_voice = str(m.get("sapi_voice") or "Microsoft Huihui Desktop")
+        self.sapi_voice = str(m.get("sapi_voice") or "")       # 空：按要念的话的语言挑本机装了的声音
         self.backchannels = [t.strip() for t in (m.get("backchannels") or []) if (t or "").strip()]
         self.rate = float(m.get("rate") or 1.0)      # 播放语速：1.15 = 快 15%，音调不变（ffplay atempo）
         self.phrases = [t.strip() for t in (m.get("phrases") or []) if (t or "").strip()]
@@ -349,7 +349,9 @@ class Mouth:
 
         self.ffplay = shutil.which("ffplay")
         self.ffmpeg = shutil.which("ffmpeg")
-        self.edge_tts = shutil.which("edge-tts")
+        # edge-tts：系统里找，或者和后端同一个 Python 环境里（uv sync --extra voice 装在那儿，不在 PATH 上）
+        self.edge_tts = shutil.which("edge-tts") or next(
+            (str(p) for p in (Path(sys.executable).parent / "edge-tts.exe", Path(sys.executable).parent / "edge-tts") if p.exists()), None)
         if not self.ffplay:
             log.warning("找不到 ffplay，退回 PowerShell SoundPlayer（只能放 wav）")
 
@@ -462,6 +464,8 @@ class Mouth:
         立刻返回 False（不等它加载）。gptsovits → zuhui/tts_gsv.py；indextts → zuhui/tts_server.py。"""
         if self._server_port():
             return True
+        if not self._voice():                  # 没配克隆音色：没有服务可拉
+            return False
         engine = self._engine()
         if engine == "gptsovits":
             g = self._gsv()
@@ -518,7 +522,10 @@ class Mouth:
         return g if isinstance(g, dict) else {}
 
     def _server_port(self) -> int | None:
-        """当前引擎的服务在线 → 端口。/health 里的 engine 要对得上（IndexTTS2 的 /health 不带 engine）。"""
+        """当前引擎的服务在线 → 端口。/health 里的 engine 要对得上（IndexTTS2 的 /health 不带 engine）。
+        没配克隆音色（没有 voice.json）就不去探测：探一次不在的端口要等 2 秒，每句都等就慢了。"""
+        if not self._voice():
+            return None
         engine = self._engine()
         if engine == "gptsovits":
             ports = [int(self._gsv().get("port") or GSV_PORT)]
@@ -792,7 +799,11 @@ class Mouth:
         ps = (
             "Add-Type -AssemblyName System.Speech; "
             "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-            f"try {{ $s.SelectVoice('{self.sapi_voice}') }} catch {{ }}; "
+            + (f"try {{ $s.SelectVoice('{self.sapi_voice}') }} catch {{ }}; " if self.sapi_voice else
+               # 没指定：按这句话的语言挑本机装了的声音（中文 / 英文），英文系统上没中文声音也不至于不出声
+               f"$v = $s.GetInstalledVoices() | Where-Object {{ $_.Enabled -and $_.VoiceInfo.Culture.Name -like "
+               f"'{'zh*' if re.search(r'[一-鿿]', text) else 'en*'}' }} | Select-Object -First 1; "
+               "if ($v) { $s.SelectVoice($v.VoiceInfo.Name) }; ") +
             "$s.Rate = 1; "
             f"$s.SetOutputToWaveFile('{out}'); "
             f"$s.Speak([IO.File]::ReadAllText('{txt}', [Text.Encoding]::UTF8)); "

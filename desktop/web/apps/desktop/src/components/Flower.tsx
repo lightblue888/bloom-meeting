@@ -19,8 +19,9 @@ export function colorsById(people: Participant[]): Record<string, string> {
   const out: Record<string, string> = Object.create(null);
   let k = 0;
   for (const p of people) {
-    if (isHost(p)) out[p.id] = HOST_COLOR;
-    else if (isClaude(p)) out[p.id] = CLAUDE_COLOR;
+    // the host's and the AI's are the ones picked in Settings → Profile (sent with the people); blue / orange otherwise
+    if (isHost(p)) out[p.id] = p.color || HOST_COLOR;
+    else if (isClaude(p)) out[p.id] = p.color || CLAUDE_COLOR;
     else {
       out[p.id] = p.color || PALETTE[k % PALETTE.length];
       k++;

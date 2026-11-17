@@ -519,4 +519,27 @@ body.mw-resizing * {
 
 /* the same thin, arrowless, hover-shown bar on the detail pane itself (its always-on track was base.css's
    `scrollbar-width: thin`) */
-
+/* 新装、还没选模型来源：顶上一条，点"去设置"跳到 设置 → 通用 → 模型来源 */
+.mw-setup {
+  position: fixed;
+  top: 126px;                   /* 顶栏（会议名、新增、参会人）下面，不挡住它们 */
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(640px, 86vw);
+  padding: 8px 8px 8px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line-2, rgba(127, 127, 127, 0.3));
+  background: var(--panel, #1f1f22);
+  color: var(--ink);
+  font-size: 13px;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.25);
+}
+.mw-setup > span {
+  min-width: 0;
+}
+.app .mw-setup button {
+  flex: none;
+}

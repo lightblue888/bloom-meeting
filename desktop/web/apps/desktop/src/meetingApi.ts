@@ -371,6 +371,10 @@ export interface Profile {
   assistant: string;
   assistant_default: string;
   assistant_custom: boolean;
+  /** your name's colour and the AI's (#rrggbb), and the colours Settings offers */
+  color: string;
+  ai_color: string;
+  palette: string[];
 }
 
 const toProfile = (j: Partial<Profile>): Profile => ({
@@ -380,6 +384,9 @@ const toProfile = (j: Partial<Profile>): Profile => ({
   assistant: String(j.assistant ?? ''),
   assistant_default: String(j.assistant_default ?? ''),
   assistant_custom: !!j.assistant_custom,
+  color: String(j.color ?? '#60a5fa'),
+  ai_color: String(j.ai_color ?? '#e3906f'),
+  palette: Array.isArray(j.palette) ? j.palette.map(String) : [],
 });
 
 /** fired on window after the name or the photo changed, so the rail's avatar loads again */
@@ -409,7 +416,8 @@ export interface ProviderPreset {
   main: string;
 }
 export interface Provider {
-  kind: ProviderKind;
+  /** 'unset': a fresh install that hasn't picked one yet */
+  kind: ProviderKind | 'unset';
   base_url: string;
   fast: string;
   main: string;
@@ -625,6 +633,8 @@ export const meetingApi = {
     return toProfile((await r.json()) as Partial<Profile>);
   },
   setProfileName: (name: string) => postProfile('/api/profile', { name }),
+  /** your name's colour ('color') or the AI's ('ai_color'), #rrggbb */
+  setProfileColor: (which: 'color' | 'ai_color', value: string) => postProfile('/api/profile', { [which]: value }),
   /** the AI's name in meetings; '' goes back to the model's */
   setAssistantName: (assistant: string) => postProfile('/api/profile', { assistant }),
   /** a picture as a data: URL; the backend squares it to 256 px */

@@ -2726,27 +2726,49 @@ mark.mt-hl {
   line-height: 1.3;
 }
 
-/* 你静音时名字旁边那个划掉的麦克风（没静音时什么都没有，不占位置）：点一下取消静音。静音开关平时在自己的卡片里 */
-.app .mt-mic-off {
+/* 你静音时你头像右下角的小红标（划掉的麦克风，头像照样看得见；没静音时什么都没有）：点一下取消静音 */
+.mt-av-wrap {
+  position: relative;
   display: inline-flex;
+  flex: none;
+}
+.mt-stack-item {
+  position: relative;
+}
+.app .mt-mic-off {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  display: flex;
   align-items: center;
   justify-content: center;
-  flex: none;
-  width: 22px;
-  height: 22px;
+  width: 15px;
+  height: 15px;
   min-height: 0;
-  margin: -2px -3px -2px 1px;
+  margin: 0;
   padding: 0;
   border: 0;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--err) 14%, transparent);
-  box-shadow: none;
-  color: var(--err);
+  border-radius: 50%;
+  background: var(--err);
+  box-shadow: 0 0 0 2px var(--bg-2);
+  color: #fff;
   cursor: pointer;
-  transition: background-color 0.12s;
+  transition: transform 0.12s;
 }
 .app .mt-mic-off:hover {
-  background: color-mix(in srgb, var(--err) 22%, transparent);
+  transform: scale(1.15);
+}
+.app .mt-mic-off svg {
+  width: 9px;
+  height: 9px;
+}
+/* AI 的状态点：挂在它头像的右下角（以前在名字后面，状态一来一走整行就挪） */
+.mt-av-wrap .mt-status-dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  margin: 0;
+  box-shadow: 0 0 0 2px var(--bg-2);
 }
 .app .mt-mic-off svg {
   display: block;
@@ -2813,4 +2835,42 @@ mark.mt-hl {
 .mt-hp-title,
 .mt-sum-title {
   overflow-wrap: anywhere;
+}
+
+/* 时有时无的东西不挤动旁边（2026-11-18）：
+   - 恢复共同主持人的提示：浮在顶栏下方靠右，不插在参会人和"邀请"之间；
+   - 通知条（断线、中继、散会）：浮在会议页底部中间，不把论文往下推；
+   - "AI 在干什么"那条：定高，一行，多出来的省略号 */
+.mt-root {
+  position: relative;
+}
+.mt-head {
+  position: relative;
+}
+.mt-head .mt-suggest {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 22px;
+  z-index: 30;
+  background: var(--panel, var(--bg-2));
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.25);
+}
+.mt-notice {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 30;
+  max-width: min(720px, 90%);
+  border: 1px solid var(--line-2, var(--line));
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.28);
+}
+.mt-now {
+  box-sizing: border-box;
+  height: 62px;                 /* 量过：两行（前台、后台）各一行字时是 61px */
+  align-content: center;
+}
+.mt-now-v {
+  -webkit-line-clamp: 1;
 }

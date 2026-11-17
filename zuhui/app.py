@@ -2343,9 +2343,9 @@ class Meeting:
         out = {part: {"current": cur.get(part), "options": [{"id": i, "label": label} for i, label in opts]}
                for part, opts in MODEL_OPTIONS.items()}
         from . import provider
-        p = provider.active()
-        if p and p["kind"] != "anthropic":           # 用别家接口：对话、改稿各只有设置里填的那一个（在设置里改）
-            for part, mid in (("dialog", p["fast"]), ("edit", p["main"])):
+        if provider.mode() == "api":                 # 用 API：对话、改稿各只有设置里填的那一个（在设置里改）
+            from .llm_api import model
+            for part, mid in (("dialog", model("fast")), ("edit", model("main"))):
                 out[part] = {"current": mid, "options": [{"id": mid, "label": mid}]}
         out["tts"] = _tts_label()
         out["asr"] = _asr_label()

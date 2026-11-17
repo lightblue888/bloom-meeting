@@ -1322,7 +1322,8 @@ def _profile(viewer) -> dict:
     own = av if av and not str(av).split("?")[0].endswith("/bloom.png") else None
     return {"name": me["name"], "avatar": own, "custom": host_profile.avatar_file() is not None,
             "assistant": ai["name"], "assistant_default": default_assistant_name(viewer.cfg),
-            "assistant_custom": host_profile.saved_assistant() is not None}
+            "assistant_custom": host_profile.saved_assistant() is not None,
+            "color": me["color"], "ai_color": ai["color"], "palette": host_profile.PALETTE}
 
 
 def _mic_state(viewer) -> dict:
@@ -1376,8 +1377,16 @@ def _task_brief(t: dict, me: str = "") -> dict:
         name = m.group(2).strip()
         b["who"], b["said"], b["who_color"] = name, str(t.get("remark") or "")[m.end():], _color_of(name, me)
     else:
-        b["who_color"] = HOST_COLOR
+        from . import host_profile
+        b["who_color"] = host_profile.colors()[0]
     return b
+
+
+def _guest_palette() -> list:
+    """访客的配色：调色板里去掉你和 AI 选中的颜色（设置 → 个人资料），免得撞色。"""
+    from . import host_profile
+    taken = set(host_profile.colors())
+    return [c for c in GUEST_PALETTE if c not in taken] or GUEST_PALETTE
 
 
 _AI_NAME = ["Claude"]          # 会上那位 AI 现在叫什么（Viewer 起来时、设置里改名时更新；批注卡片上认它用）
@@ -1386,13 +1395,16 @@ _AI_NAME = ["Claude"]          # 会上那位 AI 现在叫什么（Viewer 起来
 def _color_of(name: str, me: str = "") -> str:
     """批注卡片上名字的颜色：你蓝、AI 橙、访客用会上定的颜色（后端重启过、表里没有的，按先后从调色板取）。
     以前的会里记的 AI 名字是 Claude，也认。"""
+    from . import host_profile
+    host_c, ai_c = host_profile.colors()
     if name in ("Claude", _AI_NAME[0]):
-        return CLAUDE_COLOR
+        return ai_c
     if not name or name == me:
-        return HOST_COLOR
+        return host_c
     if name not in _GCOLOR:
-        used = set(_GCOLOR.values())
-        _GCOLOR[name] = next((c for c in GUEST_PALETTE if c not in used), GUEST_PALETTE[len(_GCOLOR) % len(GUEST_PALETTE)])
+        used = set(_GCOLOR.values()) | {host_c, ai_c}
+        pal = _guest_palette()
+        _GCOLOR[name] = next((c for c in pal if c not in used), pal[len(_GCOLOR) % len(pal)])
     return _GCOLOR[name]
 
 
@@ -1507,6 +1519,11 @@ def _noto_installed() -> bool:
     return _LOCAL_FONTS[0]
 
 
+# 没装 Noto 时的字体：Windows 自带的（雅黑比宋体清楚，等宽字体用 Consolas）
+_SYS_FONTS = ("<style>:root{--serif:'Source Han Serif SC','Noto Serif SC','Microsoft YaHei UI','Microsoft YaHei',serif;"
+              "--sans:'Microsoft YaHei UI','Microsoft YaHei','Segoe UI',sans-serif}</style>")
+
+
 def _embed(html_text: str, local_fonts: bool = False) -> str:
     """给 Bloom 的 iframe 用的精简版页面。
 
@@ -1514,8 +1531,11 @@ def _embed(html_text: str, local_fonts: bool = False) -> str:
     对比页的头里链着 Google Fonts 的 Noto（切成两百来片按字下载，样式表里的同名字体会盖过本机装的那份）：网慢、
     代理时通时不通时，字体片没下完之前正文先用后备的宋体（SimSun）画，字形小一圈、笔画细、英文是等宽的，看着就是
     "字变小了"；后端每次重算页面都整页刷新，又要再等一轮。本机没装这两个字体就照旧用 Google 的（访客那份也照旧）。"""
-    if local_fonts and _noto_installed():
+    if local_fonts:
+        # Bloom 窗口里那份一律不链 Google Fonts（国内连不上时整页卡住等字体）：装了 Noto 用 Noto，没装用系统字体
         html_text = _GFONTS.sub("", html_text)
+        if not _noto_installed():
+            html_text = html_text.replace("</head>", _SYS_FONTS + "</head>", 1)
     if "</head>" in html_text:
         return html_text.replace("</head>", EMBED_CSS + "</head>", 1)
     return EMBED_CSS + html_text
@@ -1577,7 +1597,9 @@ def _deep_link(url: str) -> bool:
     那个关联曾被一份调试版改成指向它自己，结果每次开会都弹出连不上开发服务器的全屏错误页。"""
     local = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
     # 装在哪：安装包装的在 Bloom 文件夹（开源版），早先手装的在 Blurt 文件夹
-    exe = next((p for p in (local / "Bloom" / "blurt.exe", local / "Blurt" / "blurt.exe") if p.exists()), local / "Blurt" / "blurt.exe")
+    # 0.4.0 起程序叫 bloom.exe；更早的安装和手装的还叫 blurt.exe
+    exe = next((p for p in (local / "Bloom" / "bloom.exe", local / "Bloom" / "blurt.exe", local / "Blurt" / "blurt.exe") if p.exists()),
+               local / "Bloom" / "bloom.exe")
     try:
         if exe.exists():
             flags = 0x00000008 | 0x00000200 if sys.platform == "win32" else 0   # DETACHED_PROCESS | NEW_PROCESS_GROUP
@@ -3020,11 +3042,15 @@ class Viewer:
         import urllib.request
         r = {"paper": self.mirror.exists(), "fast": False, "tts": False, "blurt": False, "recording": False, "hands": self.cfg["hands"].get("backend", "cli")}
         try:
-            # 对话模型走本机的 Claude 命令行（cli_brain，用你的 Claude 套餐）：找得到 claude 就算接上了。
-            # 以前看的是 DEEPSEEK_API_KEY，没配那个钥匙的机器上对话灯一直显示离线（2026-11-17 改）
-            from .hands import _resolve_claude
-            exe = _resolve_claude(str((self.cfg.get("hands") or {}).get("claude", "claude")))
-            r["fast"] = Path(exe).is_absolute() and Path(exe).exists()
+            from . import provider
+            mode = provider.mode()
+            if mode == "claude":
+                # 用 Claude Code 账号：找得到 claude 就算接上了
+                from .hands import _resolve_claude
+                exe = _resolve_claude(str((self.cfg.get("hands") or {}).get("claude", "claude")))
+                r["fast"] = Path(exe).is_absolute() and Path(exe).exists()
+            else:
+                r["fast"] = mode == "api"           # API：设好了就算接上（通不通看设置里的"测试连接"）；没设：没接上
         except Exception:
             pass
         try:
@@ -3063,10 +3089,10 @@ class Viewer:
             pass
         hcfg = self.cfg.get("hands") or {}
         from . import provider
-        pv = provider.active()
-        pv = pv if pv and pv["kind"] != "anthropic" else None      # 用别家接口：显示那家的型号
-        r["models"] = {"fast": pv["fast"] if pv else _pretty_model(self.cfg["fast"].get("model")),
-                       "hands": (pv["main"] if pv else _pretty_model(hcfg.get("model", "claude-opus-5-5"))) + {"low": " · Low", "medium": " · Medium", "high": " · High",
+        from .llm_api import model as api_model
+        pv = provider.mode() == "api"                             # 用 API：显示那家的型号
+        r["models"] = {"fast": api_model("fast") if pv else _pretty_model(self.cfg["fast"].get("model")),
+                       "hands": (api_model("main") if pv else _pretty_model(hcfg.get("model", "claude-opus-5-5"))) + {"low": " · Low", "medium": " · Medium", "high": " · High",
                                                                           "xhigh": " · Extra", "max": " · Max"}.get(str(hcfg.get("effort", "xhigh")), ""),
                        "tts": _tts_name(), "asr": asr}
         try:                                                    # 接话分类模型：没开 None；加载中 / 就绪（在哪块设备上）/ 加载失败
@@ -3386,9 +3412,11 @@ class Viewer:
 
         from . import roles
         from .config import assistant_name
+        from . import host_profile
         ai = _AI_NAME[0] = assistant_name(self.cfg)
-        out = [{"id": "me", "name": me, "role": "teacher", "rank": "host", "you": True, "avatar": avatar("me", me), "color": HOST_COLOR},
-               {"id": "claude", "name": ai, "role": "student", "rank": "assistant", "avatar": avatar("claude"), "color": CLAUDE_COLOR}]
+        host_c, ai_c = host_profile.colors()                   # 设置里选的颜色（没选过是蓝、橙）
+        out = [{"id": "me", "name": me, "role": "teacher", "rank": "host", "you": True, "avatar": avatar("me", me), "color": host_c},
+               {"id": "claude", "name": ai, "role": "student", "rank": "assistant", "avatar": avatar("claude"), "color": ai_c}]
         gs = [g.get("name") or "参会者" for g in (list(self.guests) + list(getattr(self.share, "guests", []) or []))]
         cmap = self.guest_colors(gs)
         for g in (list(self.guests) + list(getattr(self.share, "guests", []) or [])) if guests else []:
@@ -3412,10 +3440,11 @@ class Viewer:
     def guest_colors(self, present: list[str]) -> dict:
         """访客的颜色：第一次见到时取调色板里在场的人没用着的第一个，之后一直是这个色（桌面端、访客页都照这个画）。"""
         cm = _GCOLOR
+        pal = _guest_palette()
         for n in present:
             if n not in cm:
                 used = {cm.get(x) for x in present if x in cm}
-                cm[n] = next((c for c in GUEST_PALETTE if c not in used), GUEST_PALETTE[len(cm) % len(GUEST_PALETTE)])
+                cm[n] = next((c for c in pal if c not in used), pal[len(cm) % len(pal)])
         return {n: cm[n] for n in present}
 
     def api_current(self) -> dict:
@@ -3825,6 +3854,9 @@ class Viewer:
                         if "assistant" in body:
                             ai = host_profile.save_assistant(body.get("assistant"), taken=[viewer.me_name()])
                             viewer.cfg.setdefault("assistant", {})["name"] = ai or ""
+                        for which in ("color", "ai_color"):       # 名字颜色 #rrggbb
+                            if which in body:
+                                host_profile.save_color(which, body.get(which))
                     except ValueError as e:
                         return self._json({"error": str(e)}, 400)
                     except OSError:
@@ -3855,7 +3887,7 @@ class Viewer:
                     from . import claude_text
                     t0 = time.time()
                     try:
-                        claude_text.ask("只回一个字：好", model=claude_text.HAIKU, timeout=90)
+                        claude_text.ask("只回一个字：好", model=claude_text.HAIKU, timeout=90)   # API 时直接调接口
                         return self._json({"ok": True, "ms": int((time.time() - t0) * 1000)})
                     except Exception as e:
                         return self._json({"ok": False, "error": str(e)[-160:]})

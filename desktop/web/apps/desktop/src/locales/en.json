@@ -242,5 +242,7 @@
   "meeting.dev.scen.two": "One-on-one",
   "meeting.dev.scen.three": "Three people",
   "meeting.dev.scen.teacher": "With advisor",
-  "meeting.dev.scen.monkey": "Stress test"
+  "meeting.dev.scen.monkey": "Stress test",
+  "mw.setup_source": "No model source yet: add an API key so the AI can talk and revise in meetings.",
+  "mw.setup_source_go": "Set up"
 }

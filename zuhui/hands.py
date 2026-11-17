@@ -14,7 +14,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from .config import PROMPTS, ROOT, STATE
+from .config import PROMPTS, STATE
 
 LOG = STATE / "hands.log"
 
@@ -49,8 +49,7 @@ def _strip_claude_env() -> dict:
     from .netenv import SAVED
     env.update(SAVED)                    # 后端自己不走代理（会议连接），claude 要连国外：把原来的代理加回去
     env.setdefault("PYTHONIOENCODING", "utf-8")
-    from . import provider
-    return provider.apply_env(env)          # 设置里填了别家（或 Anthropic）的 API key：带上地址、密钥、型号
+    return env
 
 
 def _resolve_claude(name: str) -> str:
@@ -647,8 +646,7 @@ class Hands:
         """起一次 `claude -p ...`，返回 (解析出的 JSON, 原始输出, 退出码)。cancel 置位或超时就杀掉（退出码 None）。
         on_event：配 --output-format stream-json --verbose 用，每来一个事件（一行 JSON）就回调一次；返回的 JSON 是最后那个
         type=result 事件，字段和 --output-format json 的一样。"""
-        from . import provider
-        cmd = [_resolve_claude(self.hcfg.get("claude", "claude"))] + provider.map_args(args)   # 别家接口：换成那家的型号
+        cmd = [_resolve_claude(self.hcfg.get("claude", "claude"))] + args
         kw = {}
         if sys.platform == "win32":
             kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -709,6 +707,11 @@ class Hands:
         return data, tail, proc.returncode
 
     def _run_claude(self, task: dict) -> None:
+        from . import provider
+        if provider.mode() != "claude":           # 模型来源是 API / 还没设：不起 Claude Code（hands_api.py）
+            from . import hands_api
+            hands_api.run_edit(self, task)
+            return
         prompt = self._prompt(task)
         shot = task.get("shot")
         shot_dir = Path(shot).resolve().parent if (shot and Path(shot).exists()) else None
@@ -753,6 +756,10 @@ class Hands:
                 msg = "连 Claude 的网络被挡了，重试了两次还是不行：" + msg[:160]
             finish(error=msg)
             return
+        self._conclude(task, prog, before, result)
+
+    def _conclude(self, task: dict, prog: WorkerProgress, before: str, result: str) -> None:
+        """工人交回最后那段话之后怎么收场：标注 / 没改成 / 改好了。Claude 和 API（hands_api.run_edit）两路共用。"""
         nt = parse_note(result)
         if nt is not None and self._read_paper() == before:
             # 看过原文，这条要新数据、新结果才能做：正文没动，钉成标注（标注模式，2026-11-14）
@@ -773,13 +780,19 @@ class Hands:
                 "Not done; the text is unchanged and it's on the to-do list: " + (result.strip()[:200] or "no reason given")))
             self.board.annotate(task["id"], unchanged=True)   # 汇报时说"没改成、为什么"，不说"要新数据"
             return
-        finish(result=result.strip() or "（改完了，但工人没说改了什么）")
+        prog.done("改完了")
+        self.board.finish(task["id"], result=result.strip() or "（改完了，但工人没说改了什么）")
 
     def _en_text(self, zh: str, en: str) -> str:
         return en if str((self.cfg.get("meeting") or {}).get("lang") or "zh") == "en" else zh
 
     def _run_annotate(self, task: dict) -> None:
         """标注模式：工人只读地看一遍原文，写出钉在哪一段、怎么改、要补什么；没写出来也照样是一条标注（只是没有改法）。"""
+        from . import provider
+        if provider.mode() != "claude":           # API / 还没设：hands_api.py
+            from . import hands_api
+            hands_api.run_annotate(self, task)
+            return
         focus = task.get("focus") or {}
         focus_s = (focus.get("section", "") + (f"，可见段落开头：{focus['text'][:80]}" if focus.get("text") else "")) if isinstance(focus, dict) and focus.get("section") else "无"
         prompt = ANNOTATE_PROMPT.format_map(_SafeDict(
@@ -865,6 +878,10 @@ class Hands:
     def ask_screen(self, question: str, shot: str | None, focus: dict | None, history: str, cancel=None) -> tuple[str, str | None]:
         """对方看着屏幕问了一句（"你看这里是什么问题"）：对话模型看不了图，交给 Claude 看截图答。
         返回 (要念的话, 错误)。不改任何文件。"""
+        from . import provider
+        if provider.mode() != "claude":           # API / 还没设：hands_api.py（截图当图片块发过去）
+            from . import hands_api
+            return hands_api.ask_screen(self, question, shot, focus, history, cancel=cancel)
         prompt = (
             "你在组会上负责开口回答（界面上叫 Claude），正在和论文作者开会。对方刚才说了“截图”，要你看他屏幕的截图来回答。\n"
             f"截图时间：{time.strftime('%H:%M:%S')}（就是这一轮截的；没截到就别说看到了什么）\n"
@@ -888,6 +905,11 @@ class Hands:
                   quick: bool = False, changes: str = "") -> tuple[str, str | None]:
         """对话模型拿不准、或者它的回答里说论文有某个东西而论文里其实没有：交给 Claude 去论文里查了再答。
         返回 (要念的话, 错误)。不改任何文件。quick：快查（只在论文里搜，不联网、不看桌面）。"""
+        from . import provider
+        if provider.mode() != "claude":           # API / 还没设：hands_api.py（论文全文 + 模型自己知道的，不联网）
+            from . import hands_api
+            return hands_api.ask_paper(self, question, focus, history, draft=draft, why=why, cancel=cancel, host=host,
+                                       said_before=said_before, on_step=on_step, quick=quick, changes=changes)
         if quick:
             host = False
         prompt = (

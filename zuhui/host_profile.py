@@ -12,6 +12,7 @@ import base64
 import binascii
 import io
 import json
+import re
 from pathlib import Path
 
 from .config import STATE
@@ -20,16 +21,47 @@ PROFILE_FILE = STATE / "profile.json"
 AVATARS = STATE / "avatars"
 AVATAR_TYPES = (".jpg", ".jpeg", ".png", ".webp", ".svg")
 NAME_MAX = 24
+COLOR = "#60a5fa"                    # 没选过时：你蓝
+AI_COLOR = "#e3906f"                 # AI 橙
+# 设置里给的可选颜色（深浅两种主题上都看得清；访客的配色会避开你和 AI 选中的那两个）
+PALETTE = ["#60a5fa", "#e3906f", "#4ade80", "#facc15", "#f472b6", "#22d3ee", "#c084fc", "#f87171", "#2dd4bf", "#a3e635"]
+_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+_CACHE = {"mtime": None, "data": {}}
 AVATAR_MAX_BYTES = 8_000_000
 AVATAR_PX = 256
 
 
 def _read() -> dict:
+    """profile.json 的内容；按修改时间缓存（批注卡片每次刷新都要问颜色）。"""
     try:
-        d = json.loads(PROFILE_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        mt = PROFILE_FILE.stat().st_mtime_ns
+    except OSError:
         return {}
-    return d if isinstance(d, dict) else {}
+    if _CACHE["mtime"] != mt:
+        try:
+            d = json.loads(PROFILE_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            d = {}
+        _CACHE["mtime"], _CACHE["data"] = mt, (d if isinstance(d, dict) else {})
+    return dict(_CACHE["data"])
+
+
+def colors() -> tuple[str, str]:
+    """(你的颜色, AI 的颜色)：设置里选的，没选过是蓝、橙。"""
+    d = _read()
+    c, a = str(d.get("color") or ""), str(d.get("ai_color") or "")
+    return (c if _COLOR_RE.match(c) else COLOR), (a if _COLOR_RE.match(a) else AI_COLOR)
+
+
+def save_color(which: str, value) -> str:
+    """which 是 color（你）或 ai_color（AI）；value 是 #rrggbb。不对抛 ValueError("color")。"""
+    v = str(value or "").strip().lower()
+    if which not in ("color", "ai_color") or not _COLOR_RE.match(v):
+        raise ValueError("color")
+    d = _read()
+    d[which] = v
+    _write(d)
+    return v
 
 
 def _saved(key: str) -> str | None:

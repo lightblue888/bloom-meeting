@@ -1190,10 +1190,14 @@ const People = memo(function People({ people, status, onRole, active, uiLang: _u
       onBlur={blurOut}
       data-testid={p.id === 'claude' ? 'claude-status' : `person-${p.id}`}
     >
-      <Avatar person={p} color={colorOf[p.id]} />
+      {/* what comes and goes sits on the avatar, so the name and the rest of the bar never move: the muted mark covers
+          your avatar, the AI's state is a dot on its corner */}
+      <span className="mt-av-wrap">
+        <Avatar person={p} color={colorOf[p.id]} />
+        {p.you && hasStatus && mic.muted && <MutedMark onUnmute={mic.toggle} />}
+        {p.id === 'claude' && rows.length > 0 && <span className={`mt-status-dot is-${overall}`} aria-hidden="true" />}
+      </span>
       <span className="mt-person-name" style={{ color: colorOf[p.id] }}>{p.name}</span>
-      {p.you && hasStatus && mic.muted && <MutedMark onUnmute={mic.toggle} />}
-      {p.id === 'claude' && rows.length > 0 && <span className={`mt-status-dot is-${overall}`} aria-hidden="true" />}
       <span className={`mt-status-pop mt-card-pop ${p.id === 'claude' ? 'is-claude' : ''}`} role="dialog" aria-label={p.name}>
         {card(p)}
       </span>
@@ -1224,6 +1228,7 @@ const People = memo(function People({ people, status, onRole, active, uiLang: _u
         {shown.map((p) => (
           <span key={p.id} className={`mt-stack-item ${kind(p)}`}>
             <Avatar person={p} color={colorOf[p.id]} />
+            {p.you && hasStatus && mic.muted && <MutedMark onUnmute={mic.toggle} />}
           </span>
         ))}
         {more > 0 && <span className="mt-stack-more">+{more}</span>}
@@ -1235,7 +1240,6 @@ const People = memo(function People({ people, status, onRole, active, uiLang: _u
           ))}
         </span>
       </span>
-      {hasStatus && mic.muted && humans.some((p) => p.you) && <MutedMark onUnmute={mic.toggle} />}
       {claude && chip(claude)}
     </div>
   );
@@ -1278,7 +1282,7 @@ function useMic(on: boolean) {
   return { muted, talk, toggle };
 }
 
-/** beside your name while your microphone is muted (nothing there otherwise, so nothing shifts): a crossed-out
+/** a small badge on your avatar's corner while your microphone is muted (nothing there otherwise, so nothing shifts): a crossed-out
  *  microphone; a click unmutes. The switch itself is in your card. */
 function MutedMark({ onUnmute }: { onUnmute: () => void }) {
   return (
@@ -1861,15 +1865,16 @@ export const Transcript = memo(function Transcript({
       </div>
       {brain ? (
         <ClaudeNow brain={brain} board={board ?? null} ai={claude?.name || t('meeting.who.student')} />
-      ) : offline ? (
-        // not in a meeting (2026-11-13: the user looked at an ended meeting and couldn't find the strip at all)
+      ) : (
+        // not in a meeting (2026-11-13: the user looked at an ended meeting and couldn't find the strip at all); before
+        // the first state comes in, the same strip, empty: the lines under it never jump when it appears
         <div className="mt-now is-off" data-testid="claude-now">
           <div className="mt-now-row">
             <span className="mt-now-dot is-idle" aria-hidden="true" />
-            <span className="mt-now-v">{ut('meeting.ai.offline')}</span>
+            <span className="mt-now-v">{offline ? ut('meeting.ai.offline') : ''}</span>
           </div>
         </div>
-      ) : null}
+      )}
       <div
         className="mt-lines"
         ref={box}

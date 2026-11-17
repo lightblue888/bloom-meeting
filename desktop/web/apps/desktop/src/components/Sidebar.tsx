@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { Icon } from '@blurt/icons';
 import { t } from '../i18n';
-import { PROFILE_EVENT, ZUHUI_BASE } from '../meetingApi';
+import { meetingApi, PROFILE_EVENT, ZUHUI_BASE } from '../meetingApi';
 import { Flower, HOST_COLOR } from './Flower';
 
 /** 会议 (the meeting under way), 回顾 (the meetings held) or Dev (the simulated meetings Bloom is tested with) */
@@ -42,6 +42,7 @@ export function Sidebar({ page, dev, onGo, onSettings }: { page: Page | null; de
 function RailAvatar() {
   const [has, setHas] = useState(false);
   const [n, setN] = useState(0);
+  const [color, setColor] = useState(HOST_COLOR);
   useEffect(() => {
     const again = () => setN((k) => k + 1);
     window.addEventListener(PROFILE_EVENT, again);
@@ -55,6 +56,8 @@ function RailAvatar() {
         (r) => {
           void r.body?.cancel();
           if (alive) setHas(r.ok);
+          // the flower in your own colour (Settings → Profile)
+          if (!r.ok) meetingApi.profile().then((x) => alive && setColor(x.color || HOST_COLOR), () => {});
         },
         () => {
           if (!alive) return;
@@ -71,7 +74,7 @@ function RailAvatar() {
   if (!has)
     return (
       <span className="mt-rail-me is-flower" aria-hidden="true">
-        <Flower color={HOST_COLOR} />
+        <Flower color={color} />
       </span>
     );
   return <img className="mt-rail-me" src={`${ZUHUI_BASE}/avatars/me?n=${n}`} alt="" draggable={false} onError={() => setHas(false)} />;

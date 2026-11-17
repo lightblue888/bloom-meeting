@@ -16,7 +16,18 @@ SONNET = "claude-sonnet-5-5"
 
 
 def ask(prompt: str, system: str = "", model: str = HAIKU, effort: str = "low", timeout: float = 300) -> str:
-    """问一次，返回回答的文字。出错抛 RuntimeError（调用方自己兜底）。"""
+    """问一次，返回回答的文字。出错抛 RuntimeError（调用方自己兜底）。
+    模型来源是 API 时直接调接口（Haiku 那档 → 快速型号，其余 → 主力型号）；是 Claude Code 账号时起 claude -p。"""
+    from . import llm_api, provider
+    m = provider.mode()
+    if m == "api":
+        try:
+            return llm_api.complete(system, [{"role": "user", "content": prompt}],
+                                    tier="fast" if "haiku" in str(model).lower() else "main", max_tokens=8192, timeout=timeout)
+        except llm_api.ApiError as e:
+            raise RuntimeError(str(e)) from None
+    if m == "none":
+        raise RuntimeError("还没设置模型来源（设置 → 通用 → 模型来源）")
     from .config import load
     from .hands import _resolve_claude, _strip_claude_env
     cfg = load()
@@ -29,8 +40,6 @@ def ask(prompt: str, system: str = "", model: str = HAIKU, effort: str = "low", 
         sp.write_text(system, encoding="utf-8")
         args += ["--system-prompt-file", str(sp)]
     flags = 0x08000000 if os.name == "nt" else 0          # 不弹黑窗口
-    from . import provider
-    args = provider.map_args(args)                        # 设置里填了别家的 API key：换成那家的型号
     try:
         r = subprocess.run(args, input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace",
                            env=_strip_claude_env(), cwd=str(d), timeout=timeout, creationflags=flags)

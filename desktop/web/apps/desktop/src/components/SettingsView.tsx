@@ -19,6 +19,11 @@ import { StoragePane } from './StorageSettings';
 // a tray "nav" to a pane can arrive before this page is mounted: kept until it is
 let pendingNav: { pane?: string } | null = null;
 let navListener: ((p: { pane?: string }) => void) | null = null;
+/** open Settings at a pane / row ("general/source") — from the main window's "set up a model" bar */
+export function openSettingsAt(link: string) {
+  pendingNav = { pane: link };
+  navListener?.({ pane: link });
+}
 listen<{ view?: string; pane?: string }>('nav', (p) => {
   if (p.view !== 'settings') return;
   pendingNav = p;
@@ -339,7 +344,28 @@ function GeneralPane({ status, cfg, save, onLang }: {
   );
 }
 
-const PROFILE_ERRORS = ['empty', 'too_long', 'taken', 'too_big', 'bad_image'];
+const PROFILE_ERRORS = ['empty', 'too_long', 'taken', 'too_big', 'bad_image', 'color'];
+
+/** a row of colour dots; the picked one ringed. A click picks it. */
+function Swatches({ value, palette, onPick, disabled, label }: { value: string; palette: string[]; onPick: (c: string) => void; disabled?: boolean; label: string }) {
+  return (
+    <span className="st-swatches" role="radiogroup" aria-label={label}>
+      {palette.map((c) => (
+        <button
+          key={c}
+          type="button"
+          role="radio"
+          aria-checked={c === value}
+          aria-label={c}
+          className={`st-swatch ${c === value ? 'on' : ''}`}
+          style={{ background: c }}
+          disabled={disabled}
+          onClick={() => c !== value && onPick(c)}
+        />
+      ))}
+    </span>
+  );
+}
 const profileError = (e: unknown) => {
   const c = String((e as Error)?.message ?? e);
   return S(`settings.profile.err.${PROFILE_ERRORS.includes(c) ? c : 'failed'}`);
@@ -414,6 +440,15 @@ function ProfileGroup() {
     window.addEventListener(PROFILE_EVENT, again);
     return () => window.removeEventListener(PROFILE_EVENT, again);
   }, []);
+  const [colorErr, setColorErr] = useState<string | null>(null);
+  const pickColor = async (which: 'color' | 'ai_color', c: string) => {
+    setColorErr(null);
+    try {
+      setP(await meetingApi.setProfileColor(which, c));
+    } catch (e) {
+      setColorErr(profileError(e));
+    }
+  };
   const saveAi = async () => {
     aiEditing.current = false;
     if (!p) return;
@@ -470,7 +505,7 @@ function ProfileGroup() {
     <Group id="general.profile" footer={down ? S('settings.profile.offline') : undefined}>
       <Row id="general.avatar" detail={picErr ?? undefined} warn={!!picErr}>
         <span className="st-avatar" data-testid="profile-avatar">
-          {p?.avatar ? <img src={avatarUrl(p.avatar)} alt="" draggable={false} /> : <Flower color={HOST_COLOR} />}
+          {p?.avatar ? <img src={avatarUrl(p.avatar)} alt="" draggable={false} /> : <Flower color={p?.color || HOST_COLOR} />}
         </span>
         <button disabled={!p || busy} onClick={() => file.current?.click()} data-testid="profile-pick">
           {S('settings.profile.change')}
@@ -506,6 +541,9 @@ function ProfileGroup() {
           }}
         />
       </Row>
+      <Row id="general.color" detail={colorErr} warn={!!colorErr}>
+        {p && <Swatches value={p.color} palette={p.palette} label={S('settings.general.color')} onPick={(c) => void pickColor('color', c)} />}
+      </Row>
       <Row id="general.ai_name" detail={aiErr ?? undefined} warn={!!aiErr}>
         <input
           className="st-name"
@@ -531,11 +569,15 @@ function ProfileGroup() {
           }}
         />
       </Row>
+      <Row id="general.ai_color">
+        {p && <Swatches value={p.ai_color} palette={p.palette} label={S('settings.general.ai_color')} onPick={(c) => void pickColor('ai_color', c)} />}
+      </Row>
     </Group>
   );
 }
 
-const SOURCES: ProviderKind[] = ['claude', 'deepseek', 'kimi', 'glm', 'qwen', 'anthropic', 'custom'];
+// API first (the default for a new install), Claude Code's own login last
+const SOURCES: ProviderKind[] = ['deepseek', 'kimi', 'glm', 'qwen', 'anthropic', 'custom', 'claude'];
 const PROVIDER_ERRORS = ['key', 'base_url', 'model'];
 
 /** Model source: Claude Code's own login, or an API key (DeepSeek, Kimi, GLM, Qwen, Anthropic, any Anthropic-compatible
@@ -569,8 +611,9 @@ function ProviderGroup() {
           if (!alive) return;
           setP(x);
           setDown(false);
-          setKind(x.kind);
-          fill(x, x.kind);
+          const k = x.kind === 'unset' ? 'deepseek' : x.kind; // not picked yet: an API source, DeepSeek first
+          setKind(k);
+          fill(x, k);
         },
         () => {
           if (!alive) return;
@@ -592,8 +635,9 @@ function ProviderGroup() {
     try {
       const x = await meetingApi.setProvider(k === 'claude' ? { kind: k } : { kind: k, base_url: base, key, fast, main });
       setP(x);
-      setKind(x.kind);
-      fill(x, x.kind);
+      const k2 = x.kind === 'unset' ? 'deepseek' : x.kind;
+      setKind(k2);
+      fill(x, k2);
       setMsg({ text: S('settings.provider.saved'), warn: false });
     } catch (e) {
       const c = String((e as Error)?.message ?? e);
@@ -640,9 +684,10 @@ function ProviderGroup() {
     <Group id="general.model_source" footer={down ? S('settings.profile.offline') : undefined}>
       <Row
         id="general.source"
-        detail={!api ? S('settings.provider.claude_detail') : kind === 'custom' ? S('settings.provider.billed_any') : S('settings.provider.billed', name(kind))}
+        detail={p?.kind === 'unset' ? S('settings.provider.unset') : !api ? S('settings.provider.claude_detail') : kind === 'custom' ? S('settings.provider.billed_any') : S('settings.provider.billed', name(kind))}
+        warn={p?.kind === 'unset'}
       >
-        <Popup label={S('settings.general.source')} value={kind} choices={SOURCES.map((k) => [k, name(k)] as [ProviderKind, string])} dividers={[1, 5]}
+        <Popup label={S('settings.general.source')} value={kind} choices={SOURCES.map((k) => [k, name(k)] as [ProviderKind, string])} dividers={[4, 6]}
           onChange={choose} disabled={!p || busy} />
       </Row>
       {api && (

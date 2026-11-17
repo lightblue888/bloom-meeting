@@ -242,5 +242,7 @@
   "meeting.dev.scen.two": "两人会",
   "meeting.dev.scen.three": "三人会",
   "meeting.dev.scen.teacher": "导师在场",
-  "meeting.dev.scen.monkey": "乱测"
+  "meeting.dev.scen.monkey": "乱测",
+  "mw.setup_source": "还没设置模型来源：填上 API key，AI 才能在会上说话和改稿。",
+  "mw.setup_source_go": "去设置"
 }

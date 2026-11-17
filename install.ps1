@@ -7,7 +7,7 @@
 #   2. the meeting backend (this repository) into %LOCALAPPDATA%\bloom-meeting, with its own Python environment
 #   3. the desktop app (*setup.exe from the latest GitHub release), installed for this user only
 #   4. ~/.blurt/config.json pointed at the backend; config.json created from config.example.json (kept on updates)
-# Your own Claude account does the thinking: Claude Code must be installed and signed in (`claude`).
+# The models: the user picks a provider and pastes an API key in the app (Settings > General > Model source).
 #
 # Options (environment variables, since `irm | iex` takes no arguments):
 #   BLOOM_DIR      where the backend goes            (default %LOCALAPPDATA%\bloom-meeting)
@@ -106,7 +106,7 @@ if ((Test-Path $venv) -and -not (Test-Path (Join-Path $venv 'Scripts\python.exe'
 }
 Push-Location $App
 try {
-    $out = Native { uv sync --python 3.14 --quiet }
+    $out = Native { uv sync --python 3.14 --inexact --quiet }
     if ($LASTEXITCODE -ne 0) { $out | Select-Object -Last 15 | ForEach-Object { Write-Host "    $_" }; throw 'uv sync failed' }
 } finally { Pop-Location }
 $py = Join-Path $App '.venv\Scripts\python.exe'
@@ -150,18 +150,11 @@ Push-Location $App
 try { $chk = Native { & $py -X utf8 -c "import zuhui.app, zuhui.view; print('backend ok')" } } finally { Pop-Location }
 if ($LASTEXITCODE -eq 0) { Ok 'backend imports' } else { $chk | Select-Object -Last 6 | ForEach-Object { Write-Host "    $_" }; throw 'the backend does not import (see above)' }
 
-# ---------------------------------------------------------------- Claude
+# ---------------------------------------------------------------- done
 Refresh-Path
-$claude = Get-Command claude -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
 Write-Host ''
-if ($claude) {
-    Ok 'Claude Code'
-    Say '\u5982\u679c\u8fd8\u6ca1\u767b\u5f55\uff1a\u5728\u7ec8\u7aef\u91cc\u8fd0\u884c claude \u767b\u5f55\u4e00\u6b21\uff1b\u6216\u8005\u5728 Bloom \u7684 \u8bbe\u7f6e \u2192 \u901a\u7528 \u2192 \u6a21\u578b\u6765\u6e90 \u91cc\u586b API key\uff08DeepSeek\u3001Kimi \u7b49\uff09\u3002' 'If you have not signed in: run `claude` once, or put an API key (DeepSeek, Kimi, ...) in Bloom: Settings > General > Model source.'
-} else {
-    Warn 'Claude Code is missing: Bloom runs its models through it (sign in with Claude, or use an API key from Settings > Model source).'
-    Say '\u5b89\u88c5\uff1airm https://claude.ai/install.ps1 | iex   \u7136\u540e\u8fd0\u884c claude \u767b\u5f55\uff0c\u6216\u5728 Bloom \u8bbe\u7f6e\u91cc\u586b API key' 'Install: irm https://claude.ai/install.ps1 | iex   then run `claude` to sign in, or put an API key in Bloom settings'
-}
+Say '\u7b2c\u4e00\u6b21\u6253\u5f00 Bloom \u65f6\uff0c\u5728 \u8bbe\u7f6e \u2192 \u901a\u7528 \u2192 \u6a21\u578b\u6765\u6e90 \u91cc\u9009\u670d\u52a1\u5546\u3001\u586b API key\u3002' 'First time: open Bloom, then Settings > General > Model source, pick a provider and paste an API key.'
 Write-Host ''
 Say '\u88c5\u597d\u4e86\u3002\u5f00\u59cb\u83dc\u5355\u91cc\u6253\u5f00 Bloom\uff0c\u628a\u8bba\u6587\u62d6\u8fdb\u53bb\uff0c\u70b9\u300c\u5f00\u4f1a\u300d\u3002' 'Done. Open Bloom from the Start menu, drop a paper in, and start a meeting.'
 Write-Host ''

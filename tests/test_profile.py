@@ -39,7 +39,7 @@ out = {}
 out["start"] = req("GET", "/api/profile")
 out["rail0"] = req("GET", "/avatars/me")[0]
 out["empty"] = req("POST", "/api/profile", {"name": "  "})
-out["taken"] = req("POST", "/api/profile", {"name": "Claude"})          # 和 AI 重名
+out["taken"] = req("POST", "/api/profile", {"name": "AI"})              # 和 AI 重名（新装没设模型来源时 AI 就叫 AI）
 out["long"] = req("POST", "/api/profile", {"name": "x" * 25})
 out["rename"] = req("POST", "/api/profile", {"name": " 小王\n同学 "})
 out["named"] = list(named)
@@ -57,6 +57,11 @@ out["size"] = Image.open(Path(os.environ["ZUHUI_HOME"]) / "avatars" / "me.png").
 out["remove"] = req("POST", "/api/profile/avatar", {"remove": True})
 out["rail2"] = req("GET", "/avatars/me")[0]
 out["saved"] = json.loads((Path(os.environ["ZUHUI_HOME"]) / "profile.json").read_text(encoding="utf-8"))
+out["color"] = req("POST", "/api/profile", {"color": "#4ADE80"})
+out["ai_color"] = req("POST", "/api/profile", {"ai_color": "#f472b6"})
+out["bad_color"] = req("POST", "/api/profile", {"color": "red"})
+out["colors_people"] = [p["color"] for p in v.participants(guests=False)]
+out["guest_pal"] = v.guest_colors(["访客一", "访客二"])
 def from_site(origin, method="POST", path="/api/profile", body=None, ctype="text/plain"):
     # 别的网站发来的：text/plain 的 POST 浏览器不预检，后端自己得拦
     c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
@@ -91,12 +96,12 @@ class ProfileHttpTest(unittest.TestCase):
         self.assertEqual(r["long"], [400, {"error": "too_long"}])
         self.assertEqual(r["rename"][0], 200)
         self.assertEqual(r["rename"][1]["name"], "小王 同学")            # 换行、首尾空白收掉
-        self.assertEqual(r["named"], [["小王 同学", "Claude"]])        # 语音桥那边也换名字
+        self.assertEqual(r["named"], [["小王 同学", "AI"]])        # 语音桥那边也换名字
         self.assertEqual((r["ai"][1]["assistant"], r["ai"][1]["assistant_custom"]), ("DeepSeek", True))
         self.assertEqual(r["ai_taken"], [400, {"error": "taken"}])
         self.assertEqual(r["people"], ["小王 同学", "DeepSeek"])        # 会议页上 AI 马上换名字
-        self.assertEqual((r["ai_back"][1]["assistant"], r["ai_back"][1]["assistant_custom"]), ("Claude", False))   # 空的 = 按模型叫
-        self.assertEqual(r["named2"][-1], ["小王 同学", "Claude"])
+        self.assertEqual((r["ai_back"][1]["assistant"], r["ai_back"][1]["assistant_custom"]), ("AI", False))   # 空的 = 按模型来源叫（没设时叫 AI）
+        self.assertEqual(r["named2"][-1], ["小王 同学", "AI"])
         self.assertEqual(r["me_name"], "小王 同学")                    # 会议页上马上是新名字
         self.assertEqual(r["bad_img"], [400, {"error": "bad_image"}])
         self.assertEqual(r["pic"][0], 200)
@@ -107,6 +112,11 @@ class ProfileHttpTest(unittest.TestCase):
         self.assertEqual({k: r["remove"][1][k] for k in ("name", "avatar", "custom")}, {"name": "小王 同学", "avatar": None, "custom": False})
         self.assertEqual(r["rail2"], 404)
         self.assertEqual(r["saved"], {"name": "小王 同学"})
+        self.assertEqual((r["color"][0], r["color"][1]["color"]), (200, "#4ade80"))   # 名字颜色：存成小写
+        self.assertEqual(r["ai_color"][1]["ai_color"], "#f472b6")
+        self.assertEqual(r["bad_color"], [400, {"error": "color"}])
+        self.assertEqual(r["colors_people"], ["#4ade80", "#f472b6"])                 # 参会人跟着换色
+        self.assertFalse(set(r["guest_pal"].values()) & {"#4ade80", "#f472b6"})       # 访客配色避开这两色
         # 跨源：只有 Bloom 自己的窗口和本机页面能调；别的网站改不了东西、也读不到
         self.assertEqual(r["evil_post"][0], 403)
         self.assertEqual(r["evil_rebase"][0], 403)

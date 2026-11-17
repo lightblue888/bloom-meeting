@@ -14,7 +14,8 @@ import { SidebarGlyph } from './components/glyphs';
 import { tidy, useMenu, type MenuEntry } from './components/Menu';
 import { SettingsView } from './components/SettingsView';
 import { Sidebar, type Page } from './components/Sidebar';
-import { meetingApi } from './meetingApi';
+import { meetingApi, PROFILE_EVENT } from './meetingApi';
+import { openSettingsAt } from './components/SettingsView';
 import { Tooltip } from './components/Tooltip';
 import { MeetingCurrent } from './components/MeetingCurrent';
 import { MeetingHistory } from './components/MeetingHistory';
@@ -139,6 +140,27 @@ export default function App() {
   useEffect(() => {
     if (hasDev === false && page === 'dev') setPage('meeting');
   }, [hasDev, page]);
+  // a fresh install hasn't picked a model source (Settings → General → Model source): a bar asks for it
+  const [noSource, setNoSource] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    let timer = 0;
+    const look = () =>
+      meetingApi.provider().then(
+        (x) => alive && setNoSource(x.kind === 'unset'),
+        () => {
+          if (alive) timer = window.setTimeout(look, 5000);
+        },
+      );
+    void look();
+    const again = () => void look();
+    window.addEventListener(PROFILE_EVENT, again);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+      window.removeEventListener(PROFILE_EVENT, again);
+    };
+  }, []);
   const go = (p: Page) => {
     if (p === 'dev' && !hasDev) return;
     setScreen('main');
@@ -233,6 +255,20 @@ export default function App() {
         </main>
       )}
 
+      {noSource && mainScreen && (
+        <div className="mw-setup" role="status" style={{ left: sideIn + (window.innerWidth - sideIn) / 2 }} data-testid="setup-source">
+          <span>{t('mw.setup_source')}</span>
+          <button
+            className="primary"
+            onClick={() => {
+              setScreen('settings');
+              openSettingsAt('general/source');
+            }}
+          >
+            {t('mw.setup_source_go')}
+          </button>
+        </div>
+      )}
       {menu.node}
       <Tooltip />
       {toast && (

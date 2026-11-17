@@ -147,7 +147,9 @@ class FastBrain:
     # ---------- 套餐里的 Claude（常驻 Claude Code 进程，见 cli_brain.py） ----------
     @property
     def is_cli(self) -> bool:
-        return True                          # 2026-11-12 起只有套餐里的 Claude（不再连 DeepSeek）
+        """用的是 Claude Code 的常驻进程（模型来源 = Claude Code 账号）。API 时每轮把整段对话发过去，不是常驻进程。"""
+        from . import provider
+        return provider.mode() != "api"
 
     @property
     def model_id(self) -> str:
@@ -254,6 +256,19 @@ class FastBrain:
         """这一轮模型吐出来的文字，一段一段（套餐里的 Claude，常驻进程）。还没出字就失败了：换个新进程再试一次；
         还不行抛 CliError，调用方把这一句交给后台想（2026-11-12 起不再用 DeepSeek 兜底）。"""
         from .cli_brain import CliError
+        from . import llm_api, provider
+        m = provider.mode()
+        if m == "api":                           # 模型来源是 API：直接流式调接口，整段对话每轮都发
+            try:
+                yield from llm_api.stream(messages[0]["content"] if messages and messages[0].get("role") == "system" else "",
+                                          [x for x in messages if x.get("role") != "system"], tier="fast", max_tokens=1024)
+                return
+            except llm_api.ApiError as e:
+                self.last_error = str(e)
+                print(f"[fast] {self.last_error}", file=sys.stderr)
+                raise CliError(str(e)) from None
+        if m == "none":
+            raise CliError("还没设置模型来源（设置 → 通用 → 模型来源）")
         last = None
         for attempt in (1, 2):                   # 进程中途退出之类：换个新进程再试一次
             got = False
@@ -277,6 +292,9 @@ class FastBrain:
     # ---------- 对外 ----------
     def warm(self) -> bool:
         """开会前先把进程起好、整篇论文写进缓存（第一句要 4–5 秒，预热掉）。返回模型有没有应答。"""
+        from . import provider
+        if provider.mode() != "claude":          # API：没有要预热的进程（没设：也没什么可热的）
+            return provider.mode() == "api"
         try:
             self._cli().warm(self._prefix(False), block=True)
             return True

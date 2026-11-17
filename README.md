@@ -1,3 +1,5 @@
+https://github.com/user-attachments/assets/815369c9-5372-4953-84ec-d6c1b68a329c
+
 # Bloom
 
 <p align="center"><img src="docs/bloom-demo.gif" width="720" alt="会上说定一处改法，论文当场出现删红增绿的修订"></p>

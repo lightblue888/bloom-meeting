@@ -1,0 +1,95 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Bloom",
+  "mainBinaryName": "blurt",
+  "version": "1.0.16",
+  "identifier": "dev.blurt.desktop",
+  "build": {
+    "beforeDevCommand": {
+      "script": "pnpm --filter @blurt/desktop dev",
+      "cwd": "../../../web"
+    },
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": {
+      "script": "pnpm --filter @blurt/overlays build && pnpm --filter @blurt/desktop build",
+      "cwd": "../../../web"
+    },
+    "frontendDist": "../../../web/apps/desktop/dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Bloom",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 520,
+        "center": true,
+        "dragDropEnabled": false,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,HardwareMediaKeyHandling,MediaSessionService"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost http://127.0.0.1:47330 data: blob:; media-src 'self' asset: http://asset.localhost http://127.0.0.1:47330 blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:47330; frame-src http://127.0.0.1:47330",
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$HOME/Blurt/**",
+          "$HOME/.blurt/**"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis",
+      "msi"
+    ],
+    "category": "Productivity",
+    "shortDescription": "Bloom 组会：开会、录下会议窗口、实时转写",
+    "longDescription": "Bloom 组会：开会时只录自己的窗口，边录边转写，会后生成修订对比和纪要。",
+    "copyright": "MIT",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../../../skills/blurt/scripts/*.py": "scripts/",
+      "../../../skills/blurt/scripts/*.json": "scripts/",
+      "../../../skills/blurt/scripts/.python-version": "scripts/.python-version",
+      "../../../skills/blurt/models/*": "models/",
+      "sounds/rec-done.wav": "sounds/rec-done.wav"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "English",
+          "SimpChinese"
+        ],
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "sidebarImage": "icons/installer-sidebar.bmp",
+        "headerImage": "icons/installer-header.bmp",
+        "installerHooks": "installer/hooks.nsh"
+      }
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "blurt"
+        ]
+      }
+    }
+  }
+}

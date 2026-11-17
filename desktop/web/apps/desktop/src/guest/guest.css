@@ -1,0 +1,325 @@
+/* The guest page: the join card, the bar's three buttons, toasts; the meeting page itself is the app's (meeting.css). */
+
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+}
+.g-app {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.g-app.is-in .mt-root {
+  height: 100%;
+}
+
+/* ---------------------------------------------------------------- before joining */
+.g-center {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: 24px max(16px, env(safe-area-inset-right, 0px)) 24px max(16px, env(safe-area-inset-left, 0px));
+}
+.g-card {
+  width: min(440px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 26px 26px 24px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--bg-2);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.18);
+}
+.g-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 650;
+  font-size: 15px;
+  color: var(--ink);
+}
+.g-pill {
+  margin-left: auto;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--mute);
+  background: var(--chip, rgba(127, 127, 127, 0.12));
+}
+.g-pill.is-live {
+  color: #fff;
+  background: var(--bloom, #2563eb);
+}
+.g-pill.is-wait {
+  color: var(--attn-ink, var(--attn));
+}
+.g-topic {
+  margin: 4px 0 0;
+  font-size: 22px;
+  line-height: 1.3;
+  font-weight: 700;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+.g-sub {
+  margin: -6px 0 0;
+  font-size: 13px;
+  color: var(--mute);
+}
+.g-warn {
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--attn-ink, var(--attn));
+  background: rgba(245, 158, 11, 0.1);
+}
+.g-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 4px;
+}
+.g-name {
+  height: 42px;
+  padding: 0 13px;
+  border: 1px solid var(--line-2, var(--line));
+  border-radius: 10px;
+  font: inherit;
+  font-size: 15px;
+  color: var(--ink);
+  background: var(--bg);
+  outline: none;
+}
+.g-name:focus {
+  border-color: var(--bloom, #2563eb);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+}
+.g-switch {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.g-switch input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--bloom, #2563eb);
+}
+.g-err {
+  margin: -4px 0 0;
+  font-size: 12.5px;
+  color: var(--err);
+}
+.g-msg {
+  margin: 4px 0 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+.g-btn {
+  height: 40px;
+  padding: 0 16px;
+  border: 1px solid var(--line-2, var(--line));
+  border-radius: 10px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--panel, var(--bg));
+  cursor: pointer;
+}
+.g-btn.is-primary {
+  border-color: transparent;
+  color: #fff;
+  background: var(--bloom, #2563eb);
+}
+.g-btn.is-primary:hover {
+  filter: brightness(1.08);
+}
+
+/* who is in the meeting, on the join card */
+.g-who {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 2px;
+}
+.g-who-h {
+  font-size: 12px;
+  color: var(--mute);
+}
+.g-who-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.g-who-p {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+  background: var(--chip, rgba(127, 127, 127, 0.12));
+}
+.g-who-p i {
+  font-style: normal;
+  font-weight: 500;
+  font-size: 11px;
+  color: var(--mute);
+}
+.g-co {
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fcd34d;
+  background: rgba(251, 191, 36, 0.13);
+  white-space: nowrap;
+}
+.g-novoice {
+  font-size: 12px;
+  color: var(--mute);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- in the meeting: the bar's buttons */
+.g-acts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.g-mic {
+  position: relative;
+  overflow: hidden;
+}
+.g-mic.is-on {
+  color: var(--brand-ink, var(--ink));
+}
+.g-mic.is-on::after {
+  /* the level: a thin bar along the bottom that moves with the voice */
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: calc(var(--lv, 0) * 100%);
+  background: var(--bloom, #2563eb);
+  transition: width 60ms linear;
+}
+.g-mic.is-off {
+  color: var(--mute);
+}
+.g-leave {
+  color: var(--err);
+}
+.g-back {
+  color: var(--brand-ink, var(--ink));
+}
+.g-conn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.g-conn.is-busy {
+  color: var(--mute);
+}
+.g-link {
+  padding: 0;
+  border: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--brand-ink, var(--bloom));
+  background: none;
+  cursor: pointer;
+}
+
+.g-toasts {
+  position: fixed;
+  left: 50%;
+  bottom: calc(22px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  z-index: 50;
+  pointer-events: none;
+}
+.g-toast {
+  max-width: min(92vw, 520px);
+  padding: 9px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  color: #fff;
+  background: rgba(20, 24, 31, 0.92);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.25);
+}
+
+/* ---------------------------------------------------------------- narrow screens (phones): the bar takes two rows
+   (the name; then 新增, the people, the microphone and 离开), the paper's tools scroll sideways, the paper full width
+   with the transcript under it in its own scroll */
+@media (max-width: 820px) {
+  .g-app .mt-head {
+    height: auto;
+    min-height: 0;
+    flex-wrap: wrap;
+    gap: 8px 8px;
+    padding: 9px max(12px, env(safe-area-inset-right, 0px)) 8px max(12px, env(safe-area-inset-left, 0px));
+  }
+  .g-app .mt-head-main {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .g-app .mt-head > .mt-people {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: none;
+    margin-left: 0;
+  }
+  .g-app .mt-head-acts {
+    margin-left: auto;
+  }
+  .g-app .mt-bar {
+    overflow-x: auto;
+    scrollbar-width: none;
+    gap: 10px;
+    padding: 0 10px;
+  }
+  .g-app .mt-bar::-webkit-scrollbar {
+    display: none;
+  }
+  .g-app .mt-bar > * {
+    flex: none;
+  }
+  .g-app .mt-cols {
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-rows: minmax(0, 1fr) minmax(150px, 36%);
+  }
+  .g-app .mt-right {
+    border-top: 1px solid var(--line);
+    min-width: 0;
+  }
+  .g-mic .g-lbl {
+    display: none;
+  }
+  .g-back {
+    display: none;
+  }
+}

@@ -1,0 +1,21 @@
+/* The mascot (@blurt/icons/mascot): <span class="mascot" data-clip="idle" style="--mascot-size: 48px"></span>.
+   In Bloom it is the flower (BloomMark, apps/desktop/src/components/MeetingLayout.tsx: the same petals, centre and
+   colours, framed to fill the box). The box is the flower's square at rest; the flower sits on ::before, not clipped,
+   so an opening or a pop can reach a little past it. mascot.ts's ticker moves it by --bloom-scale and --bloom-turn —
+   no keyframes, no sprite sheets. */
+.mascot {
+  display: inline-block;
+  flex: none;
+  position: relative;
+  width: var(--mascot-size, 80px);
+  height: var(--mascot-size, 80px);
+  vertical-align: middle;
+  pointer-events: none;
+}
+.mascot::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='30 30 180 180'%3E%3Cg transform='translate(120,120)'%3E%3Cellipse cx='0' cy='-46' rx='22' ry='40' fill='%233B82F6' transform='rotate(0)'/%3E%3Cellipse cx='0' cy='-46' rx='22' ry='40' fill='%2360A5FA' transform='rotate(72)'/%3E%3Cellipse cx='0' cy='-46' rx='22' ry='40' fill='%233B82F6' transform='rotate(144)'/%3E%3Cellipse cx='0' cy='-46' rx='22' ry='40' fill='%2360A5FA' transform='rotate(216)'/%3E%3Cellipse cx='0' cy='-46' rx='22' ry='40' fill='%233B82F6' transform='rotate(288)'/%3E%3Ccircle r='26' fill='%231D4ED8'/%3E%3Ccircle r='9' fill='%23EFF6FF'/%3E%3C/g%3E%3C/svg%3E") center / contain no-repeat;
+  transform: rotate(var(--bloom-turn, 0deg)) scale(var(--bloom-scale, 1));
+}

@@ -1,0 +1,16 @@
+{
+  "tray.open": "Open Bloom",
+  "tray.settings": "Settings…",
+  "tray.quit": "Quit Bloom",
+  "tray.models.downloading_start": "Downloading speech model…",
+  "tray.models.show_download": "Show download",
+  "tray.tooltip": "Bloom",
+  "tray.tooltip.recording": "Recording · {time}",
+  "error.scripts": "Bloom’s scripts weren’t found. Reinstall the app, or set BLURT_SCRIPTS.",
+  "error.uv": "uv isn’t installed. Get it from docs.astral.sh/uv, then reopen Bloom.",
+  "error.busy": "A recording is starting.",
+  "error.unknown": "Something went wrong.",
+  "tray.models.stop_download": "Stop download",
+  "tray.models.status": "Downloading · {pct}%",
+  "tray.models.row": "Speech model · {done} / {total}"
+}

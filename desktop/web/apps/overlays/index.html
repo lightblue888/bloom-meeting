@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bloom</title>
+    <style>
+      /* Dev gallery: the island in its demo modes over a busy backdrop, to see what is transparent. */
+      body {
+        margin: 0;
+        padding: 16px;
+        font: 13px system-ui, sans-serif;
+        color: #eee;
+        background: #333 repeating-conic-gradient(#3c3c3c 0 25%, #2e2e2e 0 50%) 0 0 / 24px 24px;
+      }
+      h2 {
+        font-size: 13px;
+        font-weight: 600;
+        margin: 16px 0 6px;
+      }
+      iframe {
+        display: block;
+        border: 1px dashed rgba(255, 255, 255, 0.25);
+        background: transparent;
+        color-scheme: normal;
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>Island — at rest (open): the paper, 开会 · 复制链接</h2>
+    <iframe src="./island.html?demo=home&amp;lang=zh-Hans" width="1000" height="330" allowtransparency="true"></iframe>
+    <h2>Island — a meeting take · hovered (复制邀请 · 散会)</h2>
+    <div class="row">
+      <iframe src="./island.html?demo=meeting&amp;lang=zh-Hans" width="640" height="160" allowtransparency="true"></iframe>
+      <iframe src="./island.html?demo=meeting-hover&amp;lang=zh-Hans" width="640" height="160" allowtransparency="true"></iframe>
+    </div>
+    <h2>Island — a meeting being processed</h2>
+    <div class="row">
+      <iframe src="./island.html?demo=post&amp;lang=zh-Hans" width="640" height="200" allowtransparency="true"></iframe>
+      <iframe src="./island.html?demo=post-pill&amp;lang=zh-Hans" width="640" height="200" allowtransparency="true"></iframe>
+    </div>
+  </body>
+</html>

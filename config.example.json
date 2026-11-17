@@ -1,0 +1,13 @@
+{
+  "meeting": {
+    "me": "主持人",
+    "me_asr": []
+  },
+  "hands": {
+    "model": "claude-opus-5-5",
+    "effort": "high"
+  },
+  "share": {
+    "base_url": ""
+  }
+}

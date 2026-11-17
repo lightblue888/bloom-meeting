@@ -1,0 +1,16 @@
+{
+  "tray.open": "打开 Bloom",
+  "tray.settings": "设置…",
+  "tray.quit": "退出 Bloom",
+  "tray.models.downloading_start": "正在下载语音模型…",
+  "tray.models.show_download": "查看下载",
+  "tray.tooltip": "Bloom",
+  "tray.tooltip.recording": "正在录屏 · {time}",
+  "error.scripts": "找不到 Bloom 的脚本。请重新安装，或设置 BLURT_SCRIPTS。",
+  "error.uv": "还没有安装 uv。请从 docs.astral.sh/uv 安装后重新打开 Bloom。",
+  "error.busy": "会议录制正在开始。",
+  "error.unknown": "出了点问题。",
+  "tray.models.stop_download": "停止下载",
+  "tray.models.status": "正在下载 · {pct}%",
+  "tray.models.row": "语音模型 · {done} / {total}"
+}

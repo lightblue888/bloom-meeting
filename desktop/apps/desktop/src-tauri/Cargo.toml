@@ -1,0 +1,75 @@
+[package]
+name = "blurt-desktop"
+version = "1.0.16"
+description = "Bloom (组会): the meeting window, its recording and island, derived from Blurt (MIT)"
+authors = ["Bloom"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.90"
+
+[lib]
+name = "blurt_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "blurt"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "protocol-asset", "image-png"] }
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+tauri-plugin-deep-link = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+sys-locale = "0.3"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# record.py ffmpeg engine + the island's overlay window
+blurt-capture = { path = "../../../crates/blurt-capture" }
+# the island's picture for the meeting backend's screenshot (island.rs island_shot)
+png = "0.17"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  # tray.rs (the popup above the taskbar), island.rs (which window is in front, the capture exclusion), lib.rs
+  "Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Graphics_Gdi",
+  # capture.rs: the take's cue (PlaySound)
+  "Win32_Media_Audio",
+  # login.rs: "Open at login" (HKCU\…\Run); tray.rs: the taskbar's theme
+  "Win32_System_Registry",
+  # mainwin.rs: the title bar's colour
+  "Win32_Graphics_Dwm",
+  # lib.rs has_handler: whether an app opens a kind of file
+  "Win32_UI_Shell",
+  # setup.rs: the China time zone (the mirrors)
+  "Win32_System_Time",
+] }
+# capture/sysaudio.rs: what the PC plays as the take's second track (record.system_audio; WASAPI loopback)
+cpal = "0.16"
+# lib.rs browser_ui_off: WebView2's own reload / find / print keys and (island) its Back / Refresh menu off;
+# folder_drop.rs: the paths of papers dropped from Explorer (ICoreWebView2File); already in the tree through wry
+webview2-com = "0.39"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
+
+# Local iteration builds: no LTO, parallel codegen, incremental. The first build recompiles the dependencies once;
+# after that a frontend-only change links in well under a minute. Ship builds still use [profile.release].
+[profile.quick]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true

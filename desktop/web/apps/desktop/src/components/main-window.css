@@ -1,0 +1,522 @@
+/* The main window's layout and parts, after the macOS app's metrics (docs/design/system.md; ItemCells.swift's Look:
+   rows 32 px, a section's header band 34 px (28 above the first), the heading's title 17 px semibold, ids in tabular
+   digits, the brand tint as the selection). Everything here is prefixed mw- so it can't meet the review canvas's own
+   classes or the older shell rules in styles.css. Colours and radii are @blurt/ui's tokens. */
+
+.app.mw {
+  display: grid;
+  grid-template-rows: 44px minmax(0, 1fr);
+  height: 100%;
+  background: var(--bg);
+  overflow: hidden;
+}
+body.mw-resizing,
+body.mw-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+/* ------------------------------------------------------------ toolbar */
+.mw-toolbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+}
+.app .mw-tool {
+  background: none;
+  border-color: transparent;
+  box-shadow: none;
+  min-height: 30px;
+  padding: 0 8px;
+  color: var(--ink-2);
+  border-radius: var(--r-sm);
+}
+.app .mw-tool svg {
+  color: var(--mute);
+}
+
+.app .mw-tool:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+/* ------------------------------------------------------------ sidebar */
+.mw-side-col {
+  grid-row: 2;
+  grid-column: 1;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-2);
+  border-right: 1px solid var(--line);
+  overflow: hidden;
+}
+.mw-side-col.hidden {
+  border: 0;
+}
+.mw-sidebar {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+/* folders dragged in from Explorer: a quiet target — a 1.5 px accent ring inset 6 px with the card radius over a 6 %
+   wash, the rows and the selection untouched — and a dashed row at the end of Projects saying what the drop does */
+.mw-sidebar {
+  position: relative;
+}
+
+/* the middle gives way (MidName): the head ellipsises, the tail stays */
+
+/* the column dividers */
+
+/* ------------------------------------------------------------ the wide pages (Settings, Sessions, Dictation) */
+.mw-wide {
+  grid-row: 2;
+  grid-column: 2 / -1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+}
+.mw-wide > section.pad {
+  padding: 22px 28px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* ------------------------------------------------------------ the list column */
+
+/* a title that opens with a CJK corner bracket hangs it, so its ink lines up with the search field under it */
+
+/* + New: the Mac's quiet filled pill, in both its forms (with its word, and "+" alone when the column is tight) */
+
+/* the field's clear button: a quiet ⊗ in the faint ink that darkens when pointed at (the WebView's own was a bold
+   navy × in light and a white one in dark — the loudest mark in the column) */
+
+/* the filter line, the notices, the jobs */
+
+/* the whole line in brand ink: the one place the accent says "a filter is hiding items" (the Mac's FilterBar) */
+
+/* the small quiet button of the list's strips (Clear, Move, Move All): a filled chip, no rim, 24 px */
+
+/* Unassigned's suggestions (the Mac's w16): flat rows on the rows' grid, one hairline under the block */
+
+/* a project whose folder is gone, over its rows: a strip of its own on a quiet attention wash — the glyph on the title's
+   line, the body under it (two lines at most), Locate Folder… on the title's line */
+
+/* the Inbox's "N captures are waiting for a project" (the Mac's CapturesBanner): they wait on you, so a rounded strip on
+   the attention wash, the cards glyph in the attention ink, the sentence in regular weight, a quiet button at the right */
+
+/* ------------------------------------------------------------ rows */
+/* the gutter is always kept (stable), so the rows' right edge, the times and the search field line up in every place
+   whether the list scrolls or not; the bar itself is the thin thumb-only one (no arrow caps) */
+
+/* the selection is the fill alone, as on the Mac (a rim on it read as a focused text box); the keyboard's cursor gets
+   a quiet rim only where it stands on a row that isn't selected (after Ctrl-click) */
+
+/* the ring at rest only where the list doesn't say the state; pointed at or selected, it shows */
+
+/* ------------------------------------------------------------ detail */
+
+/* the empty states' quiet symbols and paths (EmptyState.tsx) */
+
+/* the selection summary */
+
+/* a job's detail */
+
+/* ------------------------------------------------------------ menus (Menu.tsx) */
+.mw-menu {
+  position: fixed;
+  /* above every sheet and its scrim (the hand-off panels sit at 60): a sheet's own ⋯ menu opened under it */
+  z-index: 80;
+  min-width: 160px;
+  max-width: 360px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  padding: 5px;
+  background: var(--raise);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow-pop);
+  outline: none;
+  font-size: 13px;
+  animation: mw-pop 90ms ease-out;
+}
+@keyframes mw-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+}
+.mw-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 2px 8px 2px 4px;
+  border-radius: 5px;
+  cursor: default;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.mw-menu-row.on {
+  background: var(--brand-tint);
+}
+/* Windows 11's menu density: 30 px rows, separators inset to the text */
+[data-platform='win'] .mw-menu-row {
+  min-height: 30px;
+}
+[data-platform='win'] .mw-menu-sep {
+  margin: 4px 10px;
+}
+.app .menu-open {
+  background: var(--chip);
+  color: var(--ink);
+}
+.mw-menu-row.off {
+  color: var(--faint);
+}
+.mw-menu-row.off .mw-menu-ic {
+  opacity: 0.45;
+}
+.mw-menu-check {
+  width: 14px;
+  display: grid;
+  place-items: center;
+  color: var(--ink-2);
+  flex: none;
+}
+.mw-menu-ic {
+  width: 18px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--mute);
+}
+.mw-menu-txt {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.mw-menu-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mw-menu-hint {
+  font-size: 11px;
+  color: var(--mute);
+}
+.mw-menu-keys {
+  margin-left: 24px;
+  font-size: 12px;
+  color: var(--mute);
+  font-variant-numeric: tabular-nums;
+}
+/* a count in a menu (the Filter menu's kinds): the Mac's small capsule, not a bare digit at the edge */
+.mw-menu-badge {
+  font-size: 11px;
+  color: var(--mute);
+  font-variant-numeric: tabular-nums;
+  margin-left: 12px;
+  min-width: 18px;
+  height: 17px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--chip);
+  display: inline-grid;
+  place-items: center;
+}
+.mw-menu-more {
+  color: var(--mute);
+  margin-left: 8px;
+}
+.mw-menu-sep {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--line);
+}
+.mw-menu-head {
+  padding: 6px 8px 2px 44px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--faint);
+}
+.mw-menu-head:not(:first-child) {
+  margin-top: 4px;
+}
+/* only the columns a menu uses (Menu.tsx): no check gutter where nothing is ever checked, no image column where no row
+   has an image — the labels start where the Mac's do */
+.mw-menu.no-check .mw-menu-check,
+.mw-menu.no-ic .mw-menu-ic {
+  display: none;
+}
+.mw-menu.no-check .mw-menu-row {
+  padding-left: 8px;
+}
+.mw-menu.no-check .mw-menu-head {
+  padding-left: 32px;
+}
+.mw-menu.no-ic .mw-menu-head {
+  padding-left: 24px;
+}
+.mw-menu.no-check.no-ic .mw-menu-head {
+  padding-left: 10px;
+}
+.mw-menu-row {
+  padding-right: 12px;
+}
+/* a state verb's image is the state it leads to, drawn as an outline in the secondary ink (system.md "State menu"):
+   no filled disc, no colour — the brand ring is Hand Off's alone */
+
+/* while a row's menu is open, the row it came from keeps a fill (which item is this for?) */
+
+/* the Move popover */
+/* M: the Move popover (the Mac's ProjectPopover): a borderless search row with its magnifier and a hairline under it,
+   then the projects — each its own coloured folder (the missing ones the question-mark folder), the key in a quiet
+   tabular column, where the items are now dimmed with a check and "Current" — then Unassigned and Open Folder… */
+
+/* sheets: New Item, Project Settings, Keyboard Shortcuts. `.sheet.` : the shell's .sheet (styles.css: 560 px,
+   overflow hidden) loads after this file and would win at equal weight; a sheet taller than the window scrolls */
+
+/* the keyboard map: a flex column capped at the window, so the title, the field and the foot always show and only
+   the list scrolls. `overflow: clip` (not hidden): the autofocused field must never scroll the sheet sideways, which
+   is what pushed every line flush against the left edge (round-1 gate) */
+
+/* the search field as the list's own search: rounded, a magnifier, a neutral border (no accent underline) */
+
+/* a hairline between sections, inset to the rows' text (the rows keep their own 20 px padding) */
+
+/* keycaps: one quiet filled chip per key (the Mac's sheet), no outline or heavy bottom edge; the palette uses the same */
+
+/* the palette's extras (the shell's .palette carries the field and the list) */
+
+/* the field leads with a magnifier (the Mac's palette), a neutral hairline under it — no accent underline */
+
+/* the toast with its Undo (the island toast's grammar, system.md "Toasts"): one line on the raised surface with a
+   hairline and the pop shadow, at least 260 px so a run of them doesn't jump; its one action a quiet pill in ink — the
+   brand stays with the window's primary */
+.mw-toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 260px;
+  max-width: min(560px, 80vw);
+  min-height: 40px;
+  padding: 6px 8px 6px 16px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.mw-toast > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-theme='dark'] .mw-toast {
+  background: #3a3a3a;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+/* the brand spinner: an arc on a faint track */
+.mw-spinner {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--ink) 10%, transparent);
+  border-top-color: var(--brand-ink);
+  animation: mw-spin 900ms linear infinite;
+  display: inline-block;
+  margin-top: 16px;
+}
+.mw-spinner.sm {
+  width: 12px;
+  height: 12px;
+  border-width: 1.5px;
+  margin: 0;
+}
+.mw-spinner.attn {
+  border-top-color: var(--attn);
+}
+@keyframes mw-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* the list and the menus take the keyboard focus as a whole: their selection shows it, not a ring around them */
+.mw-menu:focus,
+.mw-menu:focus-visible {
+  outline: none !important;
+}
+/* a row's "Looks like X · Move" (Unassigned only) is whole or not there: it never shrinks, the title takes the
+   ellipsis; where the column is too narrow for both (under ~460 px) the hint shows only on the row pointed at or
+   selected, so titles keep the width at rest */
+
+/* New Item while a picture is dragged over it */
+
+/* the sheets' rows keep their height (the sheet scrolls when the window is short) */
+
+/* the line above an item (ItemBanner.tsx, the Mac's ItemBanner): 44 px, a quiet wash of its tone — the brand ink at
+   10 %, the ink at 5 % when neutral — no rim; the icon at 16, the sentence at 12 px (two
+   lines at most), small buttons at the right, the first the brand primary */
+
+/* the running jobs' header (the Mac's JobsView): drawn as the list's own group headers — "Running 2 ›", the word in
+   13 px semibold, the count muted, a chevron when they fold — not a box (`.app` here: the shell's push-button rule
+   `.app button:where(…)` outweighed a bare class and drew it as a second search field) */
+
+/* the main window's scrollbars: the thin thumb-only bar (base.css sets `scrollbar-width: thin` on Windows, which
+   Chromium draws with arrow caps and lets win over these rules — so it is unset here) */
+.mw-menu {
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+.mw-menu::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.mw-menu::-webkit-scrollbar-button {
+  display: none;
+}
+.mw-menu::-webkit-scrollbar-track {
+  background: transparent;
+}
+.mw-menu::-webkit-scrollbar-thumb {
+  background: transparent;
+  border: 3px solid transparent;
+  border-radius: 6px;
+  background-clip: content-box;
+}
+/* the thumb shows while the pane is pointed at (the Mac's overlay bars) */
+.mw-menu::-webkit-scrollbar-thumb {
+  background-color: var(--line-2);
+}
+
+/* the window's own tooltip (Tooltip.tsx) */
+.mw-tip {
+  position: fixed;
+  z-index: 90;
+  max-width: 360px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: var(--raise);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-pop);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-line;
+  pointer-events: none;
+  animation: mw-pop 90ms ease-out;
+}
+
+/* E: the title's field sits exactly over the title — same x, size and line — one rim (the field's), the row keeps its
+   normal selected fill; the whole title column is the field's */
+
+/* ------------------------------------------------------------ the empty states (EmptyState.tsx, the Mac's EmptyStateView)
+   The Mac's proportions on Windows: a 16 px title over a 13 px hint (Segoe UI and YaHei need the extra pixel), the hint
+   balanced over two even lines and kept to a measure — CJK by its own (no break inside a word: keep-all + strict) — and
+   the quiet symbol of a miss or a trouble at its real size (`.ico`'s 14 px used to win over the 34 asked for). */
+
+/* a path: the UI font in the faint ink, one line, its whole in the tip */
+
+/* a trouble's actions stack: the way out as the button, the rest as a link under it */
+
+/* the secondary buttons on the plain page: the neutral fill, not white on the light grey (they read as labels) */
+
+/* the detail's empty states sit a little above the middle (the list's optical centre) */
+
+/* a project's name in rename: the row drops its tint, only the field's rim shows the focus */
+
+/* New Item (the Mac's w05): the kind control sized to its words at the left, the chosen one in the brand fill; one
+   field look for Title and Details; no resize grip; the pictures as 56 px tiles on one row with Add Picture… and the
+   hint, the remove button a small disc inset on the tile, shown when it is pointed at or focused */
+
+/* Project Settings (the Mac's grouped form): each section a box of rows with hairlines between them, the label at the
+   left in a fixed column, the control at the right; the key a chip with its lock when items use it, an input of the
+   same footprint when not, its note on the same line; the branch setting a title, a note under it and a switch */
+
+/* the selection summary (the Mac's SelectionView): one column of at most 520 px at the left, so the keys sit beside
+   their titles; the buttons one family (the same height and radius, the secondary a filled neutral, ⋯ a borderless
+   icon button that stays pressed while its menu is open); a disabled action keeps its shape at 45 %; the reason line
+   belongs to the buttons above it */
+
+/* in a multi-selection, the keyboard's anchor row is no different from the other selected rows */
+
+/* the line above an item: buttons the shared 28 px size (the verify card's too), the secondary with a visible edge on
+   the wash, a right inset that mirrors the left, a hairline under it */
+
+/* a job's progress (the Mac's JobDetailView): a thin accent bar, the step and how far at the left, the time it has run
+   at the right; the running step in semibold, the pending ones muted */
+
+@keyframes mw-indet {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+
+/* a menu row's count: a small capsule beside the label column (the Mac's filter popup), not a bare digit at the edge */
+.mw-menu-badge {
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--chip);
+  display: inline-grid;
+  place-items: center;
+  font: 500 11px var(--font);
+  font-variant-numeric: tabular-nums;
+  color: var(--mute);
+  margin-left: 16px;
+}
+/* the state section's rings stay quiet in a menu: secondary ink, the colour only on the chosen row */
+
+/* the agent-setup question (AgentSetupAsk.tsx) on the Clear History sheet: the app's icon beside its title */
+
+/* ------------------------------------------------------------ round 2 (visual gate 11-03), work area */
+/* narrow window: the sidebar shown on demand lies over the list (Windows 11 NavigationView overlay pane) — the list
+   and the detail keep their geometry underneath; a light scrim, a click on it folds the sidebar back */
+.app.mw {
+  position: relative;
+}
+.mw-side-col.peek {
+  /* an absolutely placed grid item keeps its grid area (row 2) as its containing block: top 0 is under the toolbar */
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 45;
+  background: var(--bg-2);
+  border-right: 1px solid var(--line);
+  box-shadow: 8px 0 24px rgb(0 0 0 / 0.14);
+}
+
+.app .mw-tool.on {
+  background: var(--hover);
+}
+
+/* the toolbar band is the page's own surface with no rule under it: one band under the system title bar, not a
+   second grey strip (the title bar stays native, §12.12; the panes start under the band's 44 px) */
+.mw-toolbar {
+  background: var(--bg);
+  border-bottom: 0;
+}
+/* the sidebar's "Projects" label reads as a label (Mac: secondary ink), not a watermark */
+
+/* a project just added: its row glows once (~1 s), so the toast's Rename visibly belongs to it */
+@keyframes mw-fresh {
+  0%, 40% { box-shadow: inset 0 0 0 1.5px var(--brand-ink); }
+  100% { box-shadow: inset 0 0 0 1.5px transparent; }
+}
+
+/* the select-all on opening a rename reads in both themes: the system's highlight, not a mint on a mint */
+
+/* the same thin, arrowless, hover-shown bar on the detail pane itself (its always-on track was base.css's
+   `scrollbar-width: thin`) */
+

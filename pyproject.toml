@@ -1,0 +1,27 @@
+[project]
+name = "bloom-meeting"
+version = "0.1.0"
+description = "Bloom: an AI assistant for research group meetings that turns spoken decisions into live paper revisions"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.14"
+# The meeting backend (python -m zuhui serve). Heavy or machine-specific parts are extras:
+#   relay  : invite links / people joining from a browser (needs your own LiveKit relay, see relay/README.md)
+#   voice  : edge-tts as the online voice (default is the offline Windows voice)
+dependencies = [
+  "httpx>=0.27",
+  "certifi>=2024.2.2",
+  "numpy>=1.26",
+  "onnxruntime>=1.18",
+  "pillow>=10.0",
+  "pymupdf>=1.24",
+  "lxml>=5.0",
+  "openai>=1.40",
+]
+
+[project.optional-dependencies]
+relay = ["livekit>=1.0", "sounddevice>=0.4.6"]
+voice = ["edge-tts>=6.1"]
+
+[tool.uv]
+package = false

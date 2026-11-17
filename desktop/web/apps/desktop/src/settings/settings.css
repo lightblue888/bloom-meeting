@@ -1,0 +1,740 @@
+/* Settings (the Mac's Settings window, SettingsKit.swift metrics, system.md §3.4): a sidebar — the search field, then
+   the panes in three groups — and the page: one 680 px column, open sections with a primary heading and hairlines
+   between rows, every trailing control on one right edge, pop-ups 180 px wide, the switch in the brand accent. Colours
+   and type are @blurt/ui's tokens; nothing here sets a colour of its own. */
+
+.st {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+
+/* ------------------------------------------------------------ sidebar */
+/* Back to the main window (the app's sidebar steps aside while Settings shows) */
+.app .st-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  min-height: 26px;
+  padding: 0 8px 0 4px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  cursor: default;
+}
+.app .st-back:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.st-side {
+  width: 220px;
+  flex: none;
+  border-inline-end: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 12px 10px;
+  gap: 6px;
+  overflow-y: auto;
+}
+.st-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.st-search .ico {
+  position: absolute;
+  inset-inline-start: 9px;
+  color: var(--mute);
+  pointer-events: none;
+}
+.app .st-search input {
+  width: 100%;
+  min-height: var(--ctl-h);
+  padding: 0 28px 0 30px;
+  border: 1px solid var(--ctl-border);
+  border-radius: var(--r-sm);
+  background: var(--ctl-bg);
+  color: var(--ink);
+  font: inherit;
+}
+/* focus: the shell's text-field focus — on Windows a quiet border, not the accent underline: the field takes the
+   focus each time Settings opens (the Mac's ⌘,), and an accent bar there was the loudest thing on every pane */
+[data-platform='win'] .app .st-search input:focus {
+  border-color: var(--line-2);
+  box-shadow: none;
+}
+/* the WebView's own clear glyph (a bold ✕, system blue in light mode) gives way to the field's quiet one */
+.st-search input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none;
+}
+
+.st-gtitle {
+  margin: 12px 8px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--mute);
+}
+.app .st-pane {
+  width: 100%;
+  background: none;
+  border: none;
+  box-shadow: none;
+  justify-content: flex-start;
+  gap: 9px;
+  padding: 0 8px;
+  min-height: 32px;
+  border-radius: var(--r-sm);
+  color: var(--ink);
+}
+.app .st-pane .ico {
+  color: var(--mute);
+  flex: none;
+  width: 16px; /* the nav's glyphs at 16 (the Mac's 20 pt symbols beside 15 px labels; 14 read as specks) */
+  height: 16px;
+}
+.app .st-pane.sel {
+  background: var(--brand-tint);
+}
+.app .st-pane.sel .ico {
+  color: var(--brand-ink);
+}
+.app .st-pane.dim {
+  color: var(--faint);
+}
+.app .st-pane.dim .ico {
+  color: var(--faint);
+}
+.st-pane .st-count {
+  margin-inline-start: auto;
+  font-size: 12px;
+  color: var(--mute);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------ page */
+/* the pane hangs off the nav at a fixed 40 px (the Mac's SettingsMetrics, Windows 11 Settings), not centred in a
+   wide window; the scrollbar's gutter is kept so switching between a short and a long pane never moves the column */
+.st-page {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+.st-col {
+  max-width: 752px;
+  margin: 0;
+  padding: 22px 32px 40px 40px;
+}
+.st-title {
+  font-size: var(--fs-title);
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+.st-lead {
+  color: var(--mute);
+  font-size: 12.5px;
+  margin: 2px 0 0;
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+.st-group {
+  margin-top: 26px;
+  scroll-margin-top: 12px;
+}
+.st-head {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+.st-rows > .st-row + .st-row,
+.st-rows > * + .st-row {
+  border-top: 1px solid var(--line);
+}
+.st-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 0;
+  min-height: 46px;
+  box-sizing: border-box;
+  border-radius: var(--r-sm);
+}
+.st-icon {
+  width: 18px;
+  flex: none;
+  display: flex;
+  justify-content: center;
+  color: var(--mute);
+  margin-inline-end: -4px;
+}
+.st-text {
+  flex: 1;
+  min-width: 0;
+}
+.st-row-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.st-detail {
+  font-size: 12px;
+  color: var(--mute);
+  margin-top: 2px;
+}
+/* a caution under a row: the mark carries the colour, the words stay readable ink (system.md) */
+.st-detail.warn {
+  color: var(--ink-2);
+}
+.st-detail.warn > .ico,
+.st-detail.warn > svg:first-child {
+  color: var(--attn);
+  margin-inline-end: 5px;
+  vertical-align: -1px;
+}
+
+.st-ctl {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.st-foot {
+  font-size: 12px;
+  color: var(--mute);
+  margin: 6px 0 0;
+}
+.st-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--brand-ink);
+  background: var(--brand-tint);
+  border-radius: var(--r-pill);
+  padding: 1px 7px;
+}
+@keyframes st-flash {
+  0%,
+  60% {
+    background: var(--brand-tint);
+  }
+  100% {
+    background: transparent;
+  }
+}
+.st-flash {
+  animation: st-flash 1.6s ease;
+}
+
+/* ⓘ */
+.st-info {
+  position: relative;
+  display: inline-flex;
+}
+.app .st-info-btn {
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  min-height: 0;
+  color: var(--faint);
+}
+.app .st-info-btn:hover {
+  color: var(--mute);
+  background: none;
+}
+.st-pop {
+  position: absolute;
+  top: 20px;
+  inset-inline-start: -8px;
+  z-index: 5;
+  width: 320px;
+  background: var(--raise);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  box-shadow: var(--shadow-pop);
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink);
+  font-weight: 400;
+}
+
+/* the switch: brand accent on, a neutral track off */
+.app .st-switch {
+  width: 36px;
+  min-height: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 10px;
+  border: 1px solid var(--ctl-border);
+  background: var(--chip);
+  box-shadow: none;
+  position: relative;
+  flex: none;
+}
+.app .st-switch > span {
+  position: absolute;
+  top: 1px;
+  inset-inline-start: 1px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.3);
+  transition: transform 160ms var(--ease);
+}
+.app .st-switch.on {
+  background: var(--brand-accent);
+  border-color: transparent;
+}
+.app .st-switch.on:hover:not(:disabled) {
+  background: var(--brand-accent);
+  filter: brightness(1.05);
+}
+.app .st-switch.on > span {
+  transform: translateX(16px);
+}
+[dir='rtl'] .app .st-switch.on > span {
+  transform: translateX(-16px);
+}
+
+/* the pop-up: one width, one chevron */
+.st-popup {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 180px;
+}
+.st-popup.wide {
+  width: 240px;
+}
+.app .st-popup .st-popup-btn {
+  width: 100%;
+  min-height: var(--ctl-h);
+  padding: 0 26px 0 10px;
+  border: 1px solid var(--ctl-border);
+  border-radius: var(--r-sm);
+  background: var(--ctl-bg);
+  box-shadow: var(--ctl-shadow, none);
+  color: var(--ink);
+  font: inherit;
+  justify-content: flex-start;
+  text-align: start;
+}
+.app .st-popup .st-popup-btn:hover:not(:disabled) {
+  background: var(--hover);
+}
+.app .st-popup .st-popup-btn[aria-expanded='true'] {
+  background: var(--chip);
+}
+.app .st-popup .st-popup-btn:disabled {
+  color: var(--faint);
+}
+.st-popup-v {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.st-popup .ico {
+  position: absolute;
+  inset-inline-end: 9px;
+  color: var(--mute);
+  pointer-events: none;
+}
+
+.app .st-link {
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  min-height: 0;
+  color: var(--mute);
+  font: inherit;
+}
+.app .st-link:hover:not(:disabled) {
+  background: none;
+  color: var(--ink);
+  text-decoration: underline;
+}
+.app .st-link.ink {
+  color: var(--brand-ink);
+}
+
+/* the About line: one quiet line of facts */
+.st-about {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--mute);
+  margin-top: 30px;
+}
+/* General's About line stands apart (a hairline, 24 px above) and its links read as links */
+.st-about.st-about-line {
+  margin-top: 24px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.app .st-about .st-link {
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.app .st-about .st-link:hover,
+.app .st-about .st-link:focus-visible {
+  color: var(--brand-ink);
+  text-decoration: underline;
+}
+
+/* the shortcuts' recorder (the Mac's SettingsKit shortcut field): at rest only the keycaps — one quiet chip per key,
+   no field chrome, right-aligned — with a hover fill; recording: a 2 px accent ring, a tinted fill, "Type shortcut…"
+   with an Esc chip at its end and the held modifiers as chips; a swap waiting: the keys just pressed, tinted; a key
+   Windows keeps: shown refused for a moment */
+
+/* the swap question: secondary ink, "Swap" in the brand ink, "Cancel" quiet — text actions on the line itself */
+
+/* the API key field */
+
+/* the model download bar */
+
+/* ------------------------------------------------------------ search results */
+.st-results-lead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--mute);
+  font-size: 12.5px;
+  margin-top: 4px;
+}
+.st-keyhint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.app .st-keyhint kbd {
+  font: 500 11px var(--font);
+  color: var(--ink-2);
+  background: var(--chip);
+  border: none;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.st-keyhint kbd + kbd {
+  margin-inline-start: -1px;
+}
+.st-rgroup {
+  margin-top: 22px;
+}
+.st-rhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+.st-rhead .ico {
+  color: var(--mute);
+}
+.st-rcount {
+  margin-inline-start: auto;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--mute);
+  font-variant-numeric: tabular-nums;
+  padding-inline-end: 8px;
+}
+/* flat rows with hairlines between them (the Mac's), one line each */
+.st-hitwrap + .st-hitwrap .st-hit,
+.st-rgroup > .st-hit + .st-hitwrap .st-hit {
+  box-shadow: 0 -1px 0 var(--line);
+}
+.st-hitwrap + .st-hitwrap .st-hit.sel,
+.st-rgroup > .st-hit + .st-hitwrap .st-hit.sel {
+  box-shadow: none;
+}
+.app .st-hit {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  background: none;
+  border: none;
+  box-shadow: none;
+  border-radius: var(--r-sm);
+  padding: 8px 8px;
+  min-height: 36px;
+  text-align: start;
+  white-space: normal;
+}
+.app .st-hit.sel {
+  background: var(--brand-tint);
+}
+.st-hit > .ico {
+  color: var(--mute);
+  flex: none;
+}
+.st-hit .st-hit-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.st-hit .st-hit-title {
+  flex: none;
+}
+.st-hit .st-hit-title b {
+  font-weight: 650;
+}
+.st-hit .why {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.st-hit .where {
+  font-size: 12px;
+  color: var(--mute);
+  flex: none;
+}
+.st-hit.action .st-hit-title {
+  color: var(--brand-ink);
+}
+.st-rgroup > .st-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 6px 8px 0;
+}
+.st-none {
+  margin-top: 18px;
+  color: var(--mute);
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.st-none > .ico {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 0;
+}
+.st-none-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+.st-none .title {
+  color: var(--ink);
+  font-weight: 600;
+}
+.st-none .try {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 8px 0 12px;
+}
+.app .st-none .st-none-clear {
+  background: var(--chip);
+  border: none;
+  box-shadow: none;
+  border-radius: 8px;
+  padding: 0 14px;
+}
+
+/* the main window's content area hosts the page edge to edge (App.tsx: section.pad.st-host) */
+.content > section.pad.st-host {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+}
+.st-host > .st {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ------------------------------------------------------------ Agents, Storage, Dictation's lists, sheets */
+
+/* the drag grip takes the status mark's place on hover, inside the row's icon column (never out in the gutter) */
+
+.st-dim {
+  color: var(--mute);
+}
+
+.app .st-more,
+.st-more-slot {
+  width: 24px;
+  min-height: 0;
+  display: inline-flex;
+  justify-content: center;
+}
+.st-storage .st-more {
+  opacity: 0;
+}
+.st-storage:hover .st-more,
+.st-more:focus-visible {
+  opacity: 1;
+}
+
+.st-size {
+  width: 76px;
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+  color: var(--mute);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.st-menu {
+  position: fixed;
+  z-index: 20;
+  min-width: 200px;
+  background: var(--raise);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  box-shadow: var(--shadow-pop);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+}
+.app .st-menu button {
+  background: none;
+  border: none;
+  box-shadow: none;
+  justify-content: flex-start;
+  min-height: 28px;
+  border-radius: var(--r-sm);
+}
+.st-menu-sep {
+  height: 1px;
+  background: var(--line);
+  margin: 4px 6px;
+}
+
+/* the Agents page's Examples… flyout: anchored to its link, an arrow on it, inside the window (AskNote) */
+
+/* Send Feedback (the Mac's D54-01): the sheet never taller than the window less 96 px, centred; only the takes scroll
+   (4 rows at least), the header and the footer stay; 38 px rows — box · time · text · length or "Text only" */
+
+/* never taller than the window (a 667 px window, 150 % scaling): 24 px of air above and below; the body is a column
+   whose only shrinking part is the list, so Cancel and Send always stay in view */
+
+/* the list takes what is left: 9 rows at most, 2 at least (it scrolls; the rest of the sheet never does) */
+
+/* Only my voice: the passage to read, how much of it was heard */
+
+/* the Polish time limit's − / + */
+
+.st-num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Set Up with Agent…: the instruction, then what the agent did, one line each */
+
+@keyframes st-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* Storage's lead: what Blurt uses, and the disk's free space at the end */
+.st-lead-split {
+  flex: 1;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* ------------------------------------------------------------ Settings → Dictation (windows-parity/settings.md) */
+/* every pane keeps its column at one x whether or not it scrolls */
+.st-page {
+  scrollbar-gutter: stable;
+}
+/* a description wraps without a lone last word */
+.st-detail {
+  text-wrap: pretty;
+  line-break: strict;
+}
+/* rows that belong together inside a group, for hairlines and for dimming in place */
+
+/* dictation off: what it governs stays in place, dimmed and not live (the Mac's .disabled(!enabled)) */
+
+/* a disclosure row (By kind of app): the whole row toggles, its chevron turns */
+
+/* what a disclosure opens: one inset block under its row, indented, its own hairlines, an intro and a footnote */
+
+/* the one thing that stops a pane's feature: an attention line on its first screen, with its one way out */
+
+/* Only my voice: Record your voice — centred, wide enough that the passage (read aloud, so larger) wraps cleanly; one
+   status line always reserved; the privacy note quiet */
+
+/* Models: a download in its row takes the button's place — a 180 px block (the bar on top, "98 MB / 228 MB" under
+   it in tabular figures) and a regular Stop beside it, so the control column keeps its edge (the Mac's in-place
+   progress) */
+.st-ctl .mprog:not(.wide) {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  width: 180px;
+}
+.st-ctl .mprog:not(.wide) progress {
+  width: 100%;
+  height: 4px;
+}
+.st-ctl .mprog:not(.wide) .mprog-txt {
+  font-size: 11.5px;
+  text-align: end;
+}
+/* a model that is here: a quiet check and the words, on the buttons' centre line */
+.st-have {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: var(--ctl-h);
+  font-size: 12px;
+  color: var(--mute);
+}
+.st-have svg {
+  color: var(--ok);
+}
+.st-detail.warn > svg {
+  color: var(--attn);
+  margin-inline-end: 5px;
+  vertical-align: -1px;
+}
+/* Add a cloud model: the lead, then one form grid — labels right-aligned in a 96 px column, controls filling the rest */
+
+/* Projects: the row's actions behind ⋯ on hover (and a right-click), as the Mac's ProjectsPane */
+
+/* a row's state at its trailing edge: a mark and a word (Privacy's "✓ Allowed") */
+
+/* ------------------------------------------------------------ Settings → Phone (PhonePane.tsx) */
+/* the notice: its title in the row's ink, what to do under it */
+
+/* a connected phone: a small dot in the ok colour before how it's connected */
+
+/* the code to scan: dark on a white plate whatever the theme, sharp pixels; the words beside it */
+
+/* a phone asking: one tinted block, the digits large so they can be read against the phone's */
+
+/* the window's own question (PhoneAsk): the agent-setup sheet with the phone's glyph and the digits centred */
+

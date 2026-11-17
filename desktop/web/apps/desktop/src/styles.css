@@ -1,0 +1,731 @@
+/* The main window. Colours, type, radii and focus come from @blurt/ui (tokens.css, data-platform = win | gnome | mac
+   and data-theme = light | dark on <html>). */
+:root {
+  --side-w: 236px;
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+body {
+  overflow: hidden;
+}
+#root {
+  height: 100%;
+}
+
+/* ------------------------------------------------------------ controls
+   The shell's element rules (.app button / input / select / textarea / kbd / mark / code / a); they lose to the
+   shell's own `.app .x` rules. */
+.app button {
+  background: var(--ctl-bg);
+  border: 1px solid var(--ctl-border);
+  box-shadow: var(--ctl-shadow);
+  border-radius: var(--r-sm);
+  padding: 0 11px;
+  min-height: calc(var(--ctl-h) - 2px);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  color: var(--ink);
+  font: inherit;
+}
+.app button:hover:not(:disabled) {
+  background: var(--hover);
+}
+.app button:active:not(:disabled) {
+  background: var(--press);
+}
+.app button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.app button:focus-visible,
+.app a:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.app button.primary {
+  background: var(--brand-button);
+  border-color: transparent;
+  color: var(--on-brand-button);
+  font-weight: 600;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.18), 0 1px 2px rgb(4 38 30 / 0.25);
+}
+.app button.primary:hover:not(:disabled) {
+  background: var(--brand-button);
+  filter: brightness(1.04);
+}
+.app button.primary:active:not(:disabled) {
+  background: var(--brand-button);
+  filter: brightness(0.92);
+}
+.app button.primary:disabled {
+  background: var(--chip);
+  color: var(--faint);
+  box-shadow: none;
+  opacity: 1;
+}
+.app button.danger {
+  background: var(--drop);
+  border-color: transparent;
+  color: #fff;
+}
+.app button.link {
+  background: none;
+  border: none;
+  box-shadow: none;
+  color: var(--mute);
+  padding: 0 6px;
+}
+.app button.link:hover {
+  color: var(--ink);
+  background: none;
+}
+/* the K3 state pill and ring button (@blurt/ui) keep their own shape under the shell's button look */
+
+.app .icon-btn {
+  background: none;
+  border: none;
+  box-shadow: none;
+  min-height: 24px;
+  width: 24px;
+  padding: 0;
+  justify-content: center;
+  color: var(--mute);
+}
+.app input,
+.app select,
+.app textarea {
+  background: var(--ctl-bg);
+  border: 1px solid var(--ctl-border);
+  border-radius: var(--r-sm);
+  padding: 0 9px;
+  min-height: calc(var(--ctl-h) - 2px);
+  outline: none;
+  color: var(--ink);
+  font: inherit;
+}
+.app input:focus,
+.app select:focus {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 22%, transparent);
+}
+/* Windows: a Fluent text field's focus — the accent underline (2 px, inside the box, so nothing moves), no glow; the
+   review canvas draws its own fields the same way ([data-platform="win"] .f input:focus) */
+[data-platform='win'] .app input:where(:not([type='checkbox'], [type='radio'], [type='range'])):focus,
+[data-platform='win'] .app textarea:focus,
+[data-platform='win'] .app select:focus {
+  border-color: var(--line-2);
+  box-shadow: inset 0 -2px 0 var(--focus);
+}
+/* keycaps in the UI font, as the shared base and the Mac's menus set them (in a monospace O reads as 0) */
+.app kbd {
+  font: 500 11px var(--font);
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  padding: 1px 5px;
+  background: none;
+}
+.app mark {
+  background: var(--brand-tint);
+  color: inherit;
+  border-radius: 2px;
+}
+.app code {
+  font: 12px var(--mono);
+  color: var(--mute);
+  word-break: break-all;
+}
+.dim {
+  color: var(--mute);
+}
+.small {
+  font-size: 12px;
+}
+.ok {
+  color: var(--ok);
+}
+.warn {
+  color: var(--attn-ink);
+}
+.grow {
+  flex: 1;
+}
+.blank {
+  padding: 40px 32px;
+  color: var(--faint);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+}
+.badge {
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--brand-tint);
+  color: var(--brand-ink);
+  border-radius: 10px;
+  padding: 1px 7px;
+}
+
+/* ------------------------------------------------------------ layout */
+.app {
+  display: grid;
+  grid-template-columns: var(--side-w) 1fr;
+  grid-template-rows: 48px 1fr;
+  height: 100%;
+  background: var(--bg);
+}
+
+/* sidebar */
+.sidebar {
+  background: var(--bg-2);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 10px 8px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.sidebar a {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 32px;
+  padding: 0 9px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  color: var(--ink);
+  white-space: nowrap;
+  text-decoration: none;
+  transition: background 120ms ease;
+}
+.sidebar a svg {
+  color: var(--mute);
+  flex: none;
+}
+.sidebar a .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sidebar a:hover {
+  background: var(--hover);
+}
+.sidebar a.sel {
+  background: var(--brand-tint);
+  color: var(--ink);
+  font-weight: 560;
+}
+.sidebar a.sel svg {
+  color: var(--brand-ink);
+}
+.sidebar a.drop {
+  background: var(--brand-tint);
+  box-shadow: inset 0 0 0 1.5px var(--brand-ink);
+}
+.sidebar a.missing {
+  opacity: 0.55;
+}
+.sidebar .count {
+  color: var(--faint);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.sidebar .cur {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--brand-ink);
+}
+.sidebar .attn {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--attn);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--attn) 22%, transparent);
+}
+.sidebar .section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 16px 4px 4px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.app[lang='zh-Hans'] .sidebar .section {
+  letter-spacing: 0.02em;
+}
+
+.sidebar .jobs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+  padding: 10px;
+  border-radius: var(--r);
+  background: var(--panel-2);
+}
+.sidebar .job {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  color: var(--mute);
+}
+.txt {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.txt .sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--mute);
+  font-size: 12px;
+}
+
+.content {
+  overflow: hidden;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+.content > section.pad {
+  padding: 22px 28px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* ------------------------------------------------------------ inbox */
+
+.app .batch {
+  width: 100%;
+  height: auto;
+  min-height: 64px;
+  gap: 14px;
+  padding: 10px 14px;
+  justify-content: flex-start;
+  text-align: start;
+  background: var(--panel);
+  border-color: var(--line);
+  border-radius: var(--r);
+  box-shadow: var(--shadow);
+  transition: transform 160ms var(--ease), box-shadow 160ms ease;
+}
+.app .batch:hover:not(:disabled) {
+  background: var(--panel);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-pop);
+}
+.batch .mode {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: var(--brand-tint);
+  color: var(--brand-ink);
+  flex: none;
+}
+
+.batch .pill {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--brand-ink);
+  background: var(--brand-tint);
+  border-radius: 10px;
+  padding: 2px 8px;
+}
+.batch .chev {
+  color: var(--faint);
+}
+/* the one empty state (system.md §3.5, EmptyState.tsx): Peep idling in its 80 px square, a neutral title, a neutral
+   hint, at most one primary — the macOS app's metrics */
+
+/* ------------------------------------------------------------ items */
+
+.items {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid var(--line);
+}
+
+.check {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 0;
+}
+.check.small {
+  font-size: 12px;
+  color: var(--mute);
+}
+
+.seg {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border-radius: calc(var(--r-sm) + 2px);
+  background: var(--panel-2);
+}
+.app .seg button {
+  background: none;
+  border: none;
+  box-shadow: none;
+  min-height: 26px;
+  padding: 0 9px;
+  font-size: 12.5px;
+  border-radius: var(--r-sm);
+  color: var(--mute);
+}
+.app .seg button.on {
+  background: var(--raise);
+  color: var(--ink);
+  box-shadow: var(--ctl-shadow), 0 0 0 0.5px var(--line);
+  font-weight: 560;
+}
+
+.age {
+  width: 76px;
+  text-align: end;
+  font-size: 12px;
+  color: var(--faint);
+  white-space: nowrap;
+  flex: none;
+}
+
+.detail {
+  overflow: hidden;
+  background: var(--panel);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ------------------------------------------------------------ settings */
+table.grid {
+  border-collapse: collapse;
+  width: 100%;
+  max-width: 980px;
+}
+table.grid td,
+table.grid th {
+  text-align: start;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+table.grid th {
+  font-weight: 560;
+  color: var(--mute);
+}
+.settings .tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+.app .settings .tabs button {
+  background: none;
+  border: none;
+  box-shadow: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 6px 12px;
+  color: var(--mute);
+}
+.app .settings .tabs button.sel {
+  color: var(--ink);
+  border-bottom-color: var(--brand-ink);
+}
+.note {
+  background: var(--brand-tint);
+  padding: 9px 12px;
+  border-radius: var(--r-sm);
+  max-width: 980px;
+  margin: 8px 0;
+}
+
+/* ------------------------------------------------------------ sheets */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 11vh;
+  z-index: 10;
+  animation: fade 160ms ease;
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+}
+.app .palette input {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  padding: 13px 16px;
+  font-size: 15px;
+  box-shadow: none;
+  background: none;
+}
+.palette ul {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  max-height: 52vh;
+  overflow-y: auto;
+}
+.palette li {
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+.palette li svg {
+  color: var(--mute);
+}
+.palette li.sel {
+  background: var(--brand-tint);
+}
+.palette img {
+  width: 36px;
+  height: 24px;
+  object-fit: cover;
+  border-radius: 3px;
+}
+.choices {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.app .choice {
+  height: auto;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 9px 12px;
+  text-align: start;
+  white-space: normal;
+}
+.app .choice span {
+  color: var(--mute);
+  font-size: 12px;
+}
+.app .choice.on {
+  border-color: var(--brand-ink);
+  box-shadow: 0 0 0 2px var(--brand-tint);
+}
+.app .seg button[aria-checked='true'] {
+  background: var(--raise);
+  color: var(--ink);
+  box-shadow: var(--ctl-shadow), 0 0 0 0.5px var(--line);
+}
+.shell-toast {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--raise);
+  border: 1px solid var(--line);
+  padding: 9px 16px;
+  border-radius: 999px;
+  box-shadow: var(--shadow-pop);
+  max-width: 70vw;
+  z-index: 20;
+  animation: rise 240ms var(--ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* Settings → Dictation: the model this PC still needs, one Download */
+
+/* ------------------------------------------------------------ the Welcome (components/Welcome.tsx) */
+/* The Mac's setup assistant (system.md §3.4), and like the Mac's it is the window: mainwin.rs sizes the window to it
+   (880×600) while it shows. The hero on the left (paper / night with a soft mint light behind the mascot), then the
+   title in gradient text, the step's rows over hairlines — the one scroll region — and the footer with the dots,
+   Skip Setup, Back and one primary. */
+
+/* dark: the window's ground (not the raised surface a step lighter), so the keycaps and tiles read as raised on it
+   and the pane meets Peep's panel as one window (round-2 gate, welcome.1) */
+
+/* the step's rows fill the scroll region, so a closing note or the login row can sit at its foot (the Mac's) */
+
+/* keycaps: quiet filled chips, no outline (the Mac's), one per key */
+
+/* a section heading in sentence case, the same in both languages (the Mac's "Permissions") */
+
+/* the key check's row lights up while the key is down */
+
+/* waiting for the key: a hollow ring where the check will be (the same mark + word anatomy as every status) */
+
+/* the dictation key's pop-up at the Mac's compact width ("Right Alt" / "Either Alt" and the chevron), so the row's
+   description keeps to one line */
+
+/* the footer's Back: a neutral filled button with no outline (the Mac's), beside the brand Next */
+
+@keyframes wl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* the download across the content column: the bar, "412 MB of 950 MB", a regular Stop (the Mac's s05_download) */
+.mprog.wide {
+  display: flex;
+  width: 100%;
+}
+.mprog.wide progress {
+  flex: 1;
+  width: auto;
+  min-width: 80px;
+}
+.mprog-txt {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.mprog {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.mprog progress {
+  width: 220px;
+  height: 6px;
+  accent-color: var(--brand-ink);
+}
+
+/* once a dictation landed the success mark carries the colour, the card goes back to neutral (the Mac's) */
+
+/* blocked: the same card, filled and solid (a dashed outline reads as a drop zone), the mark centred over a neutral
+   title (the Mac's try-it-blocked) */
+
+/* the field inside is the card's text, never a second field: no Fluent underline of its own */
+
+@keyframes wl-live {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* the current step: a 16×6 capsule (the Mac's StepDots) */
+
+/* ------------------------------------------------------------ dictation (DictationView; the Mac's DictationPage) */
+
+/* what stands in dictation's way: one line — the glyph, the fact, the one way out; off is neutral, no model the
+   attention tint (a shape twin: the power glyph, the "!") */
+
+[data-testid='dictation-empty'] p {
+  max-width: 34em;
+  text-wrap: balance;
+  line-break: strict;
+}
+
+/* the day stays over its rows while they scroll (a row cut under the search field always keeps its day), on the
+   pane's own ground with a hairline once stuck */
+
+/* the search's matches: a soft tint, not bold alone (bold CJK reads the same as regular at 13 px) */
+
+/* the AI writing an item from it, or Retry under way: a working hairline under the row */
+
+/* the item it became: the time's size and ink, the UI font's figures with an ASCII hyphen ("SF-4 ↗") */
+
+/* the header: the app's tile, its name at full width over when and how long, the view switch across */
+
+/* "Corrected": a small neutral tag (the chip family), a link to the Changes view */
+
+/* the text: a comfortable measure, and no line that ends with one or two characters */
+
+/* Changes: what polish left out in the danger hue with its strike, what it added or respelled underlined in the accent
+   (D50, dictation.compare) — never grey on grey */
+
+/* a take that wasn't recognised: the failure where the text would be */
+
+/* the quiet icon buttons beside the main action (Correct, Copy, ⋯): 28 px, a light fill at rest so they read as
+   controls next to a filled button */
+
+/* what happened (copied, not polished, not typed), or what the Changes marks mean: one line in one slot */
+
+/* the list header's second row: 历史 · 词库, Send Feedback across from them (the Mac's list header) */
+
+/* the app's icon on a row (its initial on a tile where there is none) */
+
+/* scrollbars: the app's thumb-only ones (packages/ui base.css; scrollbar-width / -color here would switch Chromium back to
+   its own bars with arrow caps) */
+/* Undo over the list, above its foot ("keep for", Clear History stay in view) */
+
+/* Deleted · Undo: docked in its own lane at the list's foot — the rows get its height of room under them, so it never
+   covers one; a raised surface with a real shadow, the action a quiet pill (the island's §3.2) */
+
+/* ------------------------------------------------------------ the Words tab (DictationWords.tsx; the Mac's DictationWords) */
+
+/* the field's clear button inside its box at the trailing edge (the Fluent TextBox's), so the field never changes
+   width while you type; the search's the same */
+
+/* no words at all: one statement under the field */
+
+/* the ×: a 14 px raised disc over the chip's corner (WordChip: material, hairline, a 7 pt bold glyph) — on the chip
+   under the pointer, and on the chosen one while the chips have the keyboard; never right after a removal, never two */
+
+/* the built-in words: given, not yours — the same pill, quieter, no × */
+
+/* Edit Spelling: the chip itself in edit mode — its capsule, height and padding, a brand-ink outline, sized to the
+   word, so the row neither moves nor grows */
+
+/* Add and × on the row under the pointer — on the chosen one while nothing else is hovered */
+
+/* Add: the row's one decision, in the brand ink (the Mac's ReviewRow: brandInk), × beside it secondary */
+
+/* the detail's header hugs its title and source line, then 14 px to the divider (no band kept for a paragraph a word
+   doesn't have) */
+
+/* a keys line: each key a small keycap, its label after it, the pairs 16 px apart */
+
+/* one time column, its figures right-aligned ("5:59 PM" and "12:33 PM" end on one edge) */
+
+/* sized to what it says (at least 160), a check column for a choice, the keys right-aligned and dim */
+
+/* Clear History?: a Windows 11 ContentDialog — centred, a 20 px title, the body, a footer band with two equal
+   buttons; Cancel the default (focused), the destructive one tinted, never a solid red slab */
+
+/* a slow pulse (a working bar: dictation's row) */
+@keyframes breathe {
+  to {
+    opacity: 0.4;
+  }
+}
+
+/* Send Feedback (the Mac's LabBarButton): the paper plane and the words in the ink at 12 px, a quiet wash on hover */
+

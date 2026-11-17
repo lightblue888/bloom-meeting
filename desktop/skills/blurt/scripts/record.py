@@ -1,0 +1,2555 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["sounddevice==0.5.6", "numpy==2.3.4; python_version >= '3.11'", "numpy==2.2.6; python_version < '3.11'",
+#                 "livekit==1.2.1; sys_platform == 'win32'", "soundcard==0.4.5; sys_platform == 'win32'"]
+# ///
+"""Screen + microphone recorder (macOS, Windows, Linux/X11) with a proper recording UI.
+
+The user picks the area to record (drag / click a window / full screen), a 3-2-1 countdown runs, and a floating
+control bar offers pause, marker, discard and stop — so they never have to come back to the chat to stop.
+The control bar and the region border are never part of the recording.
+
+Engines (auto-selected; override with --engine or ~/.blurt/config.json → record.engine):
+  native   macOS: ScreenCaptureKit app (recorder/macos, a SwiftPM package), built on first use with `swift build`.
+  tk       Windows, Linux/X11 (and macOS fallback): Tk picker + control bar, ffmpeg video, PortAudio mic.
+  ffmpeg   no UI of its own: full screen or --region, controlled from the chat (stop/pause/resume/snap) or by a host
+           app (Tauri on Windows/Linux) reading `--status-jsonl` lines from stdout.
+
+  record.py start [--session DIR] [--region x,y,w,h | --last-region] [--engine E] [--countdown 3]
+                                        run in the background; exits when the user stops (prints DONE …)
+  record.py start --engine ffmpeg --window-hwnd N   (Windows) one window only, even behind others (gfxcapture);
+                                        meta.json "window": {"hwnd", "title", "w", "h"} from the start
+                                        and its live transcript echo-cancelled against what the PC plays (--aec)
+  record.py stop | pause | resume | restart | discard | snap   control the active recording from the chat (snap =
+                                        a full-resolution still of the area now → shots/)
+  record.py install-app                 double-clickable recorder: ~/Applications/Blurt.app / Start-menu "Blurt"
+  record.py status                      active recording, if any
+  record.py devices                     screens / microphones (JSON)
+  record.py test [--seconds 3]          headless capture → permission / mic check, returns a screen frame
+  record.py build                       (macOS) compile the native recorder now
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import queue
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
+import wave
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+from _common import (BLURT_HOME, IS_LINUX, IS_MAC, IS_WIN, STATE_FILE, blurt_workspace, die, ffmpeg_bin, fix_tcl_env, fmt_ts,  # noqa: E402
+                     global_config, load_json, new_session_dir, probe_duration, run, save_config_if_readable, save_json)
+
+VIRTUAL_MIC_HINTS = ("virtual", "blackhole", "loopback", "soundflower", "zoom", "teams", "oray", "vb-audio",
+                     "voicemeeter", "stereo mix", "立体声混音", "aggregate", "聚集", "cable")
+AUDIO_SR = 48000
+SWIFT_DIR = Path(__file__).resolve().parent.parent / "recorder" / "macos"
+AGENTS_JSON = Path(__file__).with_name("agents.json")  # bundled into the app (Agents.swift)
+
+
+STATUS: dict = {"on": False, "final": False, "err": None}  # `start --status-jsonl` (docs/design/desktop-app.md §5 C8)
+_PRINT = threading.Lock()
+
+
+def _plain(p) -> str:
+    """A path without Windows' extended-length prefix (\\\\?\\), which ffmpeg mishandles."""
+    s = str(p)
+    return s[4:] if s.startswith("\\\\?\\") else s
+
+
+def out(obj: dict | str) -> None:
+    """Human / chat output. With --status-jsonl it goes to stderr: stdout carries only the status lines."""
+    with _PRINT:
+        print(obj if isinstance(obj, str) else json.dumps(obj, ensure_ascii=False), flush=True,
+              file=sys.stderr if STATUS["on"] else sys.stdout)
+
+
+def status(ev: str, **kw) -> None:
+    """One C8 status line on stdout ({"ev": "started" | "level" | "paused" | "resumed" | "snap" | "stopped" |
+    "discarded" | "error", …}); a no-op without --status-jsonl."""
+    if not STATUS["on"]:
+        return
+    if ev in ("stopped", "discarded") or (ev == "error" and kw.get("fatal", True)):
+        STATUS["final"] = True
+    kw.pop("fatal", None)
+    with _PRINT:
+        sys.stdout.write(json.dumps({"ev": ev, **kw}, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+
+
+class _ErrTap:
+    """stderr passthrough that remembers the last `ERROR: …` (die()), for the final {"ev":"error"} line."""
+
+    def __init__(self, real):
+        self.real = real
+
+    def write(self, s):
+        if s.startswith("ERROR: "):
+            STATUS["err"] = s[7:].strip()
+        return self.real.write(s)
+
+    def __getattr__(self, name):
+        return getattr(self.real, name)
+
+
+# ---------------------------------------------------------------- devices
+def list_screens() -> list[dict]:
+    ff = ffmpeg_bin()
+    if IS_MAC:
+        res = run([ff, "-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""], check=False).stderr
+        screens, section = [], None
+        for line in res.splitlines():
+            if "video devices" in line:
+                section = "v"
+            elif "audio devices" in line:
+                section = "a"
+            m = re.search(r"\]\s\[(\d+)\]\s(.+)$", line)
+            if m and section == "v" and "capture screen" in m.group(2).lower():
+                screens.append({"index": int(m.group(1)), "name": m.group(2).strip()})
+        return screens
+    return [{"index": 0, "name": "primary monitor"}]
+
+
+def list_mics() -> list[dict]:
+    try:
+        import sounddevice as sd
+        sd.query_hostapis()
+    except Exception as e:  # PortAudio missing (Linux: libportaudio2) or no audio service/device at all
+        print(f"no microphone available: {e}", file=sys.stderr)
+        return []
+    try:
+        default_in = sd.default.device[0]
+    except Exception:
+        default_in = None
+    hostapis = sd.query_hostapis()
+    mics = []
+    for i, d in enumerate(sd.query_devices()):
+        if d["max_input_channels"] < 1:
+            continue
+        api = hostapis[d["hostapi"]]["name"]
+        if IS_WIN and "WASAPI" not in api and "MME" not in api:
+            continue
+        mics.append({"index": i, "name": d["name"], "api": api, "default": i == default_in,
+                     "samplerate": int(d["default_samplerate"])})
+    return mics
+
+
+def pick_mic(wanted: str | None) -> dict | None:
+    mics = list_mics()
+    if not mics:
+        return None
+    if wanted is not None:
+        for m in mics:
+            if str(m["index"]) == str(wanted) or str(wanted).lower() in m["name"].lower():
+                return m
+        die(f"Microphone '{wanted}' not found. Available: {[m['name'] for m in mics]}")
+    virtual = lambda m: any(h in m["name"].lower() for h in VIRTUAL_MIC_HINTS)  # noqa: E731
+    # Windows, the sound going to a Bluetooth headset: its own mic would switch it to hands-free (HFP) — mono,
+    # narrowband, hollow, hissing — for as long as it is open. The computer's own mic instead, when there is one.
+    eps = audio_endpoints()
+    if eps and output_is_bluetooth(eps):
+        order = sorted(mics, key=lambda m: (not m["default"], "WASAPI" in m["api"]))   # the default first, MME names
+        for m in order:
+            if not virtual(m) and endpoint_of(m["name"], "Capture", eps).get("bt") is False:
+                return {**m, "why": "bluetooth_output"}
+    for m in mics:
+        if m["default"] and not virtual(m):
+            return m
+    real = [m for m in mics if not virtual(m)]
+    return (real or mics)[0]
+
+
+# ---------------------------------------------------------------- Windows audio endpoints (Bluetooth or not)
+_PK_NAME = "{a45c254e-df1c-4efd-8020-67d146a850e0},2"            # PKEY_Device_DeviceDesc ("耳机", "麦克风阵列")
+_PK_DESCS = ("{026e516e-b814-414b-83cd-856d6fef4822},2",         # PKEY_DeviceInterface_FriendlyName (the device's)
+             "{b3f8fa53-0004-438e-9003-51a46e139bfc},26",        # the Bluetooth device's own name
+             "{b3f8fa53-0004-438e-9003-51a46e139bfc},6")         # the adapter ("Realtek(R) Audio")
+_BLUETOOTH = re.compile(r"BTHENUM|BTHHFENUM|BTHLE", re.I)
+
+
+def audio_endpoints() -> list[dict]:
+    """Windows: the active audio endpoints (HKLM MMDevices, readable by any user): {flow: Render | Capture, names: the
+    "耳机 (浅蓝的AirPods Max - Find My)" forms Windows and PortAudio show them by, bt: on Bluetooth} — Bluetooth by the
+    BTHENUM / BTHHFENUM / BTHLE device ids among its properties (also behind Intel's Bluetooth audio offload, whose
+    enumerator says INTELAUDIO). [] elsewhere or when it can't be read."""
+    if not IS_WIN:
+        return []
+    try:
+        import winreg
+    except ImportError:
+        return []
+    out = []
+    base = r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio"
+    for flow in ("Render", "Capture"):
+        try:
+            root = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, f"{base}\\{flow}")
+        except OSError:
+            continue
+        i = 0
+        while True:
+            try:
+                guid = winreg.EnumKey(root, i)
+            except OSError:
+                break
+            i += 1
+            try:
+                dev = winreg.OpenKey(root, guid)
+                if winreg.QueryValueEx(dev, "DeviceState")[0] != 1:     # DEVICE_STATE_ACTIVE
+                    continue
+                props, vals, j = winreg.OpenKey(dev, "Properties"), {}, 0
+                while True:
+                    try:
+                        n, v, _t = winreg.EnumValue(props, j)
+                    except OSError:
+                        break
+                    j += 1
+                    if isinstance(v, str):
+                        vals[n] = v
+            except OSError:
+                continue
+            name = vals.get(_PK_NAME) or ""
+            names = [f"{name} ({vals[k]})" for k in _PK_DESCS if vals.get(k)] + ([name] if name else [])
+            out.append({"flow": flow, "id": guid, "names": names,
+                        "bt": any(_BLUETOOTH.search(v) for v in vals.values())})
+    return out
+
+
+def endpoint_of(name: str, flow: str, eps: list[dict]) -> dict:
+    """The endpoint a PortAudio device name is (MME cuts names at 31 characters: a prefix then), or {}."""
+    n = (name or "").strip().lower()
+    if not n:
+        return {}
+    for e in eps:
+        if e["flow"] != flow:
+            continue
+        for full in e["names"]:
+            f = full.lower()
+            if f == n or (len(n) >= 24 and "(" in n and f.startswith(n)):
+                return {**e, "name": full}
+    return {}
+
+
+def default_output_name() -> str | None:
+    try:
+        import sounddevice as sd
+        return sd.query_devices(kind="output")["name"]
+    except Exception:
+        return None
+
+
+def output_is_bluetooth(eps: list[dict] | None = None) -> bool:
+    eps = audio_endpoints() if eps is None else eps
+    return bool(endpoint_of(default_output_name() or "", "Render", eps).get("bt"))
+
+
+def note_devices(mic: dict | None) -> None:
+    """Bloom: ~/.zuhui/devices.json {"mic", "speaker"} — the mic this take records and the speakers the sound goes to,
+    by the names Windows shows them by (the meeting page's own card says them). Only where Bloom is (~/.zuhui)."""
+    home = Path(os.environ.get("ZUHUI_HOME") or Path.home() / ".zuhui")
+    if not home.is_dir():
+        return
+    try:
+        eps = audio_endpoints()
+        spk = default_output_name()
+        d = {"mic": (endpoint_of(mic["name"], "Capture", eps).get("name") or mic["name"]) if mic else None,
+             "speaker": (endpoint_of(spk or "", "Render", eps).get("name") or spk) if spk else None,
+             "by": "record.py", "why": (mic or {}).get("why"), "at": round(time.time(), 1)}
+        tmp = home / f"devices.json.{os.getpid()}.tmp"
+        tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, home / "devices.json")
+    except Exception as e:
+        print(f"(devices.json not written: {e})", file=sys.stderr)
+
+
+# ---------------------------------------------------------------- audio (tk / ffmpeg engines)
+class MicRecorder:
+    """Streams the mic to WAV via PortAudio (ffmpeg's own mic capture drops ~10% of samples on macOS).
+    `gate()` False ⇒ samples are dropped (pause). Records the wall-clock time of the first sample.
+    `live`: also feed <session>/live/audio.pcm for live.py (LivePcm; the caller registers video segments).
+    `aec`: (Windows) that live audio — only it, the WAV stays raw — goes through WebRTC echo cancelling against what
+    the PC plays (EchoCancel), so voices from the speakers don't end up in the transcript as the user's words."""
+
+    def __init__(self, mic: dict, path: Path, gate=None, live: Path | None = None, aec: bool = False):
+        import sounddevice as sd
+        self.path, self.q, self.first_wall, self.overflows, self.frames = path, queue.Queue(), None, 0, 0
+        self.gate = gate or (lambda: True)
+        self.sr = mic.get("samplerate") or AUDIO_SR
+        self.live = self.aec = None
+        if live is not None:
+            if aec:
+                try:
+                    self.aec = EchoCancel(self.sr)
+                except Exception as e:  # no APM / loopback here: the raw mic, as before
+                    print(f"(live audio without echo cancelling: {type(e).__name__}: {e})", file=sys.stderr)
+            try:
+                # with echo cancelling the sidecar gets 16 kHz (EchoCancel's output); segments still count mic frames
+                self.live = LivePcm(live, AEC_SR if self.aec else self.sr, unit_sr=self.sr)
+            except Exception as e:  # never block a recording on the sidecar
+                print(f"(no live audio: {e})", file=sys.stderr)
+                self.aec = None
+            if self.aec:
+                self.aec.sink = self.live.feed
+        self.stream = sd.RawInputStream(samplerate=self.sr, channels=1, dtype="int16", device=mic["index"],
+                                        callback=self._cb)
+        self.writer = threading.Thread(target=self._write, daemon=True)
+
+    def _cb(self, data, frames, t, status):
+        if self.first_wall is None:
+            self.first_wall = time.time() - max(0.0, t.currentTime - t.inputBufferAdcTime)
+        if status.input_overflow:
+            self.overflows += 1
+        if self.gate():
+            self.q.put(bytes(data))
+            if self.aec:   # the wall clock of this buffer's first sample: lines it up with the loopback
+                self.aec.push(bytes(data), time.time() - max(0.0, t.currentTime - t.inputBufferAdcTime))
+
+    def _write(self):
+        with wave.open(str(self.path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(self.sr)
+            while (chunk := self.q.get()) is not None:
+                w.writeframes(chunk)
+                self.frames += len(chunk) // 2
+                if self.live and not self.aec:
+                    try:
+                        self.live.feed(chunk)
+                    except Exception as e:
+                        print(f"(live audio stopped: {e})", file=sys.stderr)
+                        self.live = None
+
+    def start(self):
+        if self.aec:
+            self.aec.start()
+        self.writer.start()
+        self.stream.start()
+
+    def stop(self):
+        self.stream.stop()
+        self.stream.close()
+        self.q.put(None)
+        self.writer.join()
+        if self.aec:   # what it still holds goes to live/audio.pcm before LivePcm.finish
+            self.aec.close()
+
+
+# ---------------------------------------------------------------- live audio sidecar (tk / ffmpeg engines)
+class Resampler:
+    """Streaming windowed-sinc (Kaiser) resampler for int16 mono, any rate → 16 kHz, with anti-alias low-pass."""
+
+    def __init__(self, in_sr: int, out_sr: int = 16000, half_taps: int = 16):
+        import numpy as np
+        self.np, self.in_sr, self.out_sr = np, in_sr, out_sr
+        self.step = in_sr / out_sr                       # input samples per output sample
+        self.fc = min(1.0, out_sr / in_sr) * 0.94        # cutoff, as a fraction of the input Nyquist
+        self.W = int(np.ceil(half_taps / self.fc))       # kernel half-width in input samples
+        self.buf = np.zeros(self.W, np.float32)          # leading zeros = history before the first sample
+        self.base = -self.W                              # input index of buf[0]
+        self.n = 0                                       # next output sample
+        self.taps = np.arange(-self.W + 1, self.W + 1)
+        self.rows: dict[int, object] = {}                # kernel row per fractional position (µ-sample)
+
+    def _kernel(self, d):
+        np = self.np
+        r = np.clip(d / self.W, -1.0, 1.0)
+        return self.fc * np.sinc(self.fc * d) * np.i0(8.0 * np.sqrt(1.0 - r * r)) / np.i0(8.0)
+
+    def _weights(self, frac):
+        """The kernel for outputs at these fractional input positions: rows cached by position — a rate ratio has
+        few of them (48 → 16 kHz: one; 44.1 → 16 kHz: 160), and np.i0 per tap was most of the CPU."""
+        np = self.np
+        keys = np.round(frac * 1e6).astype(np.int64)
+        uniq, inv = np.unique(keys, return_inverse=True)
+        rows = []
+        for k in uniq.tolist():
+            w = self.rows.get(k)
+            if w is None:
+                w = self._kernel(k / 1e6 - self.taps)
+                if len(self.rows) < 4096:
+                    self.rows[k] = w
+            rows.append(w)
+        return np.stack(rows)[inv.reshape(-1)]
+
+    def feed(self, pcm: bytes, final: bool = False) -> bytes:
+        np = self.np
+        x = np.frombuffer(pcm[:len(pcm) // 2 * 2], dtype=np.int16).astype(np.float32)
+        if self.in_sr == self.out_sr:
+            return pcm[:len(pcm) // 2 * 2]
+        if final:
+            x = np.concatenate([x, np.zeros(self.W + 1, np.float32)])
+        self.buf = np.concatenate([self.buf, x])
+        end = self.base + len(self.buf)                  # first input index we don't have
+        last = int(np.floor((end - self.W - 1) / self.step))
+        if final:
+            last = int(np.floor((end - self.W - 2) / self.step))
+        if last < self.n:
+            return b""
+        P = np.arange(self.n, last + 1) * self.step      # output positions on the input timeline
+        k0 = np.floor(P).astype(int)
+        idx = k0[:, None] + self.taps[None, :]
+        y = (self.buf[idx - self.base] * self._weights(P - k0)).sum(axis=1)
+        self.n = last + 1
+        keep = int(np.floor(self.n * self.step)) - self.W - 1   # drop history no future output needs
+        if keep > self.base:
+            self.buf = self.buf[keep - self.base:]
+            self.base = keep
+        return np.clip(np.round(y), -32768, 32767).astype(np.int16).tobytes()
+
+
+class LivePcm:
+    """Writes <session>/live/audio.pcm (16 kHz mono s16le) for live.py while the WAV is being recorded.
+
+    The mp4's audio is cut per video segment: each segment's first `lead` seconds (mic opened before ffmpeg's first
+    frame) are dropped, or silence is added when the video started first (see TkRecorder.finalize / mux). The same is
+    done here, so byte offset / 32000 == video time. A segment's samples are held until its lead is known (ffmpeg log),
+    at most HOLD seconds."""
+
+    HOLD = 4.0
+
+    def __init__(self, live_dir: Path, in_sr: int, unit_sr: int | None = None):
+        self.dir, self.sr = Path(live_dir), in_sr
+        self.unit = in_sr / (unit_sr or in_sr)   # segment() frames are counted at unit_sr (the mic's), fed at in_sr
+        self.dir.mkdir(parents=True, exist_ok=True)
+        (self.dir / "stop").unlink(missing_ok=True)
+        self.fh = open(self.dir / "audio.pcm", "wb")
+        self.rs = Resampler(in_sr)
+        self.lock = threading.Lock()
+        self.segments: list[dict] = []   # {"start": frame, "lead": s | None, "added": wall}
+        self.frame = 0                   # gated frames received
+        self.held = bytearray()          # frames not yet released, starting at self.held_at
+        self.held_at = 0
+        self.closed = False
+        self.flushed = 0.0
+
+    def segment(self, start_frame: int) -> int:
+        """A video segment starts at this frame of the gated audio stream (MicRecorder.frames)."""
+        with self.lock:
+            self.segments.append({"start": int(round(start_frame * self.unit)), "lead": None, "added": time.time(),
+                                  "begun": False, "skip": 0})
+            return len(self.segments) - 1
+
+    def set_lead(self, i: int, lead: float) -> None:
+        with self.lock:
+            if 0 <= i < len(self.segments) and self.segments[i]["lead"] is None:
+                self.segments[i]["lead"] = float(lead)
+        self.feed(b"")
+
+    def lead_known(self, i: int) -> bool:
+        return self.segments[i]["lead"] is not None
+
+    def _release(self, final: bool) -> bytes:
+        out = bytearray()
+        while True:
+            n = len(self.held) // 2
+            pos = self.held_at
+            if not self.segments:
+                if final:
+                    self.held.clear()
+                return bytes(out)
+            if pos < self.segments[0]["start"]:  # before the first segment: not in the video (as in finalize)
+                d = min(n, self.segments[0]["start"] - pos)
+                if d == 0:
+                    return bytes(out)
+                del self.held[:d * 2]
+                self.held_at += d
+                continue
+            k = max(j for j, s in enumerate(self.segments) if s["start"] <= pos)
+            seg = self.segments[k]
+            nxt = self.segments[k + 1]["start"] if k + 1 < len(self.segments) else None
+            if seg["lead"] is None:
+                if not final and time.time() - seg["added"] < self.HOLD:
+                    return bytes(out)
+                seg["lead"] = 0.0
+            if not seg["begun"]:
+                seg["begun"] = True
+                seg["skip"] = int(round(max(0.0, seg["lead"]) * self.sr))
+                if seg["lead"] < 0:
+                    out += b"\0\0" * int(round(-seg["lead"] * self.sr))
+            avail = n if nxt is None else min(n, nxt - pos)
+            if avail <= 0:
+                return bytes(out)
+            if seg["skip"]:
+                d = min(seg["skip"], avail)
+                seg["skip"] -= d
+            else:
+                d = avail
+                out += self.held[:d * 2]
+            del self.held[:d * 2]
+            self.held_at += d
+
+    def feed(self, chunk: bytes, final: bool = False) -> None:
+        with self.lock:
+            if self.closed:
+                return
+            self.held += chunk
+            self.frame += len(chunk) // 2
+            out = self._release(final)
+            data = self.rs.feed(out, final=final) if out or final else b""
+            if data:
+                self.fh.write(data)
+            if final or time.time() - self.flushed > 0.1:  # ≈100 ms, like the native recorder
+                self.fh.flush()
+                self.flushed = time.time()
+
+    def finish(self) -> None:
+        """All audio is in (MicRecorder.stop joined its writer): release the rest, then create live/stop."""
+        self.feed(b"", final=True)
+        with self.lock:
+            self.closed = True
+            self.fh.close()
+        (self.dir / "stop").touch()
+
+    def discard(self) -> None:
+        with self.lock:
+            self.closed = True
+            self.fh.close()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------- echo cancelling for the live audio (Windows)
+AEC_SR, AEC_FRAME = 16000, 160   # WebRTC's audio processing works on 10 ms frames
+
+
+class LoopbackRef:
+    """What the PC plays — WASAPI loopback of the default output device (`soundcard`), 16 kHz mono — on the wall clock,
+    for EchoCancel: sample i is at t0 + i / 16000. While nothing plays, soundcard fills in zeros after a moment; a
+    buffer that lands more than 50 ms from where the sample count puts it is placed by the clock instead (silence in
+    between, or the overlap written over). A new default output device (headphones plugged in) is followed."""
+
+    KEEP = 30 * AEC_SR    # samples kept
+    SLIP = AEC_SR // 20   # 50 ms
+
+    def __init__(self):
+        import numpy as np
+        import soundcard  # noqa: F401 — missing: fail now, before the take (MicRecorder then goes without)
+        self.np = np
+        self.ring = np.zeros(self.KEEP, np.int16)
+        self.t0 = time.time()
+        self.end = 0                     # index (from t0) just past the newest sample
+        self.lock = threading.Lock()
+        self.stop_ev = threading.Event()
+        self.device, self.err, self.sound = None, None, 0   # sound: samples that weren't silent
+        self.th = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self.th.start()
+
+    def stop(self) -> None:
+        self.stop_ev.set()
+        self.th.join(timeout=2)
+
+    def alive(self) -> bool:
+        """Running and heard from (a loopback that never delivers anything isn't waited for after 3 s)."""
+        return self.th.is_alive() and (self.end > 0 or time.time() - self.t0 < 3)
+
+    def known_until(self) -> float:
+        with self.lock:
+            return self.t0 + self.end / AEC_SR
+
+    def read(self, t: float, n: int):
+        """n samples from wall-clock time t on (zeros where nothing is known)."""
+        np = self.np
+        i = int(round((t - self.t0) * AEC_SR))
+        out = np.zeros(n, np.int16)
+        with self.lock:
+            lo, hi = max(i, self.end - self.KEEP, 0), min(i + n, self.end)
+            if hi > lo:
+                out[lo - i:hi - i] = self.ring[np.arange(lo, hi) % self.KEEP]
+        return out
+
+    def _write(self, i: int, x) -> None:
+        if len(x) > self.KEEP:
+            i, x = i + len(x) - self.KEEP, x[-self.KEEP:]
+        self.ring[self.np.arange(i, i + len(x)) % self.KEEP] = x
+
+    def put(self, x, now: float) -> None:
+        """Mono int16 samples whose last one was played at `now`."""
+        start = int(round((now - self.t0) * AEC_SR)) - len(x)
+        with self.lock:
+            if start > self.end + self.SLIP:      # nothing came for a while: silence up to here
+                self._write(self.end, self.np.zeros(start - self.end, self.np.int16))
+                self.end = start
+            elif start < self.end - self.SLIP:    # ahead of the clock (a late buffer before): back to it
+                self.end = max(0, start)
+            self._write(self.end, x)
+            self.end += len(x)
+            self.sound += int(self.np.count_nonzero(self.np.abs(x) > 64))
+
+    @staticmethod
+    def speaker(sc):
+        """The default output device — or, with $BLURT_AEC_LOOPBACK, the one whose name has that in it."""
+        want = os.environ.get("BLURT_AEC_LOOPBACK", "").lower()
+        return next((s for s in sc.all_speakers() if want and want in s.name.lower()), None) or sc.default_speaker()
+
+    def _run(self) -> None:
+        import warnings
+        import soundcard as sc
+        np = self.np
+        warnings.filterwarnings("ignore", module="soundcard")   # "data discontinuity": the clock places buffers
+        try:   # soundcard 0.4.5 still reads a buffer with numpy.fromstring, which numpy 2 removed
+            import soundcard.mediafoundation as mf
+
+            class _Np:
+                shim = True
+
+                def __getattr__(self, k):
+                    return getattr(np, k)
+
+                @staticmethod
+                def fromstring(buf, dtype=float, **_):
+                    return np.frombuffer(buf, dtype=dtype).copy()
+            if not getattr(mf.numpy, "shim", False):
+                mf.numpy = _Np()
+        except Exception:
+            pass
+        if IS_WIN:
+            import ctypes
+            ctypes.windll.ole32.CoInitializeEx(None, 0)
+        while not self.stop_ev.is_set():
+            try:
+                spk = self.speaker(sc)
+                dev = sc.get_microphone(id=str(spk.id), include_loopback=True)
+                self.device = spk.name
+                with dev.recorder(samplerate=AEC_SR, channels=1, blocksize=AEC_FRAME) as r:
+                    checked = time.time()
+                    while not self.stop_ev.is_set():
+                        d = r.record(numframes=None)
+                        now = time.time()
+                        if len(d):
+                            x = np.asarray(d, np.float32).reshape(len(d), -1).mean(axis=1)
+                            self.put(np.clip(x * 32768, -32768, 32767).astype(np.int16), now)
+                        else:
+                            time.sleep(0.005)
+                        if now - checked > 3:
+                            checked = now
+                            if self.speaker(sc).id != spk.id:
+                                break
+            except Exception as e:
+                self.err = f"{type(e).__name__}: {e}"
+                print(f"(loopback: {self.err})", file=sys.stderr)
+                self.stop_ev.wait(1.0)
+
+
+class EchoCancel:
+    """The live audio through WebRTC's audio processing (livekit's APM: AEC3 echo cancelling, noise suppression and a
+    high-pass filter; no gain control) with what the PC plays (LoopbackRef) as the far end, so the voices that come out
+    of the speakers — the meeting's student, its guests — don't reach live/audio.pcm while the user's own voice does.
+
+    Lockstep, 10 ms at a time: the mic frame captured at wall time t goes in right after the loopback frame at t + lead
+    (AEC3 finds the rest of the delay itself), so a frame waits until the loopback has caught up with it (~0.15 s) or
+    MAX_WAIT at most. The lead keeps the far end ahead of its echo even when the loopback's clock says a sound played
+    later than it did (it is stamped when read): 40 ms lost the echo at 150 ms off, 120 ms holds it (the same 29–31 dB
+    taken out from 30 ms early to 150 ms late, offline), and AEC3's ~0.5 s of delay still covers a Bluetooth path on
+    top. Out: 16 kHz mono s16le to `sink` (LivePcm.feed), sample for sample what came in (resampled). An error inside:
+    from then on the audio goes through untouched — never a hole in the transcript."""
+
+    LEAD = 0.12
+    MAX_WAIT = 0.5
+
+    def __init__(self, in_sr: int, ref=None):
+        import numpy as np
+        from livekit import rtc
+        cfg = (global_config().get("record") or {}).get("aec")
+        cfg = cfg if isinstance(cfg, dict) else {}
+        self.np, self.rtc = np, rtc
+        self.apm = rtc.AudioProcessingModule(echo_cancellation=True, noise_suppression=cfg.get("ns") is not False,
+                                             high_pass_filter=True, auto_gain_control=False)
+        self.ref = ref if ref is not None else LoopbackRef()
+        self.lead = float(cfg.get("lead_ms", self.LEAD * 1000)) / 1000
+        self.in_sr, self.step = in_sr, in_sr / AEC_SR
+        self.rs = Resampler(in_sr, AEC_SR)
+        self.q: queue.Queue = queue.Queue()
+        self.sink = None
+        from collections import deque
+        self.anchors: deque = deque()    # (input sample index, its wall clock), one per buffer
+        self.n_in = self.n_out = 0       # input samples taken · 16 kHz samples sent on
+        self.pend = bytearray()          # resampled, not processed yet (starts at n_out)
+        self.next_wall = None
+        self.st = {"frames": 0, "echo_frames": 0, "late_frames": 0, "mic_db": 0.0, "out_db": 0.0, "error": None}
+        self.th = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self.ref.start()
+        self.th.start()
+
+    def push(self, pcm: bytes, wall: float) -> None:
+        """One mic buffer (int16 mono at in_sr) whose first sample was captured at `wall`."""
+        self.q.put((pcm, wall))
+
+    def close(self) -> None:
+        self.q.put(None)
+        self.th.join(timeout=10)
+        self.ref.stop()
+
+    def stats(self) -> dict:
+        s = dict(self.st)
+        s.update(device=getattr(self.ref, "device", None), loopback_error=getattr(self.ref, "err", None),
+                 seconds=round(s["frames"] / 100, 1), echo_seconds=round(s.pop("echo_frames") / 100, 1))
+        # how much quieter the mic got where something was playing (the echo taken out), dB
+        mic, out = s.pop("mic_db"), s.pop("out_db")
+        s["echo_reduction_db"] = round(float(mic - out), 1) if s["echo_seconds"] else None
+        return s
+
+    def _take(self, pcm: bytes, wall: float) -> None:
+        n = len(pcm) // 2
+        if self.next_wall is not None and abs(wall - self.next_wall) < 0.1:
+            wall = self.next_wall + 0.02 * (wall - self.next_wall)   # the stream goes on: follow its clock slowly
+        self.anchors.append((self.n_in, wall))
+        self.n_in += n
+        self.next_wall = wall + n / self.in_sr
+        self.pend += self.rs.feed(pcm)
+
+    def _wall_at(self, p: float) -> float:
+        while len(self.anchors) > 1 and self.anchors[1][0] <= p:
+            self.anchors.popleft()
+        i, w = self.anchors[0]
+        return w + (p - i) / self.in_sr
+
+    def _process(self, final: bool = False) -> None:
+        np, rtc, F = self.np, self.rtc, AEC_FRAME * 2
+        out = bytearray()
+        while len(self.pend) >= F or (final and self.pend):
+            t = self._wall_at(self.n_out * self.step)
+            need = t + self.lead + AEC_FRAME / AEC_SR
+            if not final and self.ref.alive() and self.ref.known_until() < need:
+                if time.time() < need + self.MAX_WAIT:
+                    break
+                self.st["late_frames"] += 1
+            n = min(F, len(self.pend))
+            frame = bytes(self.pend[:n]) + b"\0" * (F - n)
+            del self.pend[:n]
+            if self.apm is not None:
+                try:
+                    r = self.ref.read(t + self.lead, AEC_FRAME)
+                    self.apm.process_reverse_stream(rtc.AudioFrame(r.tobytes(), AEC_SR, 1, AEC_FRAME))
+                    f = rtc.AudioFrame(bytearray(frame), AEC_SR, 1, AEC_FRAME)
+                    self.apm.set_stream_delay_ms(int(self.lead * 1000))
+                    self.apm.process_stream(f)
+                    clean = bytes(f.data.cast("B"))
+                    self.st["frames"] += 1
+                    if np.abs(r).max(initial=0) > 300:   # something was playing: how much of the mic is left
+                        a = np.frombuffer(frame, np.int16).astype(np.float32)
+                        b = np.frombuffer(clean, np.int16).astype(np.float32)
+                        self.st["echo_frames"] += 1
+                        self.st["mic_db"] += (10 * np.log10(float((a * a).mean()) + 1) - self.st["mic_db"]) / self.st["echo_frames"]
+                        self.st["out_db"] += (10 * np.log10(float((b * b).mean()) + 1) - self.st["out_db"]) / self.st["echo_frames"]
+                    frame = clean
+                except Exception as e:
+                    self.apm, self.st["error"] = None, f"{type(e).__name__}: {e}"
+                    print(f"(echo cancelling off: {self.st['error']})", file=sys.stderr)
+            out += frame[:n]
+            self.n_out += n // 2
+        if out and self.sink:
+            self.sink(bytes(out))
+
+    def _run(self) -> None:
+        while True:
+            try:
+                item = self.q.get(timeout=0.01)
+            except queue.Empty:
+                item = ()
+            if item is None:
+                break
+            try:
+                if item:
+                    self._take(*item)
+                self._process()
+            except Exception as e:   # never lose the audio: untouched from here on
+                self.apm, self.st["error"] = None, f"{type(e).__name__}: {e}"
+                print(f"(echo cancelling off: {self.st['error']})", file=sys.stderr)
+        try:
+            self.pend += self.rs.feed(b"", final=True)
+            deadline = time.time() + self.MAX_WAIT
+            while len(self.pend) >= AEC_FRAME * 2 and time.time() < deadline:
+                self._process()
+                time.sleep(0.01)
+            self._process(final=True)
+        except Exception as e:
+            print(f"(echo cancelling: {type(e).__name__}: {e})", file=sys.stderr)
+
+
+LIVE: dict = {}  # {"proc": the live.py process of the current take}
+
+
+def uv_bin() -> str | None:
+    """uv for live.py: PATH, else the one running us ($UV, set by `uv run`), else the one the app installs
+    (~/.blurt/bin) — the Windows app's uv is not on PATH, so live.py never ran there before."""
+    for c in (shutil.which("uv"), os.environ.get("UV"), str(BLURT_HOME / "bin" / ("uv.exe" if IS_WIN else "uv"))):
+        if c and Path(c).is_file():
+            return c
+    return None
+
+
+def live_enabled(cfg: dict | None = None) -> bool:
+    return (cfg if cfg is not None else global_config().get("record", {})).get("live") is not False \
+        and (Path(__file__).parent / "live.py").exists() and uv_bin() is not None
+
+
+def start_live(session: Path) -> subprocess.Popen | None:
+    """Run live.py for this take in the background (the transcript, while recording). Never fails the recording."""
+    if not live_enabled():
+        return None
+    live = session / "live"
+    try:
+        live.mkdir(parents=True, exist_ok=True)
+        log = open(session / "live.log", "a", encoding="utf-8")  # outside live/: a restart deletes live/
+        kw = {"creationflags": 0x00000200 | 0x08000000} if IS_WIN else {"start_new_session": True}  # own group, no window
+        return subprocess.Popen([uv_bin(), "run", "-q", str(Path(__file__).parent / "live.py"), "run",
+                                 str(session), "--watch-pid", str(os.getpid())],
+                                stdin=subprocess.DEVNULL, stdout=log, stderr=log, **kw)
+    except Exception as e:
+        print(f"(live transcript not started: {e})", file=sys.stderr)
+        return None
+
+
+def end_live(proc: subprocess.Popen | None, session: Path, stopped: bool, wait: float = 10) -> None:
+    """After the take: let live.py finish the transcript (briefly — transcribe.py waits longer if needed), or, for a
+    cancelled take, stop it and remove live/."""
+    live = session / "live"
+    if not stopped:
+        if proc and proc.poll() is None:
+            proc.terminate()
+        shutil.rmtree(live, ignore_errors=True)
+        return
+    if proc is None:
+        shutil.rmtree(live, ignore_errors=True)  # no live run: the sidecar is just litter
+        return
+    t0 = time.time()
+    while proc.poll() is None and time.time() - t0 < wait:
+        if (load_json(live / "status.json", {}) or {}).get("asr") in ("done", "off", "error"):
+            break
+        time.sleep(0.2)
+
+
+# ---------------------------------------------------------------- video helpers (tk / ffmpeg engines)
+def pick_encoder(ff: str) -> list[str]:
+    candidates = (["h264_videotoolbox"] if IS_MAC else ["h264_nvenc", "h264_qsv", "h264_amf"]) + ["libx264"]
+    for enc in candidates:
+        if enc == "libx264":
+            break
+        test = run([ff, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=640x360:d=0.2",
+                    "-c:v", enc, "-f", "null", "-"], check=False)
+        if test.returncode == 0:
+            if enc == "h264_videotoolbox":
+                return ["-c:v", enc, "-b:v", "2500k", "-maxrate", "4M", "-bufsize", "8M", "-realtime", "1"]
+            if enc == "h264_nvenc":
+                return ["-c:v", enc, "-preset", "p4", "-cq", "30"]
+            return ["-c:v", enc, "-b:v", "2500k"]
+    return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "30", "-tune", "zerolatency"]
+
+
+def first_frame_wall(log: Path) -> float | None:
+    try:
+        m = re.search(r"Duration: .*?start: (\d{9,}\.\d+)", Path(log).read_text(encoding="utf-8", errors="replace"))
+        return float(m.group(1)) if m else None
+    except FileNotFoundError:
+        return None
+
+
+class PipeWireFeed:
+    """Wayland (GNOME 25.10+ has no Xorg session; docs/design/linux-port.md §Recording): the host app opened a
+    ScreenCast portal session and passes its PipeWire remote and node (BLURT_PW_FD, BLURT_PW_NODE, BLURT_PW_SIZE=WxH,
+    BLURT_PW_POS=X,Y of that monitor on the desktop). ffmpeg 8 has no PipeWire input, so one gst-launch for the whole
+    take turns the stream into raw I420 frames at the take's rate; this relay hands them to the current segment's
+    ffmpeg (its stdin) and keeps the latest for snaps. Paused (no segment), frames are dropped. One feed for the take:
+    a PipeWire remote serves one client, so a resume can't open a second gst on it."""
+
+    def __init__(self, fps: int):
+        self.fd = int(os.environ["BLURT_PW_FD"])
+        self.node = os.environ["BLURT_PW_NODE"]
+        self.w, self.h = (int(v) for v in os.environ.get("BLURT_PW_SIZE", "1920x1080").split("x"))
+        self.x, self.y = (int(v) for v in os.environ.get("BLURT_PW_POS", "0,0").split(","))
+        self.fps, self.size = fps, self.w * self.h * 3 // 2
+        self.sink, self.last, self.frames = None, None, 0
+        self.lock = threading.Lock()
+        self.proc = subprocess.Popen(
+            ["gst-launch-1.0", "-q", "pipewiresrc", f"fd={self.fd}", f"path={self.node}", "do-timestamp=true",
+             "keepalive-time=1000", "!", "videoconvert", "!", "videorate", "!",
+             f"video/x-raw,format=I420,width={self.w},height={self.h},framerate={fps}/1", "!", "fdsink", "fd=1"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, pass_fds=(self.fd,))
+        threading.Thread(target=self._relay, daemon=True).start()
+
+    def _relay(self):
+        out = self.proc.stdout
+        while True:
+            buf = out.read(self.size)
+            if not buf or len(buf) < self.size:
+                break
+            self.last = buf
+            self.frames += 1
+            with self.lock:
+                sink = self.sink
+            if sink is not None:
+                try:
+                    sink.write(buf)
+                except (BrokenPipeError, OSError, ValueError):
+                    with self.lock:
+                        self.sink = None
+        with self.lock:
+            if self.sink is not None:
+                try:
+                    self.sink.close()
+                except OSError:
+                    pass
+                self.sink = None
+
+    def attach(self, stdin):
+        with self.lock:
+            self.sink = stdin
+
+    def detach(self, stdin):
+        with self.lock:
+            if self.sink is stdin:
+                self.sink = None
+        try:
+            stdin.close()   # EOF: ffmpeg writes its last cluster and ends
+        except OSError:
+            pass
+
+    def input_args(self) -> list[str]:
+        return ["-thread_queue_size", "1024", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-video_size",
+                f"{self.w}x{self.h}", "-framerate", str(self.fps), "-i", "pipe:0"]
+
+    def crop(self, region: list[int] | None) -> str:
+        if not region:
+            return ""
+        x, y, w, h = region
+        x, y = max(0, x - self.x), max(0, y - self.y)
+        w, h = min(w, self.w - x), min(h, self.h - y)
+        return f"crop={w - w % 2}:{h - h % 2}:{x}:{y}"
+
+    def still(self, png: Path, region: list[int] | None) -> bool:
+        """The latest frame (of the area) as a PNG: snaps while recording."""
+        if self.last is None:
+            return False
+        vf = ["-vf", c] if (c := self.crop(region)) else []
+        r = subprocess.run([ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt",
+                            "yuv420p", "-video_size", f"{self.w}x{self.h}", "-i", "pipe:0", *vf, "-frames:v", "1",
+                            str(png)], input=self.last, capture_output=True, timeout=20)
+        return r.returncode == 0 and png.exists()
+
+    def stop(self):
+        if self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+
+
+FEED: "PipeWireFeed | WindowFeed | None" = None   # the ffmpeg engine's relayed stream: a ScreenCast or one window
+
+
+# ---------------------------------------------------------------- one window (Windows: --window-hwnd)
+_U32 = None
+
+
+def _user32():
+    """user32 with the prototypes the window helpers need (an own WinDLL: ctypes.windll's shared functions keep
+    their defaults for the rest of this file)."""
+    global _U32
+    if _U32 is None:
+        import ctypes
+        from ctypes import wintypes
+        u = ctypes.WinDLL("user32", use_last_error=True)
+        for f in ("IsWindow", "IsIconic", "IsWindowVisible", "GetWindowTextLengthW"):
+            getattr(u, f).argtypes = [wintypes.HWND]
+        u.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        u.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+        u.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
+        u.GetWindowPlacement.argtypes = [wintypes.HWND, ctypes.c_void_p]
+        u.WindowFromPoint.argtypes = [wintypes.POINT]
+        u.WindowFromPoint.restype = wintypes.HWND
+        u.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+        u.GetAncestor.restype = wintypes.HWND
+        u.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        _U32 = u
+    return _U32
+
+
+def _dpi_aware() -> None:
+    """Per-monitor DPI aware (V2): window sizes and positions in physical pixels, what gfxcapture delivers."""
+    try:
+        _user32().SetProcessDpiAwarenessContext(-4)
+    except Exception:
+        pass
+
+
+def parse_hwnd(s: str | None) -> int | None:
+    if not s:
+        return None
+    try:
+        h = int(str(s).strip(), 0)
+    except ValueError:
+        die(f"--window-hwnd needs a window handle (decimal), got {s!r}")
+    return h if h > 0 else None
+
+
+def window_alive(hwnd: int) -> bool:
+    return bool(_user32().IsWindow(hwnd))
+
+
+def window_showing(hwnd: int) -> bool:
+    """Visible and not minimized: Windows.Graphics.Capture delivers frames of it."""
+    u = _user32()
+    return bool(u.IsWindow(hwnd) and u.IsWindowVisible(hwnd) and not u.IsIconic(hwnd))
+
+
+def client_rect(hwnd: int) -> list[int] | None:
+    """[x, y, w, h] of the window's client area on the virtual desktop (physical px); None if minimized / gone."""
+    import ctypes
+    from ctypes import wintypes
+    u = _user32()
+    r, pt = wintypes.RECT(), wintypes.POINT(0, 0)
+    if not u.IsWindow(hwnd) or u.IsIconic(hwnd) or not u.GetClientRect(hwnd, ctypes.byref(r)) \
+            or not u.ClientToScreen(hwnd, ctypes.byref(pt)) or r.right < 2 or r.bottom < 2:
+        return None
+    return [pt.x, pt.y, r.right, r.bottom]
+
+
+def window_info(hwnd: int) -> dict:
+    """meta.json "window": the recorded window (title and client size at the start, physical px)."""
+    import ctypes
+    u = _user32()
+    n = u.GetWindowTextLengthW(hwnd)
+    buf = ctypes.create_unicode_buffer(n + 1)
+    u.GetWindowTextW(hwnd, buf, n + 1)
+    r = client_rect(hwnd)
+    w, h = (r[2], r[3]) if r else (_restored_size(hwnd) or (None, None))   # minimized: its restored size
+    return {"hwnd": hwnd, "title": buf.value, "w": w, "h": h}
+
+
+def _restored_size(hwnd: int) -> tuple[int, int] | None:
+    """A minimized window's size when restored (GetWindowPlacement → rcNormalPosition, frame included)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class WINDOWPLACEMENT(ctypes.Structure):
+        _fields_ = [("length", wintypes.UINT), ("flags", wintypes.UINT), ("showCmd", wintypes.UINT),
+                    ("ptMinPosition", wintypes.POINT), ("ptMaxPosition", wintypes.POINT),
+                    ("rcNormalPosition", wintypes.RECT)]
+    wp = WINDOWPLACEMENT()
+    wp.length = ctypes.sizeof(wp)
+    if not _user32().GetWindowPlacement(hwnd, ctypes.byref(wp)):
+        return None
+    r = wp.rcNormalPosition
+    return (r.right - r.left, r.bottom - r.top) if r.right - r.left > 1 and r.bottom - r.top > 1 else None
+
+
+def window_crop(hwnd: int, region: list[int] | None) -> str:
+    """crop filter for the part of `region` (desktop px) inside the window's client area; "" = the whole window
+    (no region, no overlap, or the window is minimized). Clamped in ffmpeg, the frame may be a pixel off the rect."""
+    r = client_rect(hwnd) if region else None
+    if not r:
+        return ""
+    x0, y0, cw, ch = r
+    x, y, w, h = region
+    left, top = max(x, x0), max(y, y0)
+    right, bottom = min(x + w, x0 + cw), min(y + h, y0 + ch)
+    if right - left < 2 or bottom - top < 2:
+        return ""
+    return (f"crop=w='min({right - left},iw)':h='min({bottom - top},ih)'"
+            f":x='min({left - x0},iw-ow)':y='min({top - y0},ih-oh)'")
+
+
+def window_snap_cmd(out_path: Path, hwnd: int, crop: str = "") -> list[str]:
+    """One full-resolution frame of the window only (its client area, even when other windows cover it) → PNG."""
+    vf = ",".join(f for f in ("hwdownload,format=bgra", crop) if f)
+    return [ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+            f"gfxcapture=hwnd={hwnd}:capture_cursor=0", "-vf", vf, "-frames:v", "1", "-update", "1", str(out_path)]
+
+
+class WindowFeed:
+    """Windows, `--window-hwnd`: the take is one window and nothing else — its own pixels through
+    Windows.Graphics.Capture (ffmpeg's gfxcapture), also while other windows cover it, GPU / WebView2 content
+    included; never the desktop or another window. gfxcapture hands over a frame only when the window changes and
+    none while it is minimized or hidden — and ffmpeg 8.1 then blocks, even on "q" — so it runs as a producer of its
+    own whose frames this relay keeps, the latest going to the current segment's ffmpeg (its stdin) at the take's
+    rate, like PipeWireFeed. Minimized / hidden: the last frame stands (black before the first); closed: the last
+    frame stands to the end — the video keeps time with the audio and the take goes on. A producer that stops while
+    the window is still there is started again (backoff 1 → 30 s). The size is fixed for the take: the client area's
+    at the start (within max_width, even); a resized window is scaled into it, aspect kept (resize_mode=scale_aspect).
+    One feed for the take (pause / resume detach / attach segments)."""
+
+    def __init__(self, hwnd: int, fps: int, max_width: int, log: Path | None = None):
+        _dpi_aware()
+        self.hwnd, self.fps, self.log = hwnd, fps, log
+        r = client_rect(hwnd)
+        cw, ch = (r[2], r[3]) if r else (_restored_size(hwnd) or (1280, 720))
+        if cw > max_width:
+            cw, ch = max_width, round(ch * max_width / cw)
+        self.w, self.h = max(2, cw // 2 * 2), max(2, ch // 2 * 2)
+        self.size = self.w * self.h * 3 // 2
+        self.black = b"\x10" * (self.w * self.h) + b"\x80" * (self.w * self.h // 2)
+        self.sink, self.last, self.frames = None, None, 0
+        self.lock = threading.Lock()
+        self.proc, self.spawned_at, self.backoff, self.next_try = None, 0.0, 1.0, 0.0
+        self.starts, self.gone, self.stopped, self.t0 = 0, False, False, time.time()
+        if window_showing(hwnd):
+            self._spawn()
+        threading.Thread(target=self._supervise, daemon=True).start()
+        threading.Thread(target=self._clock, daemon=True).start()
+
+    def producer_cmd(self) -> list[str]:
+        src = (f"gfxcapture=hwnd={self.hwnd}:max_framerate={self.fps}:capture_cursor=1:width={self.w}:height={self.h}"
+               f":resize_mode=scale_aspect")
+        return [ffmpeg_bin(), "-hide_banner", "-nostats", "-loglevel", "warning", "-f", "lavfi", "-i", src,
+                "-vf", f"hwdownload,format=bgra,scale={self.w}:{self.h},format=yuv420p", "-fps_mode", "vfr",
+                "-f", "rawvideo", "-pix_fmt", "yuv420p", "pipe:1"]
+
+    def _spawn(self):
+        err = open(self.log, "a", encoding="utf-8") if self.log else subprocess.DEVNULL
+        kw = {"creationflags": 0x08000000} if IS_WIN else {}   # CREATE_NO_WINDOW
+        try:
+            self.proc = subprocess.Popen(self.producer_cmd(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                         stderr=err, **kw)
+        except OSError as e:
+            print(f"(window capture not started: {e})", file=sys.stderr)
+            self.proc, self.next_try = None, time.time() + 5
+        finally:
+            if self.log:
+                err.close()
+        self.spawned_at = time.time()
+        self.starts += 1
+        if self.proc is not None:
+            threading.Thread(target=self._read, args=(self.proc,), daemon=True).start()
+
+    def _read(self, proc):
+        src = proc.stdout
+        while True:
+            buf = src.read(self.size)
+            if not buf or len(buf) < self.size:
+                break
+            self.last = buf
+            self.frames += 1
+
+    def _supervise(self):
+        while not self.stopped:
+            p, now = self.proc, time.time()
+            if p is not None and p.poll() is not None:     # the producer ended: window closed, or WGC gave up
+                self.proc = None
+                self.backoff = 1.0 if now - self.spawned_at > 10 else min(self.backoff * 2, 30.0)
+                self.next_try = now + self.backoff
+            if self.proc is None and not self.gone:
+                if not window_alive(self.hwnd):
+                    self.gone = True
+                    print("(the recorded window was closed: its last frame stays in the video, the audio goes on)",
+                          file=sys.stderr)
+                elif window_showing(self.hwnd) and now >= self.next_try:
+                    self._spawn()
+            if self.last is None and (now - self.t0 > 5 or now - self.t0 > 2 and (
+                    self.gone or not window_showing(self.hwnd))):
+                self.last = self.black   # minimized / hidden from the start, or it never paints: black until it does
+            time.sleep(0.2)
+
+    def _clock(self):
+        """The take's frame rate, whatever the window does: the latest frame to the segment's ffmpeg every 1/fps s
+        (its timestamps are the wall clock, so a late write just shows a frame a bit longer; no bursts to catch up)."""
+        period, nxt = 1.0 / self.fps, time.time()
+        while not self.stopped:
+            with self.lock:
+                sink = self.sink
+            frame = self.last
+            if sink is not None and frame is not None:
+                try:
+                    sink.write(frame)
+                    sink.flush()
+                except (BrokenPipeError, OSError, ValueError):
+                    with self.lock:
+                        if self.sink is sink:
+                            self.sink = None
+            nxt += period
+            delay = nxt - time.time()
+            if delay > 0:
+                time.sleep(delay)
+            elif delay < -0.5:
+                nxt = time.time()
+
+    def attach(self, stdin):
+        with self.lock:
+            self.sink = stdin
+
+    def detach(self, stdin):
+        with self.lock:
+            if self.sink is stdin:
+                self.sink = None
+        try:
+            stdin.close()   # EOF: ffmpeg writes its last cluster and ends
+        except OSError:
+            pass
+
+    def input_args(self) -> list[str]:
+        return ["-thread_queue_size", "1024", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-video_size",
+                f"{self.w}x{self.h}", "-framerate", str(self.fps), "-i", "pipe:0"]
+
+    def crop(self, region: list[int] | None) -> str:
+        return ""           # the window is the area (--region does not apply)
+
+    def still(self, png: Path, region: list[int] | None) -> bool:
+        """Snap: a full-resolution frame of the window (the part of `region` inside it, if any); minimized or the
+        grab failed: the latest frame of the take. Never the screen."""
+        if window_showing(self.hwnd):
+            try:
+                r = subprocess.run(window_snap_cmd(png, self.hwnd, window_crop(self.hwnd, region)),
+                                   stdin=subprocess.DEVNULL, capture_output=True, timeout=8)
+                if r.returncode == 0 and png.exists():
+                    return True
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+        frame = self.last
+        if frame is None:
+            return False
+        r = subprocess.run([ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt",
+                            "yuv420p", "-video_size", f"{self.w}x{self.h}", "-i", "pipe:0", "-frames:v", "1",
+                            str(png)], input=frame, capture_output=True, timeout=20)
+        return r.returncode == 0 and png.exists()
+
+    def stop(self):
+        self.stopped = True
+        p = self.proc
+        if p is not None and p.poll() is None:
+            p.kill()        # it may be blocked waiting for a frame (minimized): "q" would not reach it
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        try:
+            if self.log and self.log.exists() and self.log.stat().st_size == 0:
+                self.log.unlink()   # kept when the producer said something (window.log)
+        except OSError:
+            pass
+
+
+def grab_input(screen, fps: int, region: list[int] | None = None) -> tuple[list[str], str]:
+    """ffmpeg input args + leading crop filter ("" = none) for the screen grabber of this OS (ffmpeg engine).
+    region = x,y,w,h on the desktop: Windows/Linux physical pixels of the virtual desktop / X screen, macOS points
+    of the main display (avfoundation delivers backing pixels, so the crop is scaled)."""
+    ff = ffmpeg_bin()
+    if os.environ.get("BLURT_FAKE_SCREEN"):
+        w, h = (region[2], region[3]) if region else (1280, 720)
+        return ["-re", "-f", "lavfi", "-i", f"testsrc2=s={w}x{h}:r={fps}"], ""
+    if FEED is not None:  # Wayland's ScreenCast stream / one window (--window-hwnd), relayed through stdin
+        return FEED.input_args(), FEED.crop(region)
+    if IS_MAC:
+        if screen is None:
+            screens = list_screens() or die("No capturable screen (Screen Recording permission?)")
+            screen = screens[0]["index"]
+        args = ["-thread_queue_size", "1024", "-f", "avfoundation", "-capture_cursor", "1",
+                "-capture_mouse_clicks", "1", "-framerate", str(fps), "-i", f"{screen}:none"]
+        if not region:
+            return args, ""
+        from tk_recorder import mac_backing_scale
+        sf = mac_backing_scale()
+        x, y, w, h = (int(v * sf) for v in region)
+        return args, f"crop={w}:{h}:{x}:{y}"
+    if IS_LINUX:  # X11 only; under Wayland x11grab sees just XWayland windows
+        disp = os.environ.get("DISPLAY", ":0")
+        if region:
+            x, y, w, h = region
+            return ["-thread_queue_size", "1024", "-f", "x11grab", "-framerate", str(fps), "-draw_mouse", "1",
+                    "-video_size", f"{w}x{h}", "-i", f"{disp}+{x},{y}"], ""
+        return ["-thread_queue_size", "1024", "-f", "x11grab", "-framerate", str(fps), "-draw_mouse", "1",
+                "-i", disp], ""
+    gdi = ["-thread_queue_size", "1024", "-f", "gdigrab", "-framerate", str(fps), "-draw_mouse", "1"]
+    if region:  # gdigrab offsets are virtual-desktop coordinates (ddagrab's are per output)
+        x, y, w, h = region
+        return gdi + ["-offset_x", str(x), "-offset_y", str(y), "-video_size", f"{w}x{h}", "-i", "desktop"], ""
+    dda = f"ddagrab=output_idx={screen or 0}:framerate={fps}:draw_mouse=1"
+    # ddagrab needs Desktop Duplication on a D3D11 device: absent over RDP, on GPU-less VMs, in service sessions
+    has_dda = "ddagrab" in run([ff, "-hide_banner", "-filters"], check=False).stdout and run(
+        [ff, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", dda, "-frames:v", "1", "-f", "null", "-"],
+        check=False).returncode == 0
+    if has_dda:
+        return ["-f", "lavfi", "-i", dda], "hwdownload,format=bgra"
+    return gdi + ["-i", "desktop"], ""
+
+
+def headless_video_cmd(out_path: Path, screen, fps: int, max_width: int, region: list[int] | None = None) -> list[str]:
+    ff = ffmpeg_bin()
+    inp, pre = grab_input(screen, fps, region)
+    # even width/height: yuv420p + most H.264 encoders refuse odd sizes
+    vf = ",".join(f for f in (pre, f"scale='trunc(min({max_width},iw)/2)*2':-2", "format=yuv420p") if f)
+    # Matroska clusters of at most 1 s, flushed as they close: a grabber that dies mid-take leaves a file that plays up
+    # to its last second (the Mac writes 4 s mp4 fragments for the same reason)
+    return [ff, "-hide_banner", "-nostats", "-loglevel", "info", "-y", "-use_wallclock_as_timestamps", "1", *inp,
+            "-vf", vf, *pick_encoder(ff), "-g", str(fps * 2), "-cluster_time_limit", "1000", "-flush_packets", "1",
+            str(out_path)]
+
+
+def snap_frame_cmd(out_path: Path, screen, region: list[int] | None) -> list[str]:
+    """One full-resolution frame of the recorded area → PNG: a second ffmpeg grab (x11grab / gdigrab can be opened
+    while the video grabber runs). macOS: avfoundation can't open the same screen twice (the second one hangs), so
+    the system `screencapture` takes it (points, like --region)."""
+    if IS_MAC and not os.environ.get("BLURT_FAKE_SCREEN"):
+        where = ["-R", ",".join(map(str, region))] if region else []
+        if not region and screen is not None:  # avfoundation index → "Capture screen K" → display K+1
+            m = re.search(r"(\d+)$", next((x["name"] for x in list_screens() if x["index"] == screen), ""))
+            where = ["-D", str(int(m.group(1)) + 1)] if m else []
+        return ["screencapture", "-x", "-t", "png", *where, str(out_path)]
+    if isinstance(FEED, WindowFeed):   # a window take: the window only, never the screen
+        return window_snap_cmd(out_path, FEED.hwnd, window_crop(FEED.hwnd, region))
+    inp, pre = grab_input(screen, 30, region)
+    inp = [a for a in inp if a != "-re"]
+    vf = ["-vf", pre] if pre else []
+    return [ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y", *inp, *vf, "-frames:v", "1", "-update", "1",
+            str(out_path)]
+
+
+def mux(video: Path, audio: Path | None, offset: float, dest: Path) -> None:
+    """offset = audio_start - video_start (s). Positive ⇒ audio began later ⇒ delay it."""
+    cmd = [ffmpeg_bin(), "-nostdin", "-loglevel", "error", "-y", "-i", str(video)]
+    if audio and audio.exists() and audio.stat().st_size > 1000:
+        if offset >= 0:
+            cmd += ["-i", str(audio)]
+            af = f"adelay={int(offset * 1000)}:all=1"
+        else:
+            cmd += ["-ss", f"{-offset:.3f}", "-i", str(audio)]
+            af = "anull"
+        cmd += ["-map", "0:v", "-map", "1:a", "-c:v", "copy", "-af", af, "-c:a", "aac", "-b:a", "96k", "-shortest"]
+    else:
+        cmd += ["-c", "copy"]
+    r = run(cmd + ["-movflags", "+faststart", str(dest)], check=False)
+    if r.returncode:
+        die(f"mux failed: {r.stderr[-800:]}")
+
+
+# ---------------------------------------------------------------- native macOS recorder
+APP_BUNDLE = BLURT_HOME / "Blurt.app"
+ICON = Path(__file__).resolve().parent.parent / "assets" / "icon.png"
+# the app icon as the Peep release package ships it (assets/brand/import_peep.py): the paper tile, every size drawn
+APP_ICNS = ICON.with_name("AppIcon.icns")
+INFO_PLIST = SWIFT_DIR / "Info.plist"
+
+
+def swift_sources() -> list[Path]:
+    """Everything the build depends on: Package.swift, Info.plist, Sources/** and Vendor/** when there is one (not
+    .build/)."""
+    files = [SWIFT_DIR / "Package.swift", INFO_PLIST]
+    for d in ("Sources", "Vendor"):
+        files += sorted(p for p in (SWIFT_DIR / d).rglob("*") if p.is_file() and not p.name.startswith("."))
+    return [f for f in files if f.exists()]
+
+
+def test_hooks() -> bool:
+    """BLURT_TEST_HOOKS=1: build the app for scripted tests. Never for a release or a user's install."""
+    return os.environ.get("BLURT_TEST_HOOKS") == "1"
+
+
+def swift_build(scratch: Path, triple: str | None = None) -> Path | None:
+    """`swift build -c release` (Command Line Tools are enough) → the blurt-recorder executable, or None."""
+    cmd = ["swift", "build", "-c", "release", "--package-path", str(SWIFT_DIR), "--scratch-path", str(scratch),
+           "--product", "blurt-recorder"]
+    if test_hooks():  # a build for tests: the app honours BLURT_TEST_* (main.swift); every other build ignores them
+        cmd += ["-Xswiftc", "-DBLURT_TEST_HOOKS"]
+    if triple:
+        cmd += ["--triple", triple]
+    r = run(cmd, check=False)
+    if r.returncode:
+        print(f"native recorder build failed{f' for {triple}' if triple else ''}:\n{(r.stderr or r.stdout)[-2500:]}",
+              file=sys.stderr)
+        return None
+    r = run(cmd + ["--show-bin-path"], check=False)
+    exe = Path(r.stdout.strip().splitlines()[-1]) / "blurt-recorder" if r.returncode == 0 and r.stdout.strip() else None
+    return exe if exe and exe.exists() else None
+
+
+def native_binary(build: bool = True) -> Path | None:
+    """The recorder lives inside ~/.blurt/Blurt.app so it can also be launched as a standalone app.
+    Built from recorder/macos (a SwiftPM package) with `swift build`; BLURT_UNIVERSAL=1 → arm64 + x86_64 (lipo);
+    BLURT_SPARKLE=1 → with Sparkle (auto-update; release builds, see scripts/release-mac.sh)."""
+    if not IS_MAC:
+        return None
+    if not (SWIFT_DIR / "Package.swift").exists():
+        # the skill a release app carries (copied to ~/.blurt/skill): no source to build — the installed app records
+        return next((exe for app in (Path("/Applications/Blurt.app"), Path.home() / "Applications" / "Blurt.app")
+                     if (exe := app / "Contents" / "MacOS" / "blurt-recorder").exists()), None)
+    remember_skill_dir()
+    h = hashlib.sha256()
+    for p in swift_sources():
+        h.update(str(p.relative_to(SWIFT_DIR)).encode() + b"\0" + p.read_bytes())
+    if AGENTS_JSON.exists():
+        h.update(AGENTS_JSON.read_bytes())
+    if APP_ICNS.exists():                       # a new app icon is a new build too
+        h.update(APP_ICNS.read_bytes())
+    if os.environ.get("BLURT_UNIVERSAL"):
+        h.update(b"universal")
+    sparkle = os.environ.get("BLURT_SPARKLE") == "1"
+    if sparkle:
+        h.update(b"sparkle")
+    if test_hooks():
+        h.update(b"test-hooks")
+    digest = h.hexdigest()[:12]
+    exe = APP_BUNDLE / "Contents" / "MacOS" / "blurt-recorder"
+    stamp = APP_BUNDLE / "Contents" / "Resources" / "source.sha"
+    if exe.exists() and stamp.exists() and stamp.read_text().strip() == digest:
+        return exe
+    if not build:
+        return None
+    if not shutil.which("swift"):
+        return None
+    print("building native recorder (one-time, ~1 min)…", file=sys.stderr, flush=True)
+    # Package.swift reads BLURT_SPARKLE: separate scratch dirs so SwiftPM's cached manifest never mixes the two
+    scratch = BLURT_HOME / "build" / ("swiftpm-sparkle" if sparkle else "swiftpm")
+    tmp = BLURT_HOME / "build" / "blurt-recorder"
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    tmp.unlink(missing_ok=True)
+    if os.environ.get("BLURT_UNIVERSAL"):  # release builds: arm64 + x86_64 in one binary
+        parts = []
+        for arch in ("arm64", "x86_64"):
+            built = swift_build(scratch, f"{arch}-apple-macosx13.0")
+            if not built:
+                return None
+            parts.append(str(built))
+        r = run(["lipo", "-create", *parts, "-output", str(tmp)], check=False)
+        if r.returncode:
+            print(f"lipo failed: {r.stderr[-800:]}", file=sys.stderr)
+            return None
+    else:
+        built = swift_build(scratch)
+        if not built:
+            return None
+        shutil.copy2(built, tmp)
+    run(["strip", "-S", "-x", str(tmp)], check=False)   # local symbols / debug notes: ~1.9 → 1.2 MB per arch
+    shutil.rmtree(APP_BUNDLE, ignore_errors=True)
+    (APP_BUNDLE / "Contents" / "MacOS").mkdir(parents=True)
+    (APP_BUNDLE / "Contents" / "Resources").mkdir(parents=True)
+    shutil.move(str(tmp), exe)
+    if sparkle:  # swift build leaves the (universal, Sparkle-signed) framework next to the executable
+        fw = Path(run(["swift", "build", "-c", "release", "--package-path", str(SWIFT_DIR), "--scratch-path", str(scratch),
+                       "--show-bin-path"], check=False).stdout.strip().splitlines()[-1]) / "Sparkle.framework"
+        if not fw.exists():
+            fw = next(scratch.glob("*/release/Sparkle.framework"), fw)
+        if not fw.exists():
+            print("Sparkle.framework missing from the build", file=sys.stderr)
+            return None
+        (APP_BUNDLE / "Contents" / "Frameworks").mkdir()
+        dest = APP_BUNDLE / "Contents" / "Frameworks" / "Sparkle.framework"
+        shutil.copytree(fw, dest, symlinks=True)
+        prune_sparkle(dest)
+    shutil.copy(INFO_PLIST, APP_BUNDLE / "Contents" / "Info.plist")
+    make_icns(APP_BUNDLE / "Contents" / "Resources" / "AppIcon.icns")
+    for lproj in sorted((SWIFT_DIR / "Sources" / "BlurtApp" / "Resources").glob("*.lproj")):   # K10 string tables
+        shutil.copytree(lproj, APP_BUNDLE / "Contents" / "Resources" / lproj.name, dirs_exist_ok=True)
+    # Peep's frames (the mascot's sprite sheets, the menu-bar glyph frames, peep.json: assets/brand/import_peep.py)
+    shutil.copytree(SWIFT_DIR / "Sources" / "BlurtApp" / "Resources" / "Peep", APP_BUNDLE / "Contents" / "Resources" / "Peep",
+                    dirs_exist_ok=True)
+    # the sounds of a take (DictationSound: assets/sounds/build.py)
+    shutil.copytree(SWIFT_DIR / "Sources" / "BlurtApp" / "Resources" / "Sounds", APP_BUNDLE / "Contents" / "Resources" / "Sounds",
+                    dirs_exist_ok=True)
+    if AGENTS_JSON.exists():
+        shutil.copy(AGENTS_JSON, APP_BUNDLE / "Contents" / "Resources" / "agents.json")
+    # the AccentColor (Info.plist NSAccentColorName) and, for macOS 26, the app icon with its dark appearance
+    # (CFBundleIconName; assets/brand/AppIcon.icon): compiled by assets/color/build.py with Xcode's actool and
+    # committed, so this build needs the Command Line Tools only
+    car = SWIFT_DIR / "Sources" / "BlurtApp" / "Resources" / "Assets.car"
+    if car.exists():
+        shutil.copy(car, APP_BUNDLE / "Contents" / "Resources" / "Assets.car")
+    stamp.write_text(digest)          # before signing: the signature seals Resources/
+    sign_app(APP_BUNDLE)
+    ensure_app_installed(force=True)
+    return exe
+
+
+def prune_sparkle(fw: Path) -> None:
+    """Drop what a non-sandboxed app doesn't load (headers, module map, the XPC services Sparkle only needs inside the
+    App Sandbox) — ~0.6 MB — and re-sign what's left ad hoc, inside out (release-mac.sh re-signs with Developer ID)."""
+    for rel in ("Headers", "PrivateHeaders", "Modules", "XPCServices"):
+        for p in (fw / rel, fw / "Versions" / "B" / rel):
+            if p.is_symlink():
+                p.unlink()
+            elif p.exists():
+                shutil.rmtree(p)
+    b = fw / "Versions" / "B"
+    for nested in (b / "Autoupdate", b / "Updater.app", fw):
+        run(["codesign", "--force", "--sign", "-", str(nested)], check=False)
+
+
+def remember_skill_dir() -> None:
+    skill = str(Path(__file__).resolve().parent.parent)
+    if global_config().get("skill_dir") != skill:
+        save_config_if_readable({"skill_dir": skill})      # a config.json that doesn't parse: skipped, never fatal
+
+
+def ensure_app_installed(force: bool = False) -> Path | None:
+    """Keep a double-clickable recorder where people look for apps — done automatically on first use / update.
+    Opt out with ~/.blurt/config.json → {"record": {"install_app": false}}. With a non-default BLURT_HOME (tests, CI)
+    nothing is installed unless that config says {"install_app": true} — a test build must never replace the real app."""
+    setting = global_config().get("record", {}).get("install_app")
+    if setting is False or (setting is not True and "BLURT_HOME" in os.environ):
+        return None
+    try:
+        if IS_MAC:
+            dest = Path.home() / "Applications" / "Blurt.app"
+            # a release install (the DMG, with Sparkle) updates itself: a skill build neither replaces nor duplicates it
+            sparkle = Path("Contents") / "Frameworks" / "Sparkle.framework"
+            release = next((a for a in (Path("/Applications/Blurt.app"), dest) if (a / sparkle).exists()), None)
+            if release and setting is not True and not (APP_BUNDLE / sparkle).exists():
+                return release
+            if dest.exists() and not force:
+                return dest
+            if not (APP_BUNDLE / "Contents" / "MacOS" / "blurt-recorder").exists():
+                return None
+            dest.parent.mkdir(exist_ok=True)
+            shutil.rmtree(dest, ignore_errors=True)
+            shutil.copytree(APP_BUNDLE, dest, symlinks=True)
+            sign_app(dest)
+            print(f"installed standalone recorder: {dest}", file=sys.stderr, flush=True)
+            return dest
+        if IS_WIN:
+            lnk = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Blurt.lnk"
+            if lnk.exists() and not force:
+                return lnk
+            uv = shutil.which("uv")
+            if not uv:
+                return None
+            ps = (f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{lnk}');$s.TargetPath='{uv}';"
+                  f"$s.Arguments='run --gui-script \"{Path(__file__).resolve()}\" start --inbox';"
+                  f"$s.WorkingDirectory='{Path.home()}';$s.Save()")
+            run(["powershell", "-NoProfile", "-Command", ps], check=False)
+            return lnk if lnk.exists() else None
+    except Exception as e:  # never block a recording on this
+        print(f"(could not install standalone recorder: {e})", file=sys.stderr)
+    return None
+
+
+def sign_app(bundle: Path) -> None:
+    """Ad-hoc sign with a designated requirement on the bundle id (not the default per-build cdhash), so macOS keeps
+    the Screen Recording / Microphone grant across rebuilds and updates instead of silently revoking it."""
+    run(["codesign", "--force", "--sign", "-", "--identifier", "dev.blurt.recorder",
+         "-r=designated => identifier \"dev.blurt.recorder\"", str(bundle)], check=False)
+
+
+def make_icns(dest: Path) -> None:
+    """AppIcon.icns (macOS 13–15; macOS 26 takes the Assets.car icon): the Peep release package's own .icns
+    (assets/AppIcon.icns — clay from 64 px up, the vector drawing at 32, the flat mark at 16), else built from the 1024
+    tile (assets/icon.png) with the small slots from icon-16.png / icon-32.png."""
+    if APP_ICNS.exists():
+        shutil.copy(APP_ICNS, dest)
+        return
+    if not ICON.exists():
+        return
+    iconset = BLURT_HOME / "build" / "AppIcon.iconset"
+    shutil.rmtree(iconset, ignore_errors=True)
+    iconset.mkdir(parents=True)
+
+    def slot(px: int, name: str) -> None:
+        small = ICON.with_name(f"icon-{px}.png")
+        if small.exists():
+            shutil.copy(small, iconset / name)
+        else:
+            run(["sips", "-z", str(px), str(px), str(ICON), "--out", str(iconset / name)], check=False)
+
+    for size in (16, 32, 128, 256, 512):
+        slot(size, f"icon_{size}x{size}.png")
+        slot(size * 2, f"icon_{size}x{size}@2x.png")
+    run(["iconutil", "-c", "icns", str(iconset), "-o", str(dest)], check=False)
+
+
+def inbox_dir() -> Path:
+    """Where --inbox recordings go: the inbox store's sessions ($BLURT_WORKSPACE/inbox/sessions, contract K1)."""
+    return blurt_workspace() / "inbox" / "sessions"
+
+
+def tk_available() -> bool:
+    fix_tcl_env()
+    try:
+        import tkinter
+        r = tkinter.Tcl()  # interpreter only, no window
+        r.eval("info library")
+        return True
+    except Exception:
+        return False
+
+
+def choose_engine(wanted: str | None) -> str:
+    if wanted:
+        return wanted
+    if IS_MAC and native_binary(build=True):
+        return "native"
+    if tk_available():
+        return "tk"
+    return "ffmpeg"
+
+
+# ---------------------------------------------------------------- ux helpers
+def chime(kind: str) -> None:
+    try:
+        if IS_MAC:
+            snd = {"start": "Glass", "stop": "Submarine"}[kind]
+            subprocess.Popen(["afplay", f"/System/Library/Sounds/{snd}.aiff"])
+        elif IS_WIN:
+            import winsound
+            winsound.MessageBeep(winsound.MB_OK if kind == "start" else winsound.MB_ICONASTERISK)
+    except Exception:
+        pass
+
+
+def lang() -> str:
+    cfg = global_config()
+    if cfg.get("lang"):
+        return cfg["lang"]
+    if IS_MAC:
+        r = run(["defaults", "read", "-g", "AppleLanguages"], check=False).stdout
+        return "zh" if "zh" in r.split(",")[0] else "en"
+    import locale
+    return "zh" if (locale.getlocale()[0] or "").lower().startswith(("zh", "chinese")) else "en"
+
+
+def parse_region(s: str | None) -> list[int] | None:
+    if not s:
+        return None
+    p = [int(float(v)) for v in s.split(",")]
+    if len(p) != 4:
+        die("--region needs x,y,w,h")
+    return p
+
+
+# ---------------------------------------------------------------- start
+def cmd_start(a) -> None:
+    state = load_json(STATE_FILE)
+    if state and _alive(state.get("pid")):
+        die(f"A recording is already running: {state['session']}. Run `record.py stop` first.")
+    if a.session:
+        session = Path(a.session)
+    elif a.inbox:
+        session = inbox_dir() / datetime.now().strftime("%Y%m%d-%H%M%S")
+    else:
+        session = new_session_dir()
+    session = session.resolve()
+    session.mkdir(parents=True, exist_ok=True)
+    cfg = global_config().get("record", {})
+    engine = choose_engine(a.engine or cfg.get("engine"))
+    if STATUS["on"] and engine != "ffmpeg":
+        die("--status-jsonl needs --engine ffmpeg")
+    hwnd = parse_hwnd(getattr(a, "window_hwnd", None))
+    if hwnd:
+        if not IS_WIN:
+            die("--window-hwnd is Windows only")
+        if engine != "ffmpeg":
+            die("--window-hwnd needs --engine ffmpeg")
+        _dpi_aware()
+        if not window_alive(hwnd):
+            die(f"--window-hwnd {hwnd}: no such window")
+    if IS_WIN and not STATUS["on"]:  # a host app (--status-jsonl) is the UI; don't install the Tk one
+        ensure_app_installed()
+    last = cfg.get("last_region")
+    region = parse_region(a.region) or (last if a.last_region else None)
+    cmd_file = session / ".cmd"
+    cmd_file.unlink(missing_ok=True)
+    started = datetime.now().astimezone().isoformat(timespec="seconds")
+    save_json(STATE_FILE, {"pid": os.getpid(), "session": str(session), "engine": engine, "started_at": started})
+    meta = {"started_at": started, "engine": engine}
+    if hwnd:
+        # a window take says so from the start (meta.json "window", no "region"): what records only this window
+        # while it runs (the meeting assistant's per-utterance screenshots) reads it here
+        meta["window"] = window_info(hwnd)
+        save_json(session / "meta.json", {**(load_json(session / "meta.json", {}) or {}), **meta})
+    out(f"SESSION {session}  engine={engine}")
+    LIVE.clear()
+    try:
+        if engine == "native":
+            result = run_native(session, a, cfg, last, region, cmd_file)
+        elif engine == "tk":
+            result = run_tk(session, a, cfg, last, region, cmd_file)
+        else:
+            result = run_headless(session, a, cfg, cmd_file)
+    finally:
+        STATE_FILE.unlink(missing_ok=True)
+        cmd_file.unlink(missing_ok=True)
+
+    ev = result.get("event")
+    end_live(LIVE.get("proc"), session, stopped=ev == "stopped")
+    if ev == "cancelled":
+        status("discarded")
+        out(f"CANCELLED {result.get('reason', 'by user')} — nothing was recorded")
+        sys.exit(2)
+    if ev == "error":
+        hint = ""
+        if result.get("code") == "screen_permission":
+            hint = (" → grant Screen Recording to the app hosting this agent (System Settings → Privacy & Security → "
+                    "Screen & System Audio Recording), then restart that app.")
+        status("error", msg=f"{result.get('message')}{hint}", code=result.get("code"))
+        die(f"recording failed: {result.get('code')}: {result.get('message')}{hint}")
+    final = session / "recording.mp4"
+    if result.get("region"):
+        save_config_if_readable({"record": {"last_region": result["region"]}})
+    dur = probe_duration(final)
+    events = session / "events.jsonl"
+    n_markers = sum(1 for l in events.open(encoding="utf-8") if '"marker"' in l) if events.exists() else 0
+    meta.update({k: v for k, v in result.items() if k not in ("event", "file")}, video=final.name, duration=dur)
+    save_json(session / "meta.json", meta)
+    shots = session / "shots.jsonl"
+    n_shots = len({json.loads(l)["n"] for l in shots.open(encoding="utf-8") if l.strip()}) if shots.exists() else 0
+    extra = {k: result[k] for k in ("recovered", "lost_seconds", "ended_early") if k in result}
+    status("stopped", video=final.name, duration=round(dur, 3), shots=n_shots, **extra)
+    out(f"DONE video={final} duration={fmt_ts(dur)} markers={n_markers} shots={n_shots} events={'events.jsonl' if events.exists() else '-'}")
+
+
+def run_native(session: Path, a, cfg, last, region, cmd_file: Path) -> dict:
+    exe = native_binary()
+    args = [str(exe), "--out", str(session / "recording.mp4"), "--events", str(session / "events.jsonl"),
+            "--fps", str(a.fps or cfg.get("fps", 30)), "--max-width", str(a.max_width or cfg.get("max_width", 2560)),
+            "--countdown", str(a.countdown if a.countdown is not None else cfg.get("countdown", 3)), "--lang", lang()]
+    if region:
+        args += ["--region", ",".join(map(str, region))]
+    elif last:
+        args += ["--last-region", ",".join(map(str, last))]
+    if a.no_mic:
+        args += ["--no-mic"]
+    elif a.mic or cfg.get("mic"):
+        args += ["--mic", str(a.mic or cfg.get("mic"))]
+    if a.system_audio or cfg.get("system_audio"):
+        args += ["--system-audio"]
+    use_live = not a.no_mic and live_enabled(cfg)
+    if not use_live:
+        args += ["--no-live"]
+    p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8")
+    final: dict = {}
+    selected = None
+
+    def reader():
+        nonlocal final, selected
+        for line in p.stdout:
+            line = line.strip()
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if e.get("event") == "configured":
+                selected = e.get("region")
+            if e.get("event") == "recording" and use_live and "proc" not in LIVE:
+                LIVE["proc"] = start_live(session)
+            if e.get("event") in ("stopped", "cancelled", "error"):
+                final = e
+            if e.get("event") not in ("configured",):
+                out(e)
+
+    th = threading.Thread(target=reader, daemon=True)
+    th.start()
+    forward = lambda c: (p.stdin.write(c + "\n"), p.stdin.flush())  # noqa: E731
+    signal.signal(signal.SIGINT, lambda *_: forward("stop"))
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, lambda *_: forward("stop"))
+    t0 = time.time()
+    while p.poll() is None:
+        if cmd_file.exists():
+            for c in cmd_file.read_text(encoding="utf-8").split():
+                try:
+                    forward(c)
+                except Exception:
+                    pass
+            cmd_file.unlink(missing_ok=True)
+        if a.max_minutes and time.time() - t0 > a.max_minutes * 60:
+            forward("stop")
+        time.sleep(0.25)
+    th.join(timeout=2)
+    if not final:
+        final = {"event": "error", "code": f"exit_{p.returncode}", "message": "recorder exited unexpectedly"}
+    if final.get("event") == "stopped" and selected:
+        final["region"] = [int(v) for v in selected]
+    return final
+
+
+def run_tk(session: Path, a, cfg, last, region, cmd_file: Path) -> dict:
+    from tk_recorder import TkRecorder
+    mic = None if a.no_mic else pick_mic(a.mic or cfg.get("mic"))
+    def on_event(e):
+        out(e)
+        if e.get("event") == "recording" and rec.live_audio and "proc" not in LIVE:
+            LIVE["proc"] = start_live(session)
+    rec = TkRecorder(session, mic, a.fps or cfg.get("fps", 30), a.max_width or cfg.get("max_width", 2560), lang(),
+                     a.countdown if a.countdown is not None else cfg.get("countdown", 3), last, region, cmd_file, on_event)
+    rec.live_audio = bool(mic) and live_enabled(cfg)
+    result = rec.run()
+    if result.get("event") == "stopped" and rec.region:
+        result["region"] = rec.region
+    return result
+
+
+def want_aec(a, cfg: dict, hwnd: int | None) -> bool:
+    """Echo cancelling for the live audio (EchoCancel): Windows, a window take (Bloom's meetings: the student and the
+    guests talk from the speakers) or --aec; record.aec = false in config.json turns it off."""
+    return IS_WIN and bool(hwnd or getattr(a, "aec", False)) and cfg.get("aec") is not False
+
+
+def run_headless(session: Path, a, cfg, cmd_file: Path) -> dict:
+    """ffmpeg engine: no UI of its own (the Tauri app draws the overlays, or the chat drives it). Pause = end the video
+    segment and gate the mic; segments are joined on stop. snap / marker = one full-resolution frame → shots/."""
+    mic = None if a.no_mic else pick_mic(a.mic or cfg.get("mic"))
+    if mic and mic.get("why"):
+        print(f"(mic: {mic['name']} — the sound goes to a Bluetooth headset, its own mic would switch it to "
+              f"hands-free)", file=sys.stderr)
+    note_devices(mic)
+    hwnd = parse_hwnd(getattr(a, "window_hwnd", None))
+    region = None if hwnd else parse_region(a.region) or (cfg.get("last_region") if a.last_region else None)
+    if region:  # even sizes: yuv420p / H.264
+        region = [region[0], region[1], max(2, region[2] // 2 * 2), max(2, region[3] // 2 * 2)]
+    rec = FfmpegRecorder(session, region, a.screen, a.fps or cfg.get("fps", 30),
+                         a.max_width or cfg.get("max_width", 1920), mic, live_enabled(cfg), window=hwnd,
+                         aec=want_aec(a, cfg, hwnd))
+    rec.system_audio = bool(a.system_audio)
+    # a host app (--status-jsonl) shows the 3-2-1 itself from the "countdown" lines; from the chat there is nothing
+    # to look at, so no countdown there
+    try:
+        result = rec.run(cmd_file, a.max_minutes, countdown=(a.countdown or 0) if STATUS["on"] else 0)
+    finally:
+        if isinstance(FEED, WindowFeed):   # its producer may be blocked on a minimized window: never left behind
+            FEED.stop()
+    if result.get("event") == "stopped" and region:
+        result["region"] = region
+    return result
+
+
+class LevelMic(MicRecorder):
+    """MicRecorder that also reports the input level (RMS, 0..1) about 10× a second — the HUD meter."""
+
+    def __init__(self, *args, on_level=None, **kw):
+        super().__init__(*args, **kw)
+        self.on_level, self._acc, self._n, self._last = on_level, 0.0, 0, 0.0
+
+    def _cb(self, data, frames, t, status_):
+        super()._cb(data, frames, t, status_)
+        if not self.on_level:
+            return
+        try:
+            import numpy as np
+            x = np.frombuffer(bytes(data), dtype=np.int16).astype(np.float32) / 32768
+            self._acc += float((x * x).sum())
+            self._n += len(x)
+            if time.time() - self._last >= 0.1 and self._n:
+                self.on_level(round((self._acc / self._n) ** 0.5, 4))
+                self._acc, self._n, self._last = 0.0, 0, time.time()
+        except Exception:
+            pass
+
+
+def take_commands(cmd_file: Path) -> list[str]:
+    """Commands appended to <session>/.cmd (record.py stop|pause|…, the Tauri app). An empty file is left alone: a
+    writer has created it and not written yet (deleting it then would lose that command)."""
+    try:
+        if not cmd_file.exists() or not cmd_file.read_text(encoding="utf-8").strip():
+            return []
+        taken = cmd_file.with_name(".cmd.taken")
+        os.replace(cmd_file, taken)   # Windows: fails while a writer has it open → next poll
+        cmds = taken.read_text(encoding="utf-8").split()
+        taken.unlink(missing_ok=True)
+        return cmds
+    except OSError:
+        return []
+
+
+def png_size(path: Path) -> tuple[int, int]:
+    head = Path(path).read_bytes()[:24]
+    return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+
+
+def _free_bytes(p: Path) -> int:
+    try:
+        return shutil.disk_usage(p).free
+    except OSError:
+        return 1 << 62
+
+
+def screen_locked() -> bool:
+    """Windows: the lock screen (or another session) is in front — the grabber can't see the desktop then. Tests:
+    BLURT_TEST_SCREEN_LOCKED=1."""
+    if os.environ.get("BLURT_TEST_SCREEN_LOCKED") == "1":
+        return True
+    if not IS_WIN:
+        return False
+    import ctypes
+    u = ctypes.windll.user32
+    h = u.OpenInputDesktop(0, False, 0x0100)    # DESKTOP_SWITCHDESKTOP: fails on the secure (lock) desktop
+    if not h:
+        return True
+    u.CloseDesktop(h)
+    return False
+
+
+def region_on_screen(region: list[int]) -> bool:
+    """Windows: some display still shows part of the recorded area (MonitorFromRect, MONITOR_DEFAULTTONULL)."""
+    if not IS_WIN or os.environ.get("BLURT_FAKE_SCREEN"):
+        return True
+    import ctypes
+    from ctypes import wintypes
+    x, y, w, h = region
+    r = wintypes.RECT(x, y, x + w, y + h)
+    return bool(ctypes.windll.user32.MonitorFromRect(ctypes.byref(r), 0))
+
+
+class FfmpegRecorder:
+    START_TIMEOUT = 15.0  # s for the grabber's first frame (macOS: ffmpeg hangs without Screen Recording permission)
+
+    def __init__(self, session: Path, region, screen, fps: int, max_width: int, mic: dict | None, live: bool,
+                 window: int | None = None, aec: bool = False):
+        self.session, self.region, self.screen, self.fps, self.max_width = session, region, screen, fps, max_width
+        self.window = window   # --window-hwnd: this window only (WindowFeed), not a screen area
+        self.paused = False
+        self.segments: list[dict] = []
+        self.events: list[dict] = []
+        self.elapsed_before, self.seg_started = 0.0, None
+        self.shots, self.snaps, self.lock = 0, [], threading.Lock()
+        self.system_audio = False   # --system-audio: the host app writes system.pcm (see finalize)
+        self.seg_open = False
+        # the grabber stopping mid-take (recording.md §6.6; the Mac's Recorder.restartCapture): what was recovered from,
+        # the seconds the outages cost, and why the take ended early when it couldn't go on
+        self.restarts, self.recovered, self.lost = 0, [], 0.0
+        self.ended_early: dict | None = None
+        self.stopping = False
+        self.video_tpl: list[str] | None = None
+        global FEED
+        if IS_LINUX and os.environ.get("BLURT_PW_FD") and FEED is None:
+            FEED = PipeWireFeed(fps)
+        if window and FEED is None:
+            FEED = WindowFeed(window, fps, max_width, log=session / "window.log")
+        self.audio = None
+        if mic:
+            self.audio = LevelMic(mic, session / "audio.wav", gate=lambda: not self.paused,
+                                  live=session / "live" if live else None, aec=aec,
+                                  on_level=(lambda rms: status("level", rms=rms)) if STATUS["on"] else None)
+
+    def elapsed(self) -> float:
+        return self.elapsed_before + ((time.time() - self.seg_started) if self.seg_started and not self.paused else 0)
+
+    def log(self, type_: str, **kw):
+        self.events.append({"t": round(self.elapsed(), 3), "type": type_, **kw})
+
+    # --- segments (one ffmpeg process each; pause ends one, resume starts the next)
+    def start_segment(self):
+        i = len(self.segments)
+        video, log = self.session / f"seg{i:02d}.mkv", self.session / f"seg{i:02d}.log"
+        fh = open(log, "w", encoding="utf-8")
+        seg = {"video": video, "log": log, "fh": fh, "audio_from": self.audio.frames if self.audio else 0,
+               "wall_start": time.time()}
+        seg["proc"] = subprocess.Popen([*self.video_cmd()[:-1], str(video)], stdin=subprocess.PIPE, stdout=fh, stderr=fh)
+        if FEED is not None:
+            FEED.attach(seg["proc"].stdin)
+        if self.audio and self.audio.live:
+            seg["live"] = self.audio.live.segment(seg["audio_from"])
+        self.segments.append(seg)
+        self.seg_started = time.time()
+        self.seg_open = True
+
+    def video_cmd(self) -> list[str]:
+        """The grabber's command line, worked out once (the encoder and ddagrab probes each run ffmpeg): before the
+        countdown, so the take starts the moment it ends; a resume reuses it. The last element is the output file."""
+        if self.video_tpl is None:
+            self.video_tpl = headless_video_cmd(self.session / "seg.mkv", self.screen, self.fps, self.max_width,
+                                                self.region)
+        return self.video_tpl
+
+    def countdown(self, cmd_file: Path, n: int) -> str:
+        """The 3-2-1 before the take (the host draws it from these lines; the Mac's CountdownView): one
+        {"ev": "countdown", "n": k, "total": n} a second, then n = 0 when it is over. `go` in .cmd (Start now / a
+        click on it) ends it at once; stop / discard there cancel the take before anything was recorded."""
+        end, shown = time.time() + n, None
+        while (left := end - time.time()) > 0:
+            k = int(left) + (left % 1 > 0)
+            if k != shown:
+                status("countdown", n=k, total=n)
+                shown = k
+            cmds = take_commands(cmd_file)
+            if "stop" in cmds or "discard" in cmds:
+                status("countdown", n=0, total=n)
+                return "cancel"
+            if "go" in cmds:
+                break
+            time.sleep(0.05)
+        status("countdown", n=0, total=n)
+        return "go"
+
+    def watch_pointer(self):
+        """Windows: the pointer every 0.1 s and left / right clicks inside the area → events.jsonl "cursor" / "click"
+        (0–1 of the area, the Mac's Recorder.logCursor / logClick), which frames.py reads. Polled (GetCursorPos,
+        GetAsyncKeyState every 20 ms, a click = the button going down): no hook, nothing to install. Per-monitor DPI
+        aware first, so the pointer is in the same physical pixels as the area. A window take: the area is the window's
+        client area where it is now, and only where the window itself is under the pointer (not one covering it)."""
+        import ctypes
+        from ctypes import wintypes
+        u = ctypes.windll.user32
+        try:
+            u.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))   # PER_MONITOR_AWARE_V2
+        except Exception:
+            pass
+        x0, y0, w, h = self.region or [0, 0, u.GetSystemMetrics(0), u.GetSystemMetrics(1)]
+        swapped = bool(u.GetSystemMetrics(23))                     # SM_SWAPBUTTON
+        pt, held, last, last_t = wintypes.POINT(), {1: False, 2: False}, None, 0.0
+        while not self.stopping:
+            time.sleep(0.02)
+            if self.paused or not self.seg_started or not u.GetCursorPos(ctypes.byref(pt)):
+                continue
+            if self.window:
+                r = client_rect(self.window)
+                if r:
+                    x0, y0, w, h = r
+                inside = bool(r) and x0 <= pt.x < x0 + w and y0 <= pt.y < y0 + h and \
+                    _user32().GetAncestor(_user32().WindowFromPoint(pt), 2) == self.window   # GA_ROOT
+            else:
+                inside = x0 <= pt.x < x0 + w and y0 <= pt.y < y0 + h
+            rel = (round((pt.x - x0) / w, 3), round((pt.y - y0) / h, 3))
+            for vk in (1, 2):
+                down = bool(u.GetAsyncKeyState(vk) & 0x8000)
+                if down and not held[vk] and inside:
+                    self.log("click", x=rel[0], y=rel[1], button="left" if (vk == 1) != swapped else "right")
+                held[vk] = down
+            if inside and rel != last and time.time() - last_t >= 0.1:
+                self.log("cursor", x=rel[0], y=rel[1])
+                last, last_t = rel, time.time()
+
+    def end_segment(self):
+        if not self.seg_open:   # already ended (the grabber died and could not be started again)
+            return
+        self.seg_open = False
+        seg, now = self.segments[-1], time.time()
+        p = seg["proc"]
+        if p.poll() is None:
+            try:
+                if FEED is not None:
+                    FEED.detach(p.stdin)   # its stdin carries frames: EOF ends it, not "q"
+                else:
+                    p.stdin.write(b"q")
+                    p.stdin.flush()
+                p.wait(timeout=20)
+            except Exception:
+                p.terminate()
+                try:
+                    p.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+        seg["fh"].close()
+        seg["wall_end"] = now
+        seg["audio_to"] = self.audio.frames if self.audio else 0
+        self.elapsed_before += max(0.0, now - self.seg_started)
+        self.seg_started = None
+
+    MAX_RESTARTS = 3          # grabber stops a take recovers from (RecordingFailure.maxRestarts)
+    RESTART_TRIES = 4         # starts tried for each, after 1, 2, 4 s (CaptureRestart)
+    LOCK_WAIT_MAX = 30 * 60   # s waited for the screen to be unlocked (CaptureRestart.lockWaitMax)
+
+    def restart_capture(self, tail: str, cmd_file: Path) -> str | None:
+        """The grabber stopped by itself mid-take: start it again on the same area (a new segment; the moments in
+        between are missing from the video). Waits while the screen is locked (the grabber can't see the secure
+        desktop); a start that fails is tried again with backoff. None: the take goes on; "stop" / "discard": the user
+        ended it meanwhile; else why it ends with what was recorded (disk_full, display_gone, interrupted, stopped)."""
+        lost_from, t = time.time(), round(self.elapsed(), 3)
+        self.end_segment()
+        if "No space left" in tail or _free_bytes(self.session) < 100_000_000:
+            return "disk_full"
+        if self.restarts >= self.MAX_RESTARTS:
+            return "stopped"
+        self.restarts += 1
+        self.recovered.append({"kind": "capture", "t": t, "attempt": self.restarts, "error": tail[-200:]})
+        self.log("capture_restart", attempt=self.restarts)
+        status("capture_restarting", t=t, attempt=self.restarts)
+
+        def wait(seconds: float) -> str | None:
+            end = time.time() + seconds
+            while time.time() < end:
+                cmds = take_commands(cmd_file)
+                for c in ("discard", "stop"):
+                    if c in cmds:
+                        return c
+                time.sleep(0.1)
+            return None
+
+        waited = 0.0
+        while screen_locked():
+            if waited == 0:
+                status("capture_waiting_for_screen", t=t)
+            if waited >= self.LOCK_WAIT_MAX:
+                return "interrupted"
+            if (c := wait(1.0)) is not None:
+                return c
+            waited += 1.0
+        for attempt in range(1, self.RESTART_TRIES + 1):
+            if (c := wait(2 ** (attempt - 1))) is not None:
+                return c
+            if self.region and not region_on_screen(self.region):
+                continue                      # an external display coming back takes a few seconds
+            self.start_segment()
+            v0, _ = self.wait_first_frame()
+            if v0:
+                self.seg_started = v0
+                self.lost += max(0.0, v0 - lost_from)
+                self.log("capture_restarted", attempt=self.restarts, tries=attempt)
+                status("capture_restarted", attempt=self.restarts, tries=attempt)
+                return None
+            self.drop_segment()
+        return "display_gone" if self.region and not region_on_screen(self.region) else "stopped"
+
+    def drop_segment(self):
+        """A grabber start that never delivered a frame: gone, as if never started."""
+        seg = self.segments.pop()
+        if seg["proc"].poll() is None:
+            seg["proc"].kill()
+        seg["fh"].close()
+        for f in (seg["video"], seg["log"]):
+            Path(f).unlink(missing_ok=True)
+        if self.audio and self.audio.live and seg.get("live") is not None:
+            self.audio.live.set_lead(seg["live"], 0.0)
+        self.seg_open, self.seg_started = False, None
+
+    def wait_first_frame(self) -> tuple[float | None, bool]:
+        """(wall clock of the first video frame, timed out?) once ffmpeg has opened the grabber."""
+        seg, t0 = self.segments[-1], time.time()
+        while time.time() - t0 < self.START_TIMEOUT:
+            v0 = first_frame_wall(seg["log"])
+            if v0:
+                return v0, False
+            if seg["proc"].poll() is not None:
+                return None, False
+            time.sleep(0.05)
+        return None, True
+
+    def resolve_live_leads(self):
+        """live/audio.pcm drops the same lead per segment as finalize() does, once ffmpeg logged its first frame."""
+        live = self.audio.live if self.audio else None
+        if not live:
+            return
+        for i, seg in enumerate(self.segments):
+            j = seg.get("live")
+            if j is None or live.lead_known(j):
+                continue
+            v0 = first_frame_wall(seg["log"])
+            aw = self.audio.first_wall if i == 0 else seg["wall_start"]
+            if v0 and aw:
+                live.set_lead(j, v0 - aw)
+
+    # --- controls
+    def pause(self):
+        if self.paused:
+            return
+        self.log("pause")
+        self.end_segment()
+        self.paused = True
+        status("paused", t=round(self.elapsed(), 3))
+
+    def resume(self):
+        if not self.paused:
+            return
+        self.paused = False  # gate first: this segment's audio starts at its wall_start (see finalize)
+        self.start_segment()
+        self.log("resume")
+        status("resumed", t=round(self.elapsed(), 3))
+
+    def snap(self, via: str, region: list[int] | None = None):
+        """A full-resolution still of the area now (ffmpeg grabs one frame), without pausing; works while paused.
+        `region`: another area of the screen than the recorded one (the host's snap flow)."""
+        self.shots += 1
+        n, t, wall = self.shots, round(self.elapsed(), 3), time.time()
+        area = region or self.region
+        self.log("snap", n=n, file=f"shots/{n:03d}.png", via=via)
+
+        def work():
+            png = self.session / "shots" / f"{n:03d}.png"
+            png.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                if FEED is not None:
+                    ok = FEED.still(png, area)
+                else:
+                    r = subprocess.run(snap_frame_cmd(png, self.screen, area), stdin=subprocess.DEVNULL,
+                                       capture_output=True, timeout=20)
+                    ok = r.returncode == 0 and png.exists()
+            except Exception:
+                ok = False
+            if not ok:
+                status("error", msg=f"could not capture shot {n}", code="snap", fatal=False)
+                return
+            from tk_recorder import shot_line  # one definition of the shots.jsonl line
+            line = shot_line(n, t, area or [0, 0, *png_size(png)], wall)
+            with self.lock, open(self.session / "shots.jsonl", "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(line, ensure_ascii=False) + "\n")
+            status("snap", n=n, file=line["file"], t=t)
+
+        th = threading.Thread(target=work, daemon=True)
+        th.start()
+        self.snaps.append(th)
+
+    # --- run
+    def run(self, cmd_file: Path, max_minutes: float | None, countdown: int = 0) -> dict:
+        if STATUS["on"]:
+            # little room left: the host says so before the take (BlurtCore RecordingFailure.lowSpace: 2 GB)
+            try:
+                free = shutil.disk_usage(self.session).free
+                if free < 2_000_000_000:
+                    status("low_space", free=free)
+            except OSError:
+                pass
+        self.video_cmd()
+        if countdown > 0 and self.countdown(cmd_file, countdown) == "cancel":
+            if self.audio:
+                self.audio.stream.close()
+                if self.audio.live:
+                    self.audio.live.discard()
+            self.cleanup(discard=True)
+            return {"event": "cancelled", "reason": "countdown"}
+        if self.audio:
+            self.audio.start()
+        self.start_segment()
+        v0, hung = self.wait_first_frame()
+        if v0 is None:
+            self.end_segment()
+            if self.audio:
+                self.audio.stop()
+                if self.audio.live:
+                    self.audio.live.discard()
+            tail = self.segments[0]["log"].read_text(encoding="utf-8", errors="replace")[-800:].strip()
+            self.cleanup(discard=True)
+            code = "screen_permission" if IS_MAC and hung else "no_frames"
+            return {"event": "error", "code": code, "message": tail or "the screen grabber delivered no frame"}
+        self.seg_started = v0  # video time 0 = the first frame (snap / pause times are video times)
+        if not STATUS["on"]:
+            chime("start")
+        out({"event": "recording", "engine": "ffmpeg"})
+        status("started", t0=round(v0, 3))
+        if self.audio and self.audio.live:
+            LIVE["proc"] = start_live(self.session)
+        if IS_WIN and not os.environ.get("BLURT_FAKE_SCREEN"):
+            threading.Thread(target=self.watch_pointer, daemon=True).start()
+        signal.signal(signal.SIGINT, lambda *_: cmd_file.write_text("stop"))
+        if hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, lambda *_: cmd_file.write_text("stop"))
+        t_start, discard, crashed = time.time(), False, None
+        while True:
+            cmds = take_commands(cmd_file)
+            if "stop" in cmds or "discard" in cmds or (max_minutes and time.time() - t_start > max_minutes * 60):
+                discard = "discard" in cmds
+                break
+            for c in cmds:
+                if c == "pause" or (c == "toggle" and not self.paused):
+                    self.pause()
+                elif c == "resume" or (c == "toggle" and self.paused):
+                    self.resume()
+                elif c in ("snap", "marker"):
+                    if c == "marker":
+                        self.log("marker")
+                    self.snap("marker" if c == "marker" else "command")
+                elif c.startswith("snap-region:"):
+                    # the host's snap flow during a take (an area the user picked, then its note): a still of that
+                    # area — desktop px, anywhere on screen — numbered and logged like ours (snap-and-note.md §11)
+                    try:
+                        x, y, w, h = (int(float(v)) for v in c[12:].split(","))
+                    except ValueError:
+                        status("error", msg=f"bad {c}", code="snap", fatal=False)
+                        continue
+                    self.snap("picker", region=[x, y, max(2, w), max(2, h)])
+                elif c.startswith("stroke:"):
+                    # the host's pen drew a stroke over the area (recording.md §4.6; the Mac's InkView.end): its
+                    # shape and points (0–1 of the area) at the video time it began; it stays 3 s after the last one
+                    try:
+                        o = json.loads(c[7:])
+                        self.log("stroke", t0=round(max(0.0, self.elapsed() - float(o.get("dur") or 0)), 3),
+                                 visible=3.0, shape=o.get("shape"), points=o.get("points"))
+                    except (ValueError, TypeError, AttributeError):
+                        pass
+                elif c == "restart":
+                    print("(the ffmpeg engine has no restart: discard, then start again)", file=sys.stderr)
+            if not self.paused and self.segments[-1]["proc"].poll() is not None:  # grabber died mid-take
+                tail = self.segments[-1]["log"].read_text(encoding="utf-8", errors="replace")[-300:].strip()
+                why = self.restart_capture(tail, cmd_file)
+                if why in ("stop", "discard"):
+                    discard = why == "discard"
+                    break
+                if why:
+                    crashed = tail
+                    self.ended_early = {"code": "stream_stopped", "reason": why, "t": round(self.elapsed(), 3)}
+                    status("capture_ended", reason=why)
+                    break
+            self.resolve_live_leads()
+            time.sleep(0.1)
+        self.stopping = True
+        if not self.paused:
+            self.log("stop")
+            self.end_segment()
+        for th in self.snaps:
+            th.join(timeout=25)
+        if FEED is not None:   # the take's stream: its gst-launch goes with it
+            FEED.stop()
+        if self.audio:
+            self.audio.stop()
+            if self.audio.live:
+                if not discard:
+                    self.resolve_live_leads()
+                self.audio.live.discard() if discard else self.audio.live.finish()
+        if not STATUS["on"]:
+            chime("stop")
+        if discard:
+            self.cleanup(discard=True)
+            return {"event": "cancelled", "reason": "discarded"}
+        result = self.finalize()
+        if crashed and result.get("event") == "stopped":
+            result["warning"] = f"ffmpeg exited during the recording: {crashed}"
+        return result
+
+    def finalize(self) -> dict:
+        """Join the segments; align each one's slice of the (gated, contiguous) mic audio to its first video frame."""
+        parts, offsets = [], []
+        sr = self.audio.sr if self.audio else AUDIO_SR
+        a0 = self.audio.first_wall if self.audio else None
+        # --system-audio: what the PC played, recorded by the host app (Windows: WASAPI loopback) as
+        # system.pcm (s16le mono) from the wall-clock time in system.json, unpaused — each segment takes its own
+        # stretch of it, as a second audio track (the Mac's: transcribe.py tells "me" from "others" by the track)
+        sys_pcm = self.session / "system.pcm"
+        sys_meta = (load_json(self.session / "system.json", {}) or {}) if self.system_audio else {}
+        sys_rate = int(sys_meta.get("rate") or AUDIO_SR)
+        sys_on = bool(sys_meta.get("t0")) and sys_pcm.exists()
+        for i, seg in enumerate(self.segments):
+            if not seg["video"].exists() or seg["video"].stat().st_size == 0:
+                continue
+            v0 = first_frame_wall(seg["log"]) or seg["wall_start"]
+            part = self.session / f"part{i:02d}.mp4"
+            inputs, maps, filters, n_audio = ["-i", str(seg["video"])], ["-map", "0:v"], [], 0
+            n = seg["audio_to"] - seg["audio_from"]
+            if self.audio and a0 and n > 0:
+                aw = a0 if i == 0 else seg["wall_start"]
+                lead = v0 - aw                       # >0: audio began before the first video frame
+                offsets.append(-lead)
+                ss = seg["audio_from"] / sr + max(0.0, lead)
+                af = "anull" if lead >= 0 else f"adelay={int(-lead * 1000)}:all=1"
+                inputs += ["-ss", f"{ss:.3f}", "-t", f"{max(0.05, n / sr - max(0.0, lead)):.3f}",
+                           "-i", str(self.session / "audio.wav")]
+                maps += ["-map", "1:a"]
+                filters += ["-filter:a:0", af]
+                n_audio = 1
+            if sys_on:
+                try:
+                    d = probe_duration(seg["video"])
+                except Exception:
+                    d = 0.0
+                d = max(0.05, d or seg.get("wall_end", v0) - v0)
+                off = v0 - float(sys_meta["t0"])     # >0: the loopback began before this segment's first frame
+                have = sys_pcm.stat().st_size / 2 / sys_rate
+                if off >= 0 and off < have:
+                    inputs += ["-ss", f"{off:.3f}", "-t", f"{d:.3f}", "-f", "s16le", "-ar", str(sys_rate), "-ac", "1",
+                               "-i", str(sys_pcm)]
+                elif off < 0 and -off < d:
+                    inputs += ["-t", f"{d + off:.3f}", "-f", "s16le", "-ar", str(sys_rate), "-ac", "1", "-i", str(sys_pcm)]
+                    filters += [f"-filter:a:{n_audio}", f"adelay={int(-off * 1000)}:all=1"]
+                else:   # nothing of it for this stretch: silence, so every part has the same tracks (concat)
+                    inputs += ["-f", "lavfi", "-t", f"{d:.3f}", "-i", f"anullsrc=r={sys_rate}:cl=mono"]
+                maps += ["-map", f"{n_audio + 1}:a"]
+                n_audio += 1
+            cmd = [ffmpeg_bin(), "-nostdin", "-loglevel", "error", "-y", *inputs, *maps]
+            if n_audio:
+                cmd += ["-c:v", "copy", *filters, "-c:a", "aac", "-b:a", "96k", "-ac", "1", "-ar", "48000"]
+            else:
+                cmd += ["-c", "copy"]
+            if run(cmd + [str(part)], check=False).returncode == 0:
+                parts.append(part)
+        if not parts:
+            tail = self.segments[0]["log"].read_text(encoding="utf-8", errors="replace")[-800:] if self.segments else ""
+            self.cleanup()
+            return {"event": "error", "code": "no_frames", "message": tail.strip() or "no video captured"}
+        final, lst = self.session / "recording.mp4", self.session / "parts.txt"
+        lst.write_text("".join(f"file '{p.name}'\n" for p in parts), encoding="utf-8")
+        # a session path with Windows' \\?\ prefix (the app canonicalizes it) sends ffmpeg's concat demuxer to
+        # "\\part00.mp4": it resolves the list's entries against a plain path only
+        r = run([ffmpeg_bin(), "-nostdin", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", _plain(lst),
+                 "-c", "copy", "-movflags", "+faststart", _plain(final)], check=False)
+        for p in (*parts, lst):
+            Path(p).unlink(missing_ok=True)
+        self.cleanup()
+        if r.returncode:
+            return {"event": "error", "code": "mux", "message": r.stderr[-800:]}
+        with open(self.session / "events.jsonl", "w", encoding="utf-8") as fh:
+            for e in self.events:
+                fh.write(json.dumps(e, ensure_ascii=False) + "\n")
+        out = {"event": "stopped", "segments": len(parts), "av_offset": round(offsets[0], 3) if offsets else 0.0,
+               "audio_overflows": self.audio.overflows if self.audio else None, "system_audio": sys_on}
+        if self.audio and self.audio.aec:   # meta.json: what the live audio's echo cancelling did
+            out["live_aec"] = self.audio.aec.stats()
+        if self.recovered:
+            out.update(recovered=self.recovered, lost_seconds=round(self.lost, 1))
+        if self.ended_early:
+            out["ended_early"] = self.ended_early
+        return out
+
+    def cleanup(self, discard: bool = False):
+        for s in self.segments:
+            for f in (s["video"], s["log"]):
+                Path(f).unlink(missing_ok=True)
+        if discard:
+            (self.session / "audio.wav").unlink(missing_ok=True)
+        for f in ("system.pcm", "system.json"):     # in the video now (or discarded)
+            try:
+                (self.session / f).unlink(missing_ok=True)
+            except OSError:
+                pass   # Windows: the host still has it open; it goes with the take's folder
+
+
+# ---------------------------------------------------------------- control
+def send(command: str) -> None:
+    state = load_json(STATE_FILE)
+    if not state or not _alive(state.get("pid")):
+        STATE_FILE.unlink(missing_ok=True)
+        die("No active recording.")
+    session = Path(state["session"])
+    with open(session / ".cmd", "a", encoding="utf-8") as fh:
+        fh.write(command + "\n")
+    if command in ("stop", "discard"):
+        for _ in range(240):
+            if not STATE_FILE.exists():
+                break
+            time.sleep(0.25)
+    print(json.dumps({"sent": command, "session": str(session)}))
+
+
+def cmd_status(_a) -> None:
+    state = load_json(STATE_FILE)
+    if state and not _alive(state.get("pid")):
+        STATE_FILE.unlink(missing_ok=True)
+        state = None
+    print(json.dumps(state or {"recording": False}, ensure_ascii=False))
+
+
+def cmd_devices(_a) -> None:
+    print(json.dumps({"screens": list_screens(), "mics": list_mics(),
+                      "engine": choose_engine(global_config().get("record", {}).get("engine"))},
+                     ensure_ascii=False, indent=2))
+
+
+def cmd_install_app(_a) -> None:
+    """(Re)install the standalone recorder: ~/Applications/Blurt.app (macOS) / Start-menu "Blurt" (Windows).
+    Normally not needed — it's installed automatically the first time the recorder is built / used."""
+    if IS_MAC and not native_binary():
+        die("Needs Xcode Command Line Tools: xcode-select --install")
+    dest = ensure_app_installed(force=True)
+    print(json.dumps({"installed": str(dest) if dest else None, "recordings": str(inbox_dir())}, ensure_ascii=False))
+
+
+def cmd_build(_a) -> None:
+    exe = native_binary()
+    app = ensure_app_installed() if exe else None
+    print(json.dumps({"native": str(exe) if exe else None, "app": str(app) if app else None,
+                      "hint": None if exe else "needs macOS + Xcode Command Line Tools (xcode-select --install)"}))
+
+
+def cmd_test(a) -> None:
+    """Headless 3 s capture: verifies Screen Recording + Microphone permission for the hosting app."""
+    out_dir = Path(a.out or Path.cwd() / ".blurt" / "test")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    mic = pick_mic(a.mic or global_config().get("record", {}).get("mic"))
+    video, wav, log_path = out_dir / "test.mkv", out_dir / "audio.wav", out_dir / "ffmpeg.log"
+    audio = MicRecorder(mic, wav) if mic else None
+    if audio:
+        audio.start()
+    cmd = headless_video_cmd(video, a.screen, 15, 1920)
+    cmd[-1:-1] = ["-t", str(a.seconds)]
+    try:
+        with open(log_path, "w", encoding="utf-8") as log:
+            subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=log, stderr=log, timeout=a.seconds + 20)
+    except subprocess.TimeoutExpired:
+        if audio:
+            audio.stop()
+        print(json.dumps({"ok": False, "mic": mic, "error": "ffmpeg hung opening the screen: Screen Recording "
+                          "permission is missing for the app hosting this agent (System Settings → Privacy & Security "
+                          "→ Screen & System Audio Recording), then restart that app."}, ensure_ascii=False, indent=2))
+        return
+    if audio:
+        audio.stop()
+    if not video.exists() or video.stat().st_size == 0:
+        print(json.dumps({"ok": False, "mic": mic, "error": log_path.read_text(errors="replace")[-800:]}, ensure_ascii=False))
+        return
+    frame = out_dir / "test-frame.jpg"
+    run([ffmpeg_bin(), "-y", "-loglevel", "error", "-sseof", "-0.5", "-i", str(video), "-frames:v", "1",
+         "-vf", "scale='min(1280,iw)':-2", str(frame)], check=False)
+    vol = run([ffmpeg_bin(), "-hide_banner", "-i", str(wav), "-af", "volumedetect", "-f", "null", "-"],
+              check=False).stderr if audio else ""
+    m = re.search(r"max_volume:\s*(-?[\d.]+) dB", vol)
+    db = float(m.group(1)) if m else None
+    print(json.dumps({"ok": True, "mic": mic, "frame": str(frame), "mic_max_volume_db": db,
+                      "mic_silent": db is None or db < -60,
+                      "audio_seconds": round(audio.frames / audio.sr, 2) if audio else 0,
+                      "engine": choose_engine(global_config().get("record", {}).get("engine")),
+                      "hint": "Look at the frame: wallpaper-only/black ⇒ Screen Recording permission missing. "
+                              "mic_silent ⇒ Microphone permission missing or wrong mic."}, ensure_ascii=False, indent=2))
+
+
+def _alive(pid) -> bool:
+    if not pid:
+        return False
+    if IS_WIN:
+        res = run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], check=False).stdout
+        return str(pid) in res
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def start_with_status(a) -> None:
+    """`start --status-jsonl`: guarantees the stream ends with stopped / discarded / error, whatever happens."""
+    STATUS["on"] = True
+    sys.stderr = _ErrTap(sys.stderr)
+    code = 0
+    try:
+        cmd_start(a)
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+        raise
+    except BaseException as e:
+        code = 1
+        STATUS["err"] = STATUS["err"] or f"{type(e).__name__}: {e}"
+        raise
+    finally:
+        if not STATUS["final"]:
+            status("error", msg=STATUS["err"] or f"recorder exited ({code})")
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("start")
+    s.add_argument("--session", help="session dir (default: ./.blurt/sessions/<timestamp>)")
+    s.add_argument("--inbox", action="store_true", help="save to the inbox (~/Blurt/inbox/sessions) instead of the project")
+    s.add_argument("--engine", choices=["native", "tk", "ffmpeg"])
+    s.add_argument("--region", help="x,y,w,h in screen points — skip the picker")
+    s.add_argument("--window-hwnd", help="(Windows, ffmpeg engine) record this window only (its HWND, decimal): "
+                                         "covered, moved or resized it is still just that window; --region is ignored")
+    s.add_argument("--last-region", action="store_true", help="reuse the last area without asking")
+    s.add_argument("--countdown", type=int, help="seconds of 3-2-1 first (ffmpeg engine: only with --status-jsonl, "
+                                                  "as countdown lines; `go` in .cmd skips it)")
+    s.add_argument("--screen", type=int, help="ffmpeg engine: screen index")
+    s.add_argument("--mic", help="mic name substring or index (see `devices`)")
+    s.add_argument("--no-mic", action="store_true")
+    s.add_argument("--system-audio", action="store_true",
+                   help="also record what the computer plays (call voices, demo sound) as a second track; native engine "
+                        "(macOS 13+), or the ffmpeg engine under a host app that writes system.pcm + system.json")
+    s.add_argument("--aec", action="store_true",
+                   help="(Windows, ffmpeg engine) echo-cancel the live transcript's audio against what the PC plays "
+                        "(on by itself for --window-hwnd; the recording's own audio stays as the mic heard it)")
+    s.add_argument("--fps", type=int)
+    s.add_argument("--max-width", type=int)
+    s.add_argument("--max-minutes", type=float, default=120)
+    s.add_argument("--status-jsonl", action="store_true",
+                   help="ffmpeg engine, for a host app: stdout = one JSON status line per change (started, level, "
+                        "paused, resumed, snap, stopped, discarded, error); everything else goes to stderr")
+    for c in ("stop", "pause", "resume", "restart", "marker", "snap", "discard", "status", "devices", "build", "install-app"):
+        sub.add_parser(c)
+    t = sub.add_parser("test")
+    t.add_argument("--seconds", type=float, default=3)
+    t.add_argument("--screen", type=int)
+    t.add_argument("--mic")
+    t.add_argument("--out")
+    a = p.parse_args()
+    if a.cmd == "start" and a.status_jsonl:
+        return start_with_status(a)
+    if a.cmd in ("stop", "pause", "resume", "restart", "marker", "snap", "discard"):
+        return send(a.cmd)
+    {"start": cmd_start, "status": cmd_status, "devices": cmd_devices, "build": cmd_build, "test": cmd_test,
+     "install-app": cmd_install_app}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    main()

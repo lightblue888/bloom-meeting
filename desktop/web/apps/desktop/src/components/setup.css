@@ -1,0 +1,853 @@
+/* 首次引导（.ob）、会议大厅（.lb）、设置 → 语音 里的专有名词框（.st-hot）。
+   规矩：时有时无的东西不挤动旁边（固定的格子、固定的行高）；用户填的名字、型号、论文名都可能很长，一律省略号；
+   颜色全用主题变量，深浅两种主题都对。 */
+
+/* ------------------------------------------------------------ 专有名词 */
+.st-hot {
+  padding: 2px 0 8px;
+}
+.app .st-hot textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 96px;
+  max-height: 240px;
+  resize: vertical;
+  padding: 8px 10px;
+  font: inherit;
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+}
+.app .st-hot textarea:focus {
+  outline: 2px solid var(--brand-accent);
+  outline-offset: -1px;
+}
+
+/* ------------------------------------------------------------ 首次引导 */
+.ob {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: grid;
+  grid-template-columns: 252px minmax(0, 1fr);
+  background: var(--bg);
+  color: var(--ink);
+}
+.ob-side {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  min-width: 0;
+  padding: 28px 16px 20px;
+  background: var(--bg-2);
+  border-right: 1px solid var(--line);
+}
+.ob-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 6px;
+  min-width: 0;
+}
+.ob-brand > div {
+  min-width: 0;
+}
+.ob-brand-t {
+  font-size: 16px;
+  font-weight: 650;
+}
+.ob-brand-s {
+  margin-top: 2px;
+  font-size: 12.5px;
+  color: var(--mute);
+}
+.ob-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.app .ob-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  box-shadow: none;
+  color: var(--ink-2);
+  font-weight: 400;
+  text-align: left;
+  justify-content: flex-start;
+}
+.app .ob-step:hover {
+  background: var(--hover);
+}
+.app .ob-step.is-on {
+  background: var(--panel-2);
+  color: var(--ink);
+  font-weight: 600;
+}
+.ob-step-n {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  box-sizing: border-box;
+  border: 1px solid var(--line-2);
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.ob-step.is-on .ob-step-n {
+  background: var(--brand);
+  border-color: transparent;
+  color: var(--on-brand);
+}
+.ob-step.is-past .ob-step-n {
+  border-color: color-mix(in srgb, var(--brand) 55%, transparent);
+  color: var(--brand-ink);
+}
+.ob-step-t {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ob-step-warn {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--attn);
+}
+.app .ob-skip {
+  margin-top: auto;
+  align-self: flex-start;
+  padding: 0 6px;
+  font-size: 12.5px;
+  color: var(--mute);
+  text-align: left;
+}
+.ob-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.ob-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+.ob-col {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 44px 40px 36px;
+}
+.ob-h {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 650;
+  text-wrap: balance;
+}
+.ob-sub {
+  margin: 6px 0 0;
+  font-size: 13.5px;
+  color: var(--mute);
+}
+.ob-col .st-group:first-of-type {
+  margin-top: 22px;
+}
+.ob-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 28px;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+.ob-foot .grow {
+  flex: 1;
+}
+.app .ob-foot button {
+  min-width: 96px;
+}
+.ob-dots {
+  display: flex;
+  gap: 6px;
+}
+.ob-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--line-2);
+}
+.ob-dots span.is-on {
+  background: var(--brand);
+}
+.ob-trunc {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 头两步上面：你和 AI 在会议顶栏里的样子（改了马上变） */
+.ob-preview {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 20px;
+  padding: 14px 16px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+.ob-preview-l {
+  margin-right: 4px;
+  font-size: 12.5px;
+  color: var(--mute);
+}
+.ob-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 260px;
+  min-width: 0;
+  height: 34px;
+  padding: 0 12px 0 4px;
+  background: var(--panel-2);
+  border-radius: var(--r-pill);
+}
+.ob-chip-av {
+  display: inline-flex;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--bg);
+}
+.ob-chip-av img,
+.ob-chip-av svg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.ob-chip-n {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ob-chip-r {
+  flex: none;
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--mute);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-pill);
+}
+
+/* 最后一步：每项一行，缺的两项（模型来源、转写模型）标出来 */
+.ob-sum {
+  margin-top: 24px;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+.ob-sum-row {
+  display: grid;
+  grid-template-columns: 26px minmax(80px, 11.5em) minmax(0, 1fr) 72px;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 0 16px;
+}
+.ob-sum-row + .ob-sum-row {
+  border-top: 1px solid var(--line);
+}
+.ob-sum-ic {
+  display: flex;
+  justify-content: center;
+  color: var(--mute);
+}
+.ob-sum-av,
+.lb-avatar {
+  display: inline-flex;
+  flex: none;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--panel-2);
+}
+.ob-sum-av {
+  width: 24px;
+  height: 24px;
+}
+.ob-sum-av img,
+.ob-sum-av svg,
+.lb-avatar img,
+.lb-avatar svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.ob-sum-t {
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ob-sum-v {
+  min-width: 0;
+}
+.ob-sum-s {
+  justify-self: end;
+  color: var(--ok);
+}
+.ob-sum-row.is-block .ob-sum-v {
+  color: var(--err);
+}
+.ob-sum-row.is-warn .ob-sum-v {
+  color: var(--attn-ink);
+}
+.ob-sum-note {
+  margin: 16px 0 0;
+  font-size: 13.5px;
+  color: var(--ok);
+}
+.ob-sum-note.is-block {
+  color: var(--attn-ink);
+}
+
+@media (max-width: 760px) {
+  .ob {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .ob-side {
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .ob-brand-s,
+  .ob-step-t {
+    display: none;
+  }
+  .ob-steps {
+    flex-direction: row;
+  }
+  .app .ob-skip {
+    margin: 0 0 0 auto;
+  }
+  .ob-col {
+    padding: 28px 20px;
+  }
+}
+
+/* ------------------------------------------------------------ 会议大厅 */
+.lb {
+  position: relative;
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+.lb-inner {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 30px max(32px, calc((100% - 1120px) / 2)) 40px;
+}
+.lb.is-over .lb-inner {
+  opacity: 0.45;
+}
+.lb-veil {
+  position: absolute;
+  inset: 14px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 2px dashed var(--brand);
+  border-radius: var(--r);
+  color: var(--ink);
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.lb-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+.lb-avatar {
+  width: 46px;
+  height: 46px;
+}
+.lb-hello {
+  min-width: 0;
+}
+.lb-hello h1 {
+  margin: 0;
+  overflow: hidden;
+  font-size: 22px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lb-date {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--mute);
+}
+
+.lb-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(300px, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+.lb-side {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+.lb-card {
+  min-width: 0;
+  padding: 18px 20px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: calc(var(--r) + 4px);
+}
+.lb-card-h {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.lb-card-hrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 24px;
+}
+.lb-new {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.lb-notice {
+  font-size: 12.5px;
+  color: var(--err);
+}
+.lb-notice .mt-notice-err {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.lb-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.lb-label {
+  font-size: 12.5px;
+  color: var(--mute);
+}
+.app .lb-input {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  box-sizing: border-box;
+  padding: 0 12px;
+  font: inherit;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  text-overflow: ellipsis;
+}
+.app .lb-input:focus {
+  outline: 2px solid var(--brand-accent);
+  outline-offset: -1px;
+}
+.lb-paper {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  min-height: 78px;
+  box-sizing: border-box;
+  padding: 14px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+.lb-paper > svg {
+  margin-top: 1px;
+  color: var(--brand-ink);
+}
+.lb-paper.is-busy {
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+}
+.lb-paper-text {
+  min-width: 0;
+}
+.lb-paper-name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lb-paper-meta {
+  min-height: 1.45em;
+  margin-top: 2px;
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--mute);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lb-outline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.lb-outline li {
+  max-width: 220px;
+  overflow: hidden;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--ink-2);
+  background: var(--panel-2);
+  border-radius: var(--r-pill);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app .lb-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 124px;
+  padding: 24px 16px;
+  color: var(--mute);
+  background: transparent;
+  border: 1.5px dashed var(--line-2);
+  border-radius: var(--r);
+  box-shadow: none;
+  cursor: pointer;
+}
+.app .lb-drop:hover {
+  color: var(--ink);
+  background: transparent;
+  border-color: var(--brand);
+}
+.lb-drop-t {
+  font-weight: 500;
+  color: var(--ink);
+}
+.lb-drop-s {
+  font-size: 12px;
+}
+.lb-start-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+}
+.app .lb-start {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  height: 44px;
+  padding: 0 22px 0 14px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--on-brand-button);
+  background: var(--brand-button);
+  border: 0;
+  border-radius: var(--r-pill);
+  box-shadow: none;
+}
+.app .lb-start:hover:not(:disabled) {
+  background: var(--brand-button);
+  filter: brightness(1.08);
+}
+.app .lb-start:disabled {
+  color: var(--mute);
+  background: var(--panel-2);
+  cursor: not-allowed;
+}
+.app .lb-start:disabled svg {
+  filter: grayscale(1);
+  opacity: 0.6;
+}
+.lb-start .mw-spinner {
+  width: 22px;
+  height: 22px;
+}
+/* 缺的最多三项（模型来源、转写模型、论文），一项一行：格子按三行留好，缺几项、补上几项、下载中，
+   开始会议和下面"最近的会议"都不动 */
+.lb-needs {
+  display: flex;
+  flex: 1 1 220px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  height: calc(3 * 20px + 2 * 4px);
+}
+.lb-need {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 20px;
+  font-size: 12.5px;
+  white-space: nowrap;
+  color: var(--attn-ink);
+}
+.lb-need.is-ok {
+  color: var(--ok);
+}
+/* 缺项后面的"去设置""下载"：和这一行一样高，上下两行的链接不叠 */
+.app .lb-need .link {
+  min-height: 0;
+  height: 20px;
+  padding: 0 4px;
+  line-height: 20px;
+}
+/* 下载中：名字、进度条、百分比挤在这一行里，进度条占剩下的地方 */
+.lb-need.is-dl .lb-need-t {
+  flex: none;
+}
+.lb-need.is-dl progress {
+  flex: 1 1 60px;
+  min-width: 40px;
+  max-width: 160px;
+  height: 4px;
+}
+.lb-need-pct {
+  flex: none;
+  min-width: 3.2em;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.lb-need > span:not(.mprog) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lb-need > svg,
+.lb-need > .link {
+  flex: none;
+}
+
+/* 准备情况：一项一行，点、图标、名字、现在用的、改 */
+.lb-status {
+  display: flex;
+  flex-direction: column;
+  margin-top: 6px;
+}
+.lb-st {
+  display: grid;
+  grid-template-columns: 8px 16px 6.8em minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+}
+.lb-st + .lb-st {
+  border-top: 1px solid var(--line);
+}
+.lb-st-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--line-2);
+}
+.lb-st.is-ok .lb-st-dot {
+  background: var(--ok);
+}
+.lb-st.is-warn .lb-st-dot {
+  background: var(--attn);
+}
+.lb-st.is-block .lb-st-dot {
+  background: var(--err);
+}
+.lb-st > svg {
+  color: var(--mute);
+}
+.lb-st-l {
+  overflow: hidden;
+  font-size: 13px;
+  color: var(--ink-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lb-st-v {
+  min-width: 0;
+  font-size: 13px;
+}
+.lb-st.is-block .lb-st-v {
+  color: var(--err);
+}
+.lb-st-a {
+  justify-self: end;
+  min-width: 2.6em;
+  font-size: 12.5px;
+  text-align: right;
+}
+.lb-trunc {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lb-invite {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  min-width: 0;
+}
+.app .lb-mono {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.app .lb-invite button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.lb-copy-t {
+  display: inline-block;
+  min-width: 3.6em;
+  text-align: left;
+}
+
+.lb-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.lb-list li + li {
+  border-top: 1px solid var(--line);
+}
+.app .lb-meeting {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 9.5em 4.6em 6.4em 4.6em 14px;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 8px;
+  color: var(--ink);
+  font-weight: 400;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-sm);
+  box-shadow: none;
+}
+.app .lb-meeting:hover {
+  background: var(--hover);
+}
+.lb-meeting-t {
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lb-meeting-m {
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--mute);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lb-num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.lb-meeting-tag {
+  overflow: hidden;
+  font-size: 11.5px;
+  color: var(--brand-ink);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lb-meeting > svg {
+  color: var(--mute);
+}
+.lb-empty {
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--mute);
+}
+
+@media (max-width: 1120px) {
+  .lb-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+@media (max-width: 860px) {
+  .lb-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 760px) {
+  .lb-inner {
+    padding: 22px 18px 32px;
+  }
+  .app .lb-meeting {
+    grid-template-columns: minmax(0, 1fr) auto 14px;
+  }
+  .app .lb-meeting .lb-num,
+  .lb-meeting-tag {
+    display: none;
+  }
+}

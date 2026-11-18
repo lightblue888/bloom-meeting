@@ -125,6 +125,8 @@ def load(path: Path | None = None) -> dict:
     apply_saved_models(cfg)
     from .host_profile import apply as apply_profile
     apply_profile(cfg)
+    from .voice_prefs import apply as apply_speech      # 引导 / 设置 → 语音 里选的声音、专有名词
+    apply_speech(cfg)
     return cfg
 
 
@@ -166,13 +168,40 @@ MODELS_FILE = STATE / "models.json"          # 换过的模型：{"dialog","edit
 _ENV_OVERRIDE = {"dialog": "ZUHUI_FAST_MODEL", "edit": "ZUHUI_HANDS_MODEL", "effort": "ZUHUI_HANDS_EFFORT"}   # 测试用
 
 
+# 型号 id 里的厂牌 → 界面上的写法（认不出的厂牌原样显示）
+_BRANDS = {"claude": "Claude", "deepseek": "DeepSeek", "kimi": "Kimi", "moonshot": "Moonshot", "glm": "GLM", "qwen": "Qwen",
+           "gpt": "GPT", "gemini": "Gemini", "doubao": "Doubao", "ernie": "ERNIE", "minimax": "MiniMax", "abab": "MiniMax",
+           "yi": "Yi", "hunyuan": "Hunyuan", "step": "Step", "baichuan": "Baichuan", "mistral": "Mistral", "llama": "Llama"}
+
+
+def pretty_model(m) -> str:
+    """型号 id → 界面上好读的名字：claude-opus-5-5 → Claude Opus 5.5，deepseek-flash → DeepSeek Flash，
+    glm-5.3-flash → GLM 5.3 Flash，qwen3.7-max → Qwen3.7 Max，kimi-k3 → Kimi K3。认不出的（自定义接口的型号）原样。"""
+    import re as _re
+    raw = str(m or "").strip()
+    low = _re.sub(r"\[1m\]$", "", raw.lower())
+    parts = [x for x in _re.split(r"[-_\s]+", low) if x]
+    if not parts:
+        return raw
+    brand = next((b for b in _BRANDS if parts[0].startswith(b) and (parts[0] == b or _re.match(r"^[\d.]+$", parts[0][len(b):]))), None)
+    if brand is None:
+        return raw
+    head = _BRANDS[brand] + parts[0][len(brand):]
+    rest = parts[1:]
+    if brand == "claude" and len(rest) >= 3 and rest[1].isdigit() and rest[2].isdigit():   # claude-opus-5-5
+        return f"Claude {rest[0].capitalize()} {rest[1]}.{rest[2]}" + "".join(" " + x.capitalize() for x in rest[3:])
+    words = [x.upper() if _re.match(r"^[a-z]\d[\w.]*$", x) and len(x) <= 4 else (x if _re.match(r"^[\d.]+[a-z]?$", x) else x.capitalize())
+             for x in rest]
+    return " ".join([head] + words)
+
+
 def model_label(part: str, mid: str | None) -> str:
-    """界面上的型号名。在用别家接口时，对话、改稿两档显示那家的型号（设置 → 模型来源）。"""
+    """界面上的型号名。在用别家接口时，对话、改稿两档显示那家的型号（设置 → 模型来源），写成好读的样子。"""
     if part in ("dialog", "edit"):
         from . import provider
         if provider.mode() == "api":
             from .llm_api import model
-            return model("fast" if part == "dialog" else "main")
+            return pretty_model(model("fast" if part == "dialog" else "main"))
     return next((label for i, label in MODEL_OPTIONS.get(part, []) if i == mid), str(mid or ""))
 
 

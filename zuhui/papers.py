@@ -89,7 +89,7 @@ def _report(cb, **kw) -> None:
 # ---------- PyMuPDF（MinerU 不在时的退路） ----------
 def _pdf_text(src: Path) -> str:
     """按版面块抽纯文本；去掉每页重复的页眉页脚、页码、行号。"""
-    import fitz  # PyMuPDF
+    import pymupdf as fitz  # PyMuPDF（新版不再用 fitz 这个名字）
 
     doc = fitz.open(str(src))
     pages = []
@@ -139,7 +139,7 @@ def _pdf_text(src: Path) -> str:
 
 def _pdf_precheck(src: Path) -> None:
     """转之前先挡掉加密的和扫描件（MinerU 跑一遍要几十秒，别白跑）。"""
-    import fitz
+    import pymupdf as fitz  # PyMuPDF（新版不再用 fitz 这个名字）
     try:
         doc = fitz.open(str(src))
     except Exception:
@@ -209,7 +209,7 @@ def _legacy_edited(src: Path, legacy: Path, ext: str, pandoc: str | None) -> boo
         if ext == ".pdf":
             if "<!-- 第 1 页 -->" not in old:
                 return True                    # 不是我们抽的（你自己的 Markdown）
-            import fitz
+            import pymupdf as fitz  # PyMuPDF（新版不再用 fitz 这个名字）
             doc = fitz.open(str(src))
             fresh = [f"# {src.stem}", ""]   # 最早那版 PDF 抽字的输出，原样重算一遍对比（现在的 _pdf_text 在下面另比）
             for pno, page in enumerate(doc, 1):
@@ -237,7 +237,8 @@ def _legacy_edited(src: Path, legacy: Path, ext: str, pandoc: str | None) -> boo
 
 def _convert(src: Path, ext: str, folder: Path, work: Path, in_place: bool, cb) -> tuple[Path, dict]:
     """PDF / docx → 学生改的 Markdown。返回 (路径, 转换信息)。"""
-    pandoc = shutil.which("pandoc") if ext == ".docx" else None
+    from .components import pandoc as _find_pandoc         # 随后端装的 pypandoc-binary 优先，没有再找系统的
+    pandoc = _find_pandoc() if ext == ".docx" else None
     if ext == ".docx" and not pandoc:
         raise RuntimeError("没有 pandoc，转不了 .docx")
     # 1) 以前放在源文件旁边、开会改过的那份

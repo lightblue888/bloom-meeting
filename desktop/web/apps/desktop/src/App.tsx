@@ -14,8 +14,11 @@ import { SidebarGlyph } from './components/glyphs';
 import { tidy, useMenu, type MenuEntry } from './components/Menu';
 import { SettingsView } from './components/SettingsView';
 import { Sidebar, type Page } from './components/Sidebar';
-import { meetingApi, PROFILE_EVENT } from './meetingApi';
+import { meetingApi } from './meetingApi';
 import { openSettingsAt } from './components/SettingsView';
+import { setupApi, SETUP_EVENT } from './setupApi';
+import { NAV_EVENT, type Nav } from './nav';
+import { Onboarding } from './components/Onboarding';
 import { Tooltip } from './components/Tooltip';
 import { MeetingCurrent } from './components/MeetingCurrent';
 import { MeetingHistory } from './components/MeetingHistory';
@@ -140,25 +143,26 @@ export default function App() {
   useEffect(() => {
     if (hasDev === false && page === 'dev') setPage('meeting');
   }, [hasDev, page]);
-  // a fresh install hasn't picked a model source (Settings → General → Model source): a bar asks for it
-  const [noSource, setNoSource] = useState(false);
+  // the first-run guide: shown until it was done or skipped (the backend remembers which); asked again when Settings
+  // runs it again. While the backend isn't up yet, asked every few seconds.
+  const [guide, setGuide] = useState(false);
   useEffect(() => {
     let alive = true;
     let timer = 0;
     const look = () =>
-      meetingApi.provider().then(
-        (x) => alive && setNoSource(x.kind === 'unset'),
+      setupApi.state().then(
+        (x) => alive && setGuide(!x.done && !x.skipped),
         () => {
-          if (alive) timer = window.setTimeout(look, 5000);
+          if (alive) timer = window.setTimeout(look, 4000);
         },
       );
     void look();
     const again = () => void look();
-    window.addEventListener(PROFILE_EVENT, again);
+    window.addEventListener(SETUP_EVENT, again);
     return () => {
       alive = false;
       clearTimeout(timer);
-      window.removeEventListener(PROFILE_EVENT, again);
+      window.removeEventListener(SETUP_EVENT, again);
     };
   }, []);
   const go = (p: Page) => {
@@ -167,6 +171,21 @@ export default function App() {
     setPage(p);
   };
   const toggleSide = () => setSideHidden((h) => !h);
+  // a page asks to go somewhere: the lobby's fixes (Settings at a row) and its recent meetings (回顾)
+  const goRef = useRef(go);
+  goRef.current = go;
+  useEffect(() => {
+    const h = (e: Event) => {
+      const n = (e as CustomEvent<Nav>).detail;
+      if (n?.to === 'settings') {
+        if (n.link) openSettingsAt(n.link);
+        setGuide(false);
+        setScreen('settings');
+      } else if (n?.to === 'history') goRef.current('history');
+    };
+    window.addEventListener(NAV_EVENT, h);
+    return () => window.removeEventListener(NAV_EVENT, h);
+  }, []);
 
   // ---------------------------------------------------------------- the "…" menu
   const moreMenu = (): MenuEntry[] =>
@@ -255,20 +274,7 @@ export default function App() {
         </main>
       )}
 
-      {noSource && mainScreen && (
-        <div className="mw-setup" role="status" style={{ left: sideIn + (window.innerWidth - sideIn) / 2 }} data-testid="setup-source">
-          <span>{t('mw.setup_source')}</span>
-          <button
-            className="primary"
-            onClick={() => {
-              setScreen('settings');
-              openSettingsAt('general/source');
-            }}
-          >
-            {t('mw.setup_source_go')}
-          </button>
-        </div>
-      )}
+      {guide && status && <Onboarding onClose={() => setGuide(false)} />}
       {menu.node}
       <Tooltip />
       {toast && (

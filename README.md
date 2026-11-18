@@ -14,7 +14,7 @@ Windows 10/11（64 位）。在 PowerShell 里运行：
 irm https://raw.githubusercontent.com/lightblue888/bloom-meeting/main/install.ps1 | iex
 ```
 
-装好后从开始菜单打开 Bloom。以后更新，再运行一次这条命令。
+开会要用的东西（语音识别模型、录屏用的 ffmpeg 等，约 1 GB）都在这一步装好，第一次要等一会儿。装好后从开始菜单打开 Bloom。以后更新，再运行一次这条命令。
 
 ## 第一次打开
 
@@ -37,13 +37,17 @@ irm https://raw.githubusercontent.com/lightblue888/bloom-meeting/main/install.ps
 
 ## 隐私
 
-录屏、逐字稿和论文只存在你自己的电脑上，API key 也只存在本机。开了邀请链接时，会议内容经你自己的中继转发，中继不把论文和逐字稿写到磁盘上。
+录屏、逐字稿和论文都存在你自己的电脑上，API key 也只存在本机。
+
+开会时，说的话和论文内容会发给你选的模型服务商处理。AI 的声音默认用微软在线语音，它要念的句子会发给微软合成；不想这样，在 设置 → 语音 里换成 Windows 自带的语音，或者选不出声。
+
+开了邀请链接时，会议内容经你自己的中继转发，中继不把论文和逐字稿写到磁盘上。
 
 更多设置和从源码构建见 [docs/advanced.md](docs/advanced.md)。
 
 ## 许可
 
-MIT。桌面端改自开源项目 Blurt（MIT），原许可见 [desktop/LICENSE](desktop/LICENSE)。MathJax 为 Apache-2.0。
+MIT。桌面端参考了 Blurt 的设计，其许可见 [desktop/LICENSE](desktop/LICENSE)。MathJax 为 Apache-2.0。
 
 ---
 

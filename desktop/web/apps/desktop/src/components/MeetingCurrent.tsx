@@ -10,7 +10,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { inTauri, listen } from '../api';
 import { t } from '../i18n';
 import { meetingApi, POLL_MS, watchBrain, type Brain, type Current, type Line } from '../meetingApi';
-import { BloomMark, MeetingLayout } from './MeetingLayout';
+import { MeetingLayout } from './MeetingLayout';
+import { MeetingLobby } from './MeetingLobby';
 import { keep } from './useDismiss';
 
 type Backend = 'unknown' | 'up' | 'down' | 'starting';
@@ -218,6 +219,24 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
     setNextTitle(title.trim() ? title.trim() : null);
   }, []);
   const liveNow = state === 'live';
+  // the lobby until a meeting is on; a meeting that started (here or already running when the app opened) brings up the
+  // meeting page, which stays after it ends (its summary) until 新会议 goes back to the lobby
+  const [view, setView] = useState<'lobby' | 'room'>('lobby');
+  const [lobbyTitle, setLobbyTitle] = useState('');
+  // 开始会议 was clicked and the recording started: the backend says "live" a moment later; the button stays busy till then
+  const [waitLive, setWaitLive] = useState(0);
+  useEffect(() => {
+    if (liveNow) {
+      setView('room');
+      setWaitLive(0);
+      setLobbyTitle('');
+    }
+  }, [liveNow]);
+  useEffect(() => {
+    if (!waitLive) return;
+    const h = setTimeout(() => setWaitLive(0), Math.max(0, waitLive + 20_000 - Date.now()));
+    return () => clearTimeout(h);
+  }, [waitLive]);
   // a meeting that started while this page watched (not one already running when the app opened)
   const seenIdle = useRef<boolean | null>(null);
   useEffect(() => {
@@ -332,6 +351,7 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
     setError(null);
     try {
       await meetingApi.recordStart(await windowRegion());
+      setWaitLive(Date.now());
     } catch (e) {
       const s = String(e);
       if (s !== 'cancelled') setError(t('meeting.start_failed', { a: s }));
@@ -365,28 +385,6 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
   }
 
   const live = state === 'live';
-  const endBtn = (ghost: boolean) => (
-    <button className="mt-btn is-end" onClick={ghost ? undefined : endMeeting} disabled={!ghost && busy === 'stop'} tabIndex={ghost ? -1 : undefined} data-testid={ghost ? undefined : 'meeting-end'}>
-      <Icon name="stop-fill" size={13} />
-      {t('meeting.action.end')}
-    </button>
-  );
-  const startBtn = (ghost: boolean) => (
-    <button
-      className="mt-bloom"
-      onClick={ghost ? undefined : startMeeting}
-      disabled={!ghost && (busy === 'start' || !hasPaper)}
-      tabIndex={ghost ? -1 : undefined}
-      aria-label={t(hasPaper ? 'meeting.action.start' : 'meeting.action.start.need_paper')}
-      data-testid={ghost ? undefined : 'meeting-start'}
-    >
-      <BloomMark size={30} />
-    </button>
-  );
-  // 开会 is the turning mark, 散会 the button, each at its own width at the bar's right end, 16 px after 邀请 like every
-  // other gap (2026-11-15: a slot as wide as 散会 left a hole beside the mark). The people and 邀请 slide over once when
-  // the meeting starts or ends.
-  const actions = <span className="mt-acts-slot">{live ? endBtn(false) : startBtn(false)}</span>;
   const notice = error ? (
     <span className="mt-notice-err">
       <Icon name="warning" size={13} />
@@ -394,6 +392,43 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
       <button className="link" onClick={() => setError(null)}>{t('meeting.notice.dismiss')}</button>
     </span>
   ) : null; // the student's last reply is already in the transcript: no second copy up here
+
+  if (view === 'lobby' && !live) {
+    return (
+      <MeetingLobby
+        cur={cur}
+        paperName={paperName}
+        busy={busy ?? (waitLive ? 'start' : null)}
+        importText={importText}
+        notice={notice}
+        title={lobbyTitle}
+        onTitle={(v) => {
+          setLobbyTitle(v);
+          void renameNext(v);
+        }}
+        onStart={() => void startMeeting()}
+        onPickPaper={() => void (busy !== 'paper' && changePaper())}
+        dropProps={dropProps}
+        over={over}
+        active={active}
+      />
+    );
+  }
+  const endBtn = (ghost: boolean) => (
+    <button className="mt-btn is-end" onClick={ghost ? undefined : endMeeting} disabled={!ghost && busy === 'stop'} tabIndex={ghost ? -1 : undefined} data-testid={ghost ? undefined : 'meeting-end'}>
+      <Icon name="stop-fill" size={13} />
+      {t('meeting.action.end')}
+    </button>
+  );
+  // 散会 during the meeting; after it, 新会议 goes back to the lobby (starting is the lobby's, where what a meeting needs
+  // is checked), each at its own width at the bar's right end, 16 px after 邀请 like every other gap
+  const newBtn = (
+    <button className="mt-btn is-new" onClick={() => setView('lobby')} data-testid="meeting-new">
+      <Icon name="plus" size={13} />
+      {t('lobby.new_short')}
+    </button>
+  );
+  const actions = <span className="mt-acts-slot">{live ? endBtn(false) : newBtn}</span>;
 
   const dropZone = (
     <div className={`mt-drop ${over ? 'is-over' : ''} ${busy === 'paper' ? 'is-busy' : ''}`} {...dropProps} data-testid="paper-drop">

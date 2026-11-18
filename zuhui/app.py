@@ -392,17 +392,9 @@ def parse_model_command(text: str) -> tuple[str, str] | None:
 
 
 def _tts_label() -> str:
-    """语音合成：引擎 · 声音名（~/.zuhui/voice.json；声音没起名字就用参考音频的文件名）。"""
-    try:
-        v = json.loads((STATE / "voice.json").read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        v = {}
-    if str(v.get("engine") or "").lower() == "gptsovits":
-        g = v.get("gsv") or {}
-        name = g.get("name") or g.get("label") or (Path(str(g.get("ref"))).stem if g.get("ref") else "")
-        return "GPT-SoVITS" + (f" · {name}" if name else "")
-    name = v.get("name") or (Path(str(v.get("ref"))).stem if v.get("ref") else "")
-    return "IndexTTS2" + (f" · {name}" if name else "")
+    """语音合成：会上实际用的（onboard.tts_label：选的声音 + 这台电脑有的）。"""
+    from .onboard import tts_label
+    return tts_label()
 
 
 def _asr_label() -> str:
@@ -1058,12 +1050,15 @@ class Meeting:
                 self.viewer.talking = self._talking            # 谁在出声：会议页上头像外亮一圈
                 self.viewer.on_profile = self._on_profile      # 设置里改了昵称
                 self.viewer.on_provider = self._on_provider    # 设置里换了模型来源
+                self.viewer.voice_test = self._voice_test      # 设置 / 引导里的"试听"
                 self.viewer.mic_mute = lambda m=None: self.ears.set_muted(m) if self.ears is not None else False   # 主持人麦克风静音（m=None 只问）
                 self.viewer.on_log = self.log                  # 访客在会议页上做的事记进会议日志
                 if not any(self.board.counts().values()):
                     self.viewer.ensure_base(rebase=True)  # 任务板是空的 = 新一场会：以当前镜像为"原文"
                 self.viewer.serve(open_browser=open_browser)
                 self.log("ready", text=f"文稿对比页 {self.viewer.url}（Bloom 录这个窗口）")
+                from .storage import start_auto_clean
+                start_auto_clean(self.viewer)              # 设置 → 存储：自动删除录屏（起来 2 分钟后清一次，之后每天）
             except OSError as e:
                 # 端口被别的后端占着：说明已经有一个在跑。这一份不能再开耳朵和工人，否则两个一起听、一起答
                 self.log("fast_error", error=self._L(f"端口被占，已有后端在运行，这一份退出：{e!r}", f"port in use, another backend is running; this one exits: {e!r}"))
@@ -1172,6 +1167,8 @@ class Meeting:
             from . import lexicon as L
             with Meeting._lex_lock:
                 path, title = Path(self.paper.path), self.paper.title
+                if not path.is_file():                 # 还没有论文（新装的）：没东西可建，也不算出错
+                    return
                 lex = L.ensure(path, title)
                 try:
                     d = L.LEX_DIR / "by_paper"
@@ -2165,6 +2162,13 @@ class Meeting:
         except Exception:
             pass
 
+    def _voice_test(self, text: str) -> str | None:
+        """设置里的"试听"：按选的声音念一句（不进逐字稿）。开着会不试，免得插进会上的话。→ 用上的引擎。"""
+        if self.meetings.current():
+            raise RuntimeError("live")
+        lang = str((self.cfg.get("meeting") or {}).get("lang") or "zh")
+        return self.mouth.test(text or ("Hi, I'm ready when you are." if lang == "en" else "你好，我准备好了，随时可以开始。"))
+
     def _talking(self) -> list[str]:
         """此刻在出声的人（会议页上头像外亮一圈）："me" 是你（静音时不算），"claude" 是 Claude 的声音正从音箱出来，
         其余是访客的名字。"""
@@ -2343,10 +2347,15 @@ class Meeting:
         out = {part: {"current": cur.get(part), "options": [{"id": i, "label": label} for i, label in opts]}
                for part, opts in MODEL_OPTIONS.items()}
         from . import provider
-        if provider.mode() == "api":                 # 用 API：对话、改稿各只有设置里填的那一个（在设置里改）
+        if provider.mode() not in ("api", "claude"):  # 还没设模型来源：没有可换的
+            for part in ("dialog", "edit", "effort"):
+                out[part] = {"current": None, "options": []}
+        elif provider.mode() == "api":               # 用 API：对话、改稿各只有设置里填的那一个（在设置里改），没有思考强度
+            from .config import pretty_model
             from .llm_api import model
             for part, mid in (("dialog", model("fast")), ("edit", model("main"))):
-                out[part] = {"current": mid, "options": [{"id": mid, "label": mid}]}
+                out[part] = {"current": mid, "options": [{"id": mid, "label": pretty_model(mid)}]}
+            out["effort"] = {"current": None, "options": []}
         out["tts"] = _tts_label()
         out["asr"] = _asr_label()
         return out
@@ -2365,6 +2374,9 @@ class Meeting:
             raise ValueError(f"不认识的模型类别：{part}")
         if not self._may_switch(by):
             raise PermissionError("只有主持人和共同主持人能换模型")
+        from . import provider
+        if provider.mode() == "api":
+            raise ValueError(self._L("用 API 时型号在 设置 → 通用 → 模型来源 里换", "With an API key, models are set in Settings → General → Model source"))
         old = model_current(self.cfg).get(part)
         if part == "dialog":                         # 换之前先试一次：连不上就不换（第 2 轮乱测：换成没钱的 Flash，整场聋了）
             from .config import normalize_model
@@ -2387,7 +2399,11 @@ class Meeting:
         old = model_current(self.cfg).get(part)
         try:
             L = self._L
-            if len(MODEL_OPTIONS.get(part, [])) == 1:     # 对话模型只有 Haiku：换不了
+            from . import provider
+            if provider.mode() == "api":                 # 用 API：型号在设置里填，会上换不了
+                text = L("用 API 时型号在 设置 → 通用 → 模型来源 里换，会上换不了。",
+                         "With an API key, models are set in Settings → General → Model source, not during the meeting.")
+            elif len(MODEL_OPTIONS.get(part, [])) == 1:   # 对话模型只有 Haiku：换不了
                 text = L(f"对话模型现在只有 {MODEL_OPTIONS[part][0][1]}，换不了。",
                          f"The conversation model can only be {MODEL_OPTIONS[part][0][1]} right now, so I can't switch.")
             elif old == value:

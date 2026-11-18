@@ -996,7 +996,8 @@ def find_base(md_path: Path, meta: dict, state_dir: Path | None = None) -> tuple
     # 重新转：转换器版本要和当时一样，结果的指纹对得上才算数
     try:
         from . import pdfconv
-        pandoc = shutil.which("pandoc")
+        from .components import pandoc as _find_pandoc
+        pandoc = _find_pandoc()
         if not pandoc:
             return None, "没有 pandoc，也找不到转换时的原样"
         stage = Path(tempfile.mkdtemp(prefix="bloom-wb-"))

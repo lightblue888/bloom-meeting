@@ -213,9 +213,9 @@ def _print_window(hwnd: int):
 
 def _gfx_window(hwnd: int, p: Path) -> bool:
     """备用：ffmpeg gfxcapture（Windows.Graphics.Capture）抓这个窗口一帧，同样只有窗口本身。约 0.5 秒。"""
-    import shutil
     import subprocess
-    ff = shutil.which("ffmpeg")
+    from .components import which
+    ff = which("ffmpeg")                  # PATH，再 ~/.blurt/bin（install.ps1 放的）
     if not ff:
         return False
     try:

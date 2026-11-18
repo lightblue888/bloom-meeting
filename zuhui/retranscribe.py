@@ -35,11 +35,12 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from . import components
 from .config import STATE, load, local_path
 from .meetings import ROOT
 
 HERE = Path(__file__).resolve().parent
-BLURT_MODELS = Path.home() / ".blurt" / "models"
+BLURT_MODELS = components.blurt_home() / "models"
 MS = Path.home() / ".cache" / "modelscope" / "models"
 _gsv = local_path("gsv_dir")                # 标点模型借 GPT-SoVITS 整合包里的那份（~/.zuhui/paths.json）
 ENGINES = {
@@ -51,7 +52,7 @@ ENGINES = {
                          "max_chunk": 60.0, "uv": False},
 }
 DEFAULT_ENGINE = "fun-asr-nano"
-UV_WITH = ["--with", "sherpa-onnx==1.13.8", "--with", "numpy==2.3.4"]
+UV_WITH = components.UV_WITH
 PAD = 0.2
 THREADS = 6                  # 低优先级；又开会了就整个停掉（见 _run_worker），不会和下一场会抢
 WORK = STATE / "tmp" / "retranscribe"
@@ -167,7 +168,7 @@ def audio_pcm(session: Path, work: Path) -> Path | None:
     if p.exists() and p.stat().st_size > 32000:
         return p
     src = next((session / n for n in ("audio.wav", "recording.mp4") if (session / n).exists()), None)
-    ff = shutil.which("ffmpeg")
+    ff = components.which("ffmpeg")
     if not src or not ff:
         return None
     out = work / "audio.pcm"
@@ -188,23 +189,25 @@ def _recording_now() -> bool:
         return False
 
 
-def _worker_cmd(engine: str, job: Path) -> list[str]:
+def _worker_cmd(engine: str, job: Path, offline: bool = True) -> list[str]:
     script = str(HERE / "asr_worker.py")
     if ENGINES[engine]["uv"]:
-        uv = shutil.which("uv") or "uv"
-        return [uv, "run", "--offline", "--no-project", "--quiet", *UV_WITH, "python", "-I", "-X", "utf8", script, str(job)]
+        # uv 找不到 PATH 上的也找 install.ps1 / 桌面端放的地方；offline：只用 uv 缓存里的包（装的时候已缓存）
+        return [*components.uv_run(offline), "python", "-I", "-X", "utf8", script, str(job)]
     return [sys.executable, "-I", "-X", "utf8", script, str(job)]
 
 
 def _run_worker(engine: str, job: Path, status: Path, progress=None, yield_to_meeting: bool = True) -> None:
-    """起干活进程，等它转完。中途开了新会（录屏开始）：停掉它，等录屏结束再起（已转好的段不重转）。"""
+    """起干活进程，等它转完。中途开了新会（录屏开始）：停掉它，等录屏结束再起（已转好的段不重转）。
+    uv 的环境先只用缓存起（不碰网）；起不来（缓存里没这几个包）就联网再起一次。"""
+    offline = bool(ENGINES[engine]["uv"])
     while True:
         while yield_to_meeting and _recording_now():
             if progress:
                 progress(None, "等这场会开完再接着转")
             time.sleep(5)
         log = open(job.with_suffix(".log"), "a", encoding="utf-8")
-        p = subprocess.Popen(_worker_cmd(engine, job), stdout=log, stderr=subprocess.STDOUT, cwd=str(job.parent),
+        p = subprocess.Popen(_worker_cmd(engine, job, offline), stdout=log, stderr=subprocess.STDOUT, cwd=str(job.parent),
                              creationflags=_NO_WINDOW | _BELOW_NORMAL)
         preempted = False
         while p.poll() is None:
@@ -225,6 +228,9 @@ def _run_worker(engine: str, job: Path, status: Path, progress=None, yield_to_me
                 break
         log.close()
         if not preempted:
+            if p.returncode != 0 and offline:
+                offline = False                     # 缓存里没有（新装的机器、缓存清过）：联网再起一次
+                continue
             if p.returncode != 0:
                 raise RuntimeError(f"重转写进程退出码 {p.returncode}（日志 {job.with_suffix('.log')}）")
             return

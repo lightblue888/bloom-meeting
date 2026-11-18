@@ -2783,6 +2783,11 @@ mark.mt-hl {
   display: inline-flex;
   align-items: center;
 }
+/* 散会 and 新会议 swap at the meeting's end: one width for both, so 邀请 and the people beside them never move */
+.app .mt-acts-slot .mt-btn {
+  min-width: 7.2em;
+  justify-content: center;
+}
 
 /* ------------------------------------------------------------ talking right now (the guest page knows it from the
    meeting's voice): a ring in the person's own colour that breathes, on the chip's avatar and in the stack */
@@ -2873,4 +2878,236 @@ mark.mt-hl {
 }
 .mt-now-v {
   -webkit-line-clamp: 1;
+}
+
+/* ============================================================ UI audit fixes (2026-11-18, apps/desktop/ui-audit) */
+
+/* B1: a narrow window (1024 wide, English) never pushes 散会 / 新会议 off the bar: the name block may get narrower and
+   the people's names shorten with "…" before anything at the bar's right end moves */
+.mt-head-main {
+  /* never narrower than its second line (state, date, clock: ~210 px at 12 px) */
+  min-width: min(380px, max(18vw, 224px));
+  /* a long name gives way first; the people's names shorten only once the name block is at its narrowest */
+  flex-shrink: 1000;
+}
+/* the plain title keeps the room the rename pencil takes when the name can be edited (13 px + 6 px gap): the name
+   block is as wide before and after the meeting, so 新增 beside it doesn't move when the meeting ends */
+.mt-title:not(.is-editable) > .mt-title-text {
+  padding-right: 22px;            /* pen 13 + gap 6 + the button's 1 px borders, measured */
+}
+.mt-head > .mt-people {
+  flex: 0 1 auto;
+  min-width: 0;                   /* its real minimum is set inline (People: the chips' minimums added up) */
+}
+.mt-people > .mt-person {
+  flex: 0 1 auto;
+  min-width: 76px;                /* CHIP_MIN in MeetingLayout.tsx: avatar and three letters, then "…" */
+}
+.mt-person-name {
+  flex: 0 1 auto;
+  min-width: 32px;
+}
+
+/* B2: the near-black surround is the paper's and the recording's; in the light theme the column and the 纪要 /
+   修改清单 layers sit on the theme's own background (their text is the theme's dark ink) */
+html:root[data-theme="light"] .mt-left,
+html:root[data-theme="light"] .mt-pane > .mt-layer.mt-scroll {
+  background: var(--bg);
+}
+
+/* B3 + M10: "what the AI is doing": a long model name is capped (full name on hover) and the state keeps its column;
+   each row is one line that ends in "…", whatever is in it */
+.mt-now {
+  grid-template-columns: 6px minmax(0, max-content) minmax(0, 1fr);
+}
+.mt-now.is-off {
+  grid-template-columns: 6px minmax(0, 1fr);
+}
+.mt-now-m {
+  max-width: 15em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mt-now-v {
+  display: block;
+  -webkit-line-clamp: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* M1: the list of people (more than three) scrolls inside its card instead of running off the window */
+.mt-card-scroll {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* M2: the AI's card: the label column fits the language's longest label (English is wider); a label never runs into
+   the name beside it ("…" if a font makes it wider still). The card is wider in English, the same width every time */
+.mt-status-hit {
+  grid-template-columns: var(--mt-label-w, 64px) minmax(0, 1fr) auto;
+}
+.mt-status-pop:lang(en) {
+  --mt-label-w: 9.6em;
+}
+.mt-card-pop.is-claude:lang(en) {
+  width: 440px;
+}
+.mt-status-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* M3: a long model name (a custom model source) ends in "…" inside its row; the switch icon and the effort chip stay
+   in the card */
+.mt-card-pop.is-claude .mt-status-model {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  white-space: nowrap;
+}
+.app .mt-mname {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+.app .mt-mname svg {
+  flex: none;
+}
+.mt-mname-t {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mt-effort,
+.app button.mt-effort.is-btn {
+  flex: none;
+  overflow: hidden;
+}
+.mt-effort-t {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* M5 / M6: what comes and goes floats over the paper's column, never over the transcript: the co-host reminder under
+   the paper's bar (top right), the notice at the column's foot */
+.mt-left {
+  position: relative;
+}
+.mt-left > .mt-suggest {
+  position: absolute;
+  top: 10px;
+  right: 16px;
+  z-index: 30;
+  max-width: calc(100% - 32px);
+  background: var(--panel, var(--bg-2));
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.25);
+}
+.mt-left > .mt-bar ~ .mt-suggest {
+  top: 54px;
+}
+.mt-left > .mt-notice {
+  max-width: min(640px, calc(100% - 32px));
+}
+
+/* M9: in the stack of avatars your own sits on top of its neighbour, so the muted mark on its corner shows whole and
+   takes the click */
+.mt-stack-item.is-me {
+  z-index: 2;
+}
+
+/* m5: the transcript takes the keyboard focus (arrows, Page Up/Down scroll it) */
+.mt-lines:focus-visible {
+  outline: 2px solid var(--focus, var(--bloom, #3b82f6));
+  outline-offset: -2px;
+}
+
+/* M4: contrast in the light theme. A name's own colour (picked for the dark theme) is mixed with black: --name-mix
+   (Flower.tsx nameColor() for inline colours, .who-c for CSS); the greys, badges and accents get darker inks */
+html:root[data-theme="light"] {
+  --name-mix: 50%;
+}
+.who-c {
+  color: color-mix(in srgb, var(--who-c, currentColor) var(--name-mix, 100%), #000);
+}
+html:root[data-theme="light"] .mt-name-t {
+  color: color-mix(in srgb, currentColor var(--name-mix, 100%), #000);
+}
+html:root[data-theme="light"] .mt-root {
+  --faint: rgba(0, 0, 0, 0.56);
+  --bloom-light: #2563eb;
+}
+html:root[data-theme="light"] .mt-rank {
+  background: rgba(0, 0, 0, 0.05);
+}
+html:root[data-theme="light"] .mt-rank.is-host {
+  color: #1d4ed8;
+  background: rgba(37, 99, 235, 0.1);
+}
+html:root[data-theme="light"] .mt-rank.is-assistant {
+  color: #9a3412;
+  background: rgba(217, 119, 87, 0.14);
+}
+html:root[data-theme="light"] .mt-rank.is-cohost {
+  color: #854d0e;
+  background: rgba(234, 179, 8, 0.16);
+}
+html:root[data-theme="light"] .app .mt-btn.is-end {
+  color: var(--err, #c02f35);
+}
+html:root[data-theme="light"] .mt-now-notes,
+html:root[data-theme="light"] .mt-todo-tag {
+  color: #8a5a06;
+}
+/* m4: the dark theme's faint grey on the meeting page reads at 4.5:1 (was 3.7–4.0:1) */
+html:root[data-theme="dark"] .mt-root {
+  --faint: #95938b;
+}
+.mt-todo-tag.is-edit {
+  color: #6f9cff;
+  border-color: color-mix(in srgb, #6f9cff 45%, transparent);
+}
+html:root[data-theme="light"] .mt-todo-tag.is-edit {
+  color: #1d4ed8;
+}
+/* m4: white on the 随口 chip and on the blue primary button at 4.5:1 or more, in both themes */
+.mt-chip.is-cat.is-quick {
+  background: #6e6c65;
+}
+.app .mt-btn.is-primary {
+  background: #2563eb;
+  border-color: #2563eb;
+}
+.app .mt-btn.is-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, #2563eb 90%, #000);
+}
+
+/* m9: 散会 ↔ 新会议 (and the state word beside the clock) keep one width, so nothing in the bar moves when the meeting
+   ends: English needs a wider slot than 7.2em */
+.app .mt-acts-slot .mt-btn {
+  min-width: 7.6em;               /* 新会议 measured 94.4 px against 散会's 93.6 at 7.2em */
+}
+.app .mt-acts-slot .mt-btn:lang(en) {
+  min-width: 11em;                /* New meeting 135.6 px, End Meeting 131.5 px (13 px Segoe UI) */
+}
+.mt-state-t {
+  display: inline-grid;
+}
+.mt-state-t > span {
+  grid-area: 1 / 1;
+}
+.mt-state-t > .is-ghost {
+  visibility: hidden;
+}
+html:root[data-theme="light"] .mt-sum-num {
+  color: #1d4ed8;
 }

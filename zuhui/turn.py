@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 from pathlib import Path
@@ -23,7 +24,8 @@ log = logging.getLogger("zuhui.turn")
 
 ROOT = Path(__file__).resolve().parent.parent
 LEXICON = ROOT / "prompts" / "lexicon" / "turn_taking.json"
-MODEL = Path.home() / ".blurt" / "models" / "smart-turn-v3.2-cpu.onnx"
+# install.ps1 从 Hugging Face（pipecat-ai/smart-turn-v3）下好放在这里；BLURT_HOME 和耳朵一样认
+MODEL = Path(os.environ.get("BLURT_HOME") or Path.home() / ".blurt") / "models" / "smart-turn-v3.2-cpu.onnx"
 SR = 16000
 
 _FINAL_PARTICLES = {"啊", "呀", "吧", "嘛", "呢", "哦", "哈", "嗯", "恩", "啦", "了", "哇", "噢"}

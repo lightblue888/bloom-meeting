@@ -22,7 +22,7 @@ API key 存在本机的 `~/.zuhui/provider.json`，设置页上只显示最后�
 
 ## 语音
 
-默认用 Windows 自带的声音。装了 `edge-tts`（`uv sync --extra voice`）会用它。克隆音色（IndexTTS2、GPT-SoVITS）要另外装，路径写在 `~/.zuhui/paths.json`。
+安装时带上了 `edge-tts`（微软的在线声音），默认用它；连不上时用 Windows 自带的声音。克隆音色（IndexTTS2、GPT-SoVITS）要另外装，路径写在 `~/.zuhui/paths.json`。
 
 ## 数据存在哪
 
@@ -30,6 +30,7 @@ API key 存在本机的 `~/.zuhui/provider.json`，设置页上只显示最后�
 |---|---|
 | `~/.zuhui/` | 会议、逐字稿、个人资料、模型来源 |
 | `~/Blurt/` | 会议录屏 |
+| `~/.blurt/` | 桌面端设置、语音识别和判停模型（`models/`）、没有 winget 时装的 ffmpeg（`bin/`） |
 | `%LOCALAPPDATA%\bloom-meeting\app\` | 后端程序 |
 
 ## 目录

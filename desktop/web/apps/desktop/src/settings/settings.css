@@ -760,7 +760,7 @@
   object-fit: cover;
 }
 .app .st-name {
-  width: 200px;
+  width: 240px;
   min-height: var(--ctl-h);
   padding: 0 10px;
   border: 1px solid var(--ctl-border);
@@ -774,7 +774,7 @@
   border-color: var(--brand, #3b82f6);
 }
 .app .st-name.st-wide {
-  width: 280px;
+  width: 320px;
 }
 /* 名字颜色：一排小圆点，选中的外面一圈 */
 .st-swatches {

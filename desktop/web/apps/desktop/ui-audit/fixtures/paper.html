@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>paper (ui-audit stub)</title>
+<!-- A stand-in for the backend's revision page (zuhui/view.py) inside the meeting page's iframe. It only talks the
+     same postMessage protocol the shell listens for (zhState / zhHello / zhCmd / zhZoom), so the paper tools appear;
+     the real page is audited by the backend's own browser tests. The audit excludes this frame from its checks. -->
+<style>
+  :root { color-scheme: light dark; --bg: #ffffff; --ink: #1f2328; --mute: #57606a; --ins: #1a7f37; --del: #cf222e; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #16181d; --ink: #e6edf3; --mute: #9198a1; --ins: #3fb950; --del: #f85149; } }
+  :root[data-theme="light"] { --bg: #ffffff; --ink: #1f2328; --mute: #57606a; --ins: #1a7f37; --del: #cf222e; }
+  :root[data-theme="dark"] { --bg: #16181d; --ink: #e6edf3; --mute: #9198a1; --ins: #3fb950; --del: #f85149; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.75 "Segoe UI", "Microsoft YaHei UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 40px 80px; }
+  h1 { font-size: 22px; } h2 { font-size: 17px; margin-top: 28px; }
+  p { margin: 10px 0; } ins { color: var(--ins); text-decoration: none; border-bottom: 1px solid currentColor; } del { color: var(--del); }
+  .meta { color: var(--mute); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>FooBench: A Benchmark for Interactive Behaviour Prediction</h1>
+  <p class="meta">8231 words · 6 revisions</p>
+  <h2 data-sec="3">3 Method</h2>
+  <p data-no="1">We model each meeting as a sequence of turns. <ins>Each turn carries the speaker, the words and the time it started.</ins></p>
+  <h2 data-sec="3.2">3.2 Data split</h2>
+  <p data-no="2">The data are split <del>at random</del> <ins>by time: the first 70% of meetings for training, the next 15% for validation and the last 15% for testing</ins>.</p>
+  <h2 data-sec="4">4 Experiments</h2>
+  <p data-no="3">Table 2 lists the baselines: <ins>TimeGAN,</ins> TSGBench, Diffusion-TS, CSDI and TimesNet.</p>
+  <p data-no="4">我们在三个公开数据集上评估，指标为 F1 与平均延迟。第 4 段提到 TimeGAN 作为生成式基线。</p>
+  <h2 data-sec="4.3">4.3 Results</h2>
+  <p data-no="5">Figure 3 shows the latency against the window length.</p>
+</main>
+<script>
+  // the state the shell's paper tools show (the audit's world sets it through ?st=)
+  const q = new URLSearchParams(location.search);
+  let st = { cur: 1, total: 6, view: 'mark', views: ['mark', 'new', 'old'], canEdit: true, editing: false, zoom: 1, zoomSaved: true, live: true };
+  try { if (q.get('st')) st = Object.assign(st, JSON.parse(q.get('st'))); } catch (e) { /* the defaults */ }
+  const say = () => parent !== window && parent.postMessage({ zhState: st }, '*');
+  addEventListener('message', (e) => {
+    const d = e.data || {};
+    if (d.zhHello) say();
+    else if (d.zhCmd === 'next') { st.cur = Math.min(st.total, st.cur + 1); say(); }
+    else if (d.zhCmd === 'prev') { st.cur = Math.max(1, st.cur - 1); say(); }
+    else if (d.zhCmd === 'view') { st.view = d.view; say(); }
+    else if (d.zhCmd === 'edit') { st.editing = !st.editing; say(); }
+    else if (d.zhZoom) { st.zoom = d.zhZoom === 'in' ? st.zoom + 0.1 : d.zhZoom === 'out' ? st.zoom - 0.1 : d.zhZoom === 'reset' ? 1 : Number(d.zhZoom) || 1; say(); }
+  });
+  say();
+</script>
+</body>
+</html>

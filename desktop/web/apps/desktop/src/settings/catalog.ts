@@ -39,7 +39,7 @@ export const GROUPS: { id: PaneInfo['group']; title: Key }[] = [
 
 export const PANES: PaneInfo[] = [
   { id: 'general', title: 'settings.kit.general', icon: 'settings', group: 'preferences' },
-  { id: 'speech', title: 'settings.kit.speech', icon: 'cpu', group: 'preferences' },
+  { id: 'speech', title: 'settings.kit.speech', icon: 'waveform', group: 'preferences' },
   { id: 'storage', title: 'settings.kit.storage', icon: 'drive', group: 'mac' },
 ];
 export const pane = (id: string) => PANES.find((p) => p.id === id);
@@ -53,9 +53,12 @@ export const SECTIONS: Record<string, Key> = {
   'general.app': 'settings.general.app',
   'general.about': 'settings.general.about',
   'speech.models': 'speech.section.models',
+  'speech.voice': 'settings.speech.voice',
+  'speech.hotwords': 'settings.speech.hotwords',
   'storage.recordings': 'settings.storage.recordings',
   'storage.models': 'settings.storage.models',
-  'storage.files': 'settings.storage.app_data',
+  'storage.records': 'settings.storage.records',
+  'storage.cleanup': 'settings.storage.cleanup',
 };
 
 const row = (id: string, section: string | null, title: Key, o: { detail?: Key; more?: Key } = {}): Entry => ({ id, kind: 'row', section, title, ...o });
@@ -64,7 +67,7 @@ const whole = (id: string, detail?: Key): Entry => ({ id, kind: 'section', secti
 export const ENTRIES: Entry[] = [
   // General
   row('general.avatar', 'general.profile', 'settings.general.avatar'),
-  row('general.name', 'general.profile', 'settings.general.name'),
+  row('general.name', 'general.profile', 'settings.general.name', { detail: 'settings.general.name.detail' }),
   row('general.color', 'general.profile', 'settings.general.color'),
   row('general.ai_name', 'general.profile', 'settings.general.ai_name', { detail: 'settings.general.ai_name.detail' }),
   row('general.ai_color', 'general.profile', 'settings.general.ai_color'),
@@ -73,17 +76,23 @@ export const ENTRIES: Entry[] = [
   row('general.base_url', 'general.model_source', 'settings.general.base_url'),
   row('general.fast_model', 'general.model_source', 'settings.general.fast_model'),
   row('general.main_model', 'general.model_source', 'settings.general.main_model'),
-  row('general.provider_check', 'general.model_source', 'settings.general.provider_check'),
+  row('general.provider_check', 'general.model_source', 'settings.general.provider_check', { detail: 'settings.general.provider_check.detail' }),
   row('general.login', 'general.app', 'settings.general.login', { detail: 'settings.general.login.detail' }),
   row('general.language', 'general.app', 'settings.general.language'),
+  row('general.guide', 'general.app', 'settings.general.guide'),
   whole('general.about'),
   // Models
   whole('speech.models', 'speech.models.footer'),
+  row('speech.voice', 'speech.voice', 'settings.speech.voice_engine'),
+  row('speech.voice_name', 'speech.voice', 'settings.speech.voice_name'),
+  row('speech.voice_test', 'speech.voice', 'settings.speech.voice_test', { detail: 'settings.speech.voice_test.detail' }),
+  row('speech.hotwords', 'speech.hotwords', 'settings.speech.hotwords_row', { detail: 'settings.speech.hotwords.detail' }),
   // Storage
   whole('storage.recordings'),
-  row('storage.auto_delete', 'storage.recordings', 'settings.storage.videos.auto', { detail: 'settings.storage.videos.footer' }),
-  whole('storage.models', 'settings.storage.model.footer'),
-  whole('storage.files'),
+  row('storage.auto_delete', 'storage.recordings', 'settings.storage.rec.auto', { detail: 'settings.storage.rec.auto.detail' }),
+  whole('storage.models'),
+  whole('storage.records'),
+  whole('storage.cleanup'),
 ];
 
 export const entry = (id: string) => ENTRIES.find((e) => e.id === id);

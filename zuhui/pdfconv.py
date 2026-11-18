@@ -807,7 +807,7 @@ def _norm_heading(t: str) -> str:
 
 def _render_clip(doc, page_idx: int, box, dst_noext: Path) -> tuple[str, int, int] | None:
     """从 PDF 原页面把图的区域截出来（矢量图也清楚）；照片多、PNG 太大就存 JPEG。"""
-    import fitz
+    import pymupdf as fitz  # PyMuPDF（新版不再用 fitz 这个名字）
     try:
         page = doc[page_idx]
     except Exception:
@@ -962,7 +962,7 @@ def _assign_captions(blocks, caps, figblocks, tabblocks, dominant):
 
 def structured_to_md(sc: dict, pdf: Path, figdir: Path, title: str = "") -> tuple[str, dict]:
     """MinerU 的 structured_content → (Markdown, 统计)。图截好存进 figdir，figures.json 也写好。"""
-    import fitz
+    import pymupdf as fitz  # PyMuPDF（新版不再用 fitz 这个名字）
     pages = sc.get("pages") or []
     alltext = "".join(b.get("content") or "" for p in pages for b in p.get("blocks") or [] if isinstance(b.get("content"), str))
     cjk = len(CJK.findall(alltext)) / max(1, len(re.sub(r"\s", "", alltext))) > 0.1
@@ -1153,7 +1153,7 @@ def _write_figmeta(figdir: Path, meta: dict) -> None:
 
 
 def pdf_page_count(pdf: Path) -> int:
-    import fitz
+    import pymupdf as fitz  # PyMuPDF（新版不再用 fitz 这个名字）
     with fitz.open(str(pdf)) as d:
         return d.page_count
 
@@ -1430,7 +1430,7 @@ def _docx_post(md: str, work: Path, figdir: Path) -> tuple[str, dict]:
             shutil.copyfile(srcp, dst)
         elif ext in (".tif", ".tiff", ".bmp"):
             try:
-                import fitz
+                import pymupdf as fitz  # PyMuPDF（新版不再用 fitz 这个名字）
                 pix = fitz.Pixmap(str(srcp))
                 if pix.alpha or pix.n > 3:
                     pix = fitz.Pixmap(fitz.csRGB, pix)

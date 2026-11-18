@@ -25,7 +25,6 @@ import asyncio
 import json
 import logging
 import os
-import shutil
 import subprocess
 import threading
 import time
@@ -174,7 +173,8 @@ class AudioBridge:
         self._now: dict[str, tuple[str, float]] = {}              # 身份 -> (名字, 开始) 正在说
         self._vad_state: dict[str, list] = {}                     # 身份 -> [连续响了几帧, 最后一次响的时间]
         self._stu_src = None
-        self._ffmpeg = shutil.which("ffmpeg")
+        from .components import which
+        self._ffmpeg = which("ffmpeg")
         self._spare = None                        # 提前起好、等着的转码进程：((采样率, 语速), 进程)
         self._spare_lock = threading.Lock()
         if mouth is not None and self.enabled and devices:

@@ -1,0 +1,139 @@
+/* Settings → Storage (StorageSettings.tsx), on top of settings/settings.css. The split bar's four colours are the
+   reference categorical slots 1–3 (blue, orange, aqua; validated for colour-blind separation on both surfaces) and a
+   neutral grey for "other"; each theme has its own steps. Everything else uses the app's tokens. */
+.st-page {
+  --sto-recordings: #2a78d6;
+  --sto-models: #eb6834;
+  --sto-records: #1baf7a;
+  --sto-other: #b9b9b9;
+}
+[data-theme='dark'] .st-page {
+  --sto-recordings: #3987e5;
+  --sto-models: #d95926;
+  --sto-records: #199e70;
+  --sto-other: #5e5e5e;
+}
+
+/* the split: an 8 px bar, fully rounded ends, a 2 px gap of the page between parts; the legend under it */
+.sto-split {
+  margin-top: 14px;
+}
+.sto-bar {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+}
+.sto-bar:empty {
+  background: var(--chip);
+}
+.sto-seg {
+  flex-basis: 0;
+  min-width: 3px;
+  height: 100%;
+}
+.sto-seg.sto-recordings,
+.sto-dot.sto-recordings {
+  background: var(--sto-recordings);
+}
+.sto-seg.sto-models,
+.sto-dot.sto-models {
+  background: var(--sto-models);
+}
+.sto-seg.sto-records,
+.sto-dot.sto-records {
+  background: var(--sto-records);
+}
+.sto-seg.sto-other,
+.sto-dot.sto-other {
+  background: var(--sto-other);
+}
+.sto-legend {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  margin: 9px 0 0;
+  padding: 0;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.sto-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.sto-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+/* a size's room is kept while it is still "—", so the legend doesn't slide when the numbers come in */
+.sto-legend-n {
+  min-width: 7ch;
+  color: var(--mute);
+  font-variant-numeric: tabular-nums;
+}
+
+/* one line each: a long name or list ends in … (the whole of it on hover), so no row ever grows a second line */
+.sto-row .st-row-title {
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.sto-cut {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-setting='storage.auto_delete'] .st-detail {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ⋯: quiet at rest, full ink on the row's hover; the size column beside it */
+.app .sto-more {
+  color: var(--faint);
+}
+.sto-row:hover .sto-more,
+.app .sto-more.menu-open {
+  color: var(--ink-2);
+}
+.app .sto-more:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--hover);
+}
+.app .sto-more:disabled {
+  opacity: 0.3;
+}
+
+/* turning automatic deletion on asks in the row itself: Cancel and Turn On take the pop-up's place, same width */
+.sto-confirm {
+  display: inline-flex;
+  justify-content: flex-end;
+  gap: 6px;
+  width: 180px;
+}
+.app .sto-confirm button {
+  flex: 1;
+  justify-content: center;
+  min-height: var(--ctl-h);
+  padding: 0 8px;
+}
+
+/* the backend isn't there: a caution mark and plain words in the lead */
+.sto-warn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink-2);
+}
+.sto-warn svg {
+  color: var(--attn);
+}

@@ -320,9 +320,9 @@ class Mouth:
         m = dict(cfg.get("mouth") or {})
         self.port_default = int(m.get("tts_port") or 47321)
         self.venv = str(m.get("indextts_venv") or "")
-        self.edge_voice = str(m.get("edge_voice") or "zh-CN-YunxiNeural")
+        self._edge_voice_cfg = str(m.get("edge_voice") or "zh-CN-YunxiNeural")
         self.edge_rate = str(m.get("edge_rate") or "+8%")
-        self.sapi_voice = str(m.get("sapi_voice") or "")       # 空：按要念的话的语言挑本机装了的声音
+        self._sapi_voice_cfg = str(m.get("sapi_voice") or "")  # 空：按要念的话的语言挑本机装了的声音
         self.backchannels = [t.strip() for t in (m.get("backchannels") or []) if (t or "").strip()]
         self.rate = float(m.get("rate") or 1.0)      # 播放语速：1.15 = 快 15%，音调不变（ffplay atempo）
         self.phrases = [t.strip() for t in (m.get("phrases") or []) if (t or "").strip()]
@@ -347,11 +347,11 @@ class Mouth:
         self.tmp = Path(tempfile.mkdtemp(prefix="mouth-", dir=tmp_root))
         atexit.register(shutil.rmtree, self.tmp, True)
 
-        self.ffplay = shutil.which("ffplay")
-        self.ffmpeg = shutil.which("ffmpeg")
+        from .components import edge_tts, which
+        self.ffplay = which("ffplay")          # PATH，再 ~/.blurt/bin（install.ps1 放的）
+        self.ffmpeg = which("ffmpeg")
         # edge-tts：系统里找，或者和后端同一个 Python 环境里（uv sync --extra voice 装在那儿，不在 PATH 上）
-        self.edge_tts = shutil.which("edge-tts") or next(
-            (str(p) for p in (Path(sys.executable).parent / "edge-tts.exe", Path(sys.executable).parent / "edge-tts") if p.exists()), None)
+        self.edge_tts = edge_tts()
         if not self.ffplay:
             log.warning("找不到 ffplay，退回 PowerShell SoundPlayer（只能放 wav）")
 
@@ -369,6 +369,50 @@ class Mouth:
         threading.Thread(target=self._play_loop, name="mouth-play", daemon=True).start()
         if self.ffplay and self.stream:          # 第一句之前先起好一个 ffplay（冷起要一秒多）
             threading.Thread(target=self._refill_spare, args=(self._stream_sr,), name="mouth-spare", daemon=True).start()
+
+    # ------------------------------------------------------------ 选的声音（voice_prefs.py，每句现读）
+
+    @staticmethod
+    def _pref() -> str:
+        """auto（克隆 → 微软在线 → Windows 自带）/ clone / edge / sapi / off（不出声，只记字）。"""
+        try:
+            from . import voice_prefs
+            return voice_prefs.voice()
+        except Exception:
+            return "auto"
+
+    @property
+    def edge_voice(self) -> str:
+        try:
+            from . import voice_prefs
+            return voice_prefs.edge_voice() or self._edge_voice_cfg
+        except Exception:
+            return self._edge_voice_cfg
+
+    @property
+    def sapi_voice(self) -> str:
+        try:
+            from . import voice_prefs
+            v = voice_prefs.sapi_voice()
+            return self._sapi_voice_cfg if v is None else v
+        except Exception:
+            return self._sapi_voice_cfg
+
+    def test(self, text: str) -> str | None:
+        """设置里的"试听"：按现在选的声音念一句（不进逐字稿）。→ 实际用上的引擎（gptsovits / indextts / edge / sapi）；
+        选了不出声或者都没念成 → None。正在说话时抛 RuntimeError("busy")。"""
+        if self._pref() == "off":
+            return None
+        if self.speaking:
+            raise RuntimeError("busy")
+        out = self._synthesize(text)
+        if not out:
+            return None
+        with self._lock:
+            gen = self._gen
+            self._pending += 1
+        self._play_q.put((gen, out, True, None, None))
+        return self.backend
 
     # ------------------------------------------------------------ 对外接口
 
@@ -396,6 +440,11 @@ class Mouth:
         shown = split_sentences(text)
         if not shown:
             return
+        if self._pref() == "off":                     # 选了不出声：照样记进逐字稿，只是不念
+            for d in shown:
+                if on_start:
+                    on_start(d)
+            return
         with self._lock:
             gen = self._gen
             self._pending += len(shown)
@@ -405,7 +454,7 @@ class Mouth:
 
     def ack(self) -> None:
         """没在说话时立刻播一条随机缓存接话；正在说/排着队就什么都不做。"""
-        if self.speaking:
+        if self.speaking or self._pref() == "off":
             return
         cands = [p for p in (self._cached(t) for t in self.backchannels) if p]
         if not cands:
@@ -454,7 +503,7 @@ class Mouth:
 
     def warm(self) -> None:
         """后台预合成接话缓存；已有就跳过。可以反复调用（服务起来后再调一次补克隆音色版）。"""
-        if self._warm_thread and self._warm_thread.is_alive():
+        if self._pref() == "off" or (self._warm_thread and self._warm_thread.is_alive()):
             return
         self._warm_thread = threading.Thread(target=self._warm, name="mouth-warm", daemon=True)
         self._warm_thread.start()
@@ -507,6 +556,8 @@ class Mouth:
 
     @staticmethod
     def _voice() -> dict:
+        if Mouth._pref() in ("edge", "sapi", "off"):   # 选了别的声音：当作没配克隆音色（不探测、不拉起服务）
+            return {}
         for p in (VOICE_FILE, OLD_MEET / "voice.json"):
             v = _read_json(p)
             if isinstance(v, dict) and v:
@@ -598,8 +649,11 @@ class Mouth:
         return self.cache_dir / f"{h}.wav"
 
     def _cached(self, text: str) -> Path | None:
-        """这条接话已有的缓存：优先克隆音色，其次备用嗓子。"""
-        for voice in (self._voice_id(), f"edge:{self.edge_voice}", f"sapi:{self.sapi_voice}"):
+        """这条接话已有的缓存：优先克隆音色，其次备用嗓子（只在选了的声音里找）。"""
+        pref = self._pref()
+        voices = ([self._voice_id()] if pref in ("auto", "clone") and self._voice() else []) + \
+            ([f"edge:{self.edge_voice}"] if pref in ("auto", "clone", "edge") else []) + [f"sapi:{self.sapi_voice}"]
+        for voice in voices:
             p = self._cache_key(text, voice)
             if p.exists() and p.stat().st_size > 1000:
                 return p
@@ -614,6 +668,8 @@ class Mouth:
 
     def _clone_cached(self, text: str) -> Path | None:
         """这句话的克隆音色缓存（没有就 None；不拿备用嗓子顶，免得一段话里换了个人）。"""
+        if not self._voice():
+            return None
         p = self._cache_key(text, self._voice_id())
         return p if (p.exists() and p.stat().st_size > 1000) else None
 
@@ -636,7 +692,7 @@ class Mouth:
             if self._cached(text):
                 continue
             out, key, backend = None, None, None
-            if self.edge_tts:
+            if self.edge_tts and self._pref() != "sapi":
                 out = self._synth_edge(text, tmp)
                 key, backend = self._cache_key(text, f"edge:{self.edge_voice}"), "edge"
             if not out:
@@ -720,7 +776,7 @@ class Mouth:
             return base
         if not port:
             self.ensure_server()                       # 服务掉了（空闲退出/崩了）：后台拉起，这句先用备用嗓子
-        if self.edge_tts:
+        if self.edge_tts and self._pref() != "sapi":
             p = self._synth_edge(text, base)
             if p:
                 self.backend = "edge"

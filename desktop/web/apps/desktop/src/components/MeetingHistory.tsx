@@ -14,8 +14,9 @@ import { i18n, t } from '../i18n';
 import { cleanTitle, fmtDuration, fmtWhen, meetingApi, type Line, type MeetingBrief, type MeetingDetail, type Participant, type VideoInfo } from '../meetingApi';
 import { MeetingLayout } from './MeetingLayout';
 import { Highlight, Names } from './Highlight';
-import { colorsByName } from './Flower';
+import { colorsByName, nameColor } from './Flower';
 import { keep, useDismiss } from './useDismiss';
+import { NAV_EVENT, takePendingMeeting } from '../nav';
 
 /** what, in the list, says a meeting's details have changed */
 const sig = (m: MeetingBrief | undefined) => (m ? [m.n_lines, m.has_summary, m.has_diff, m.n_tasks, m.n_done, m.state, m.ended, m.processing].join('|') : '');
@@ -134,6 +135,22 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
     }
   };
   const back = useCallback(() => setOpen(null), []);
+  // a meeting the lobby asked for (its recent list): opened when this page is on screen
+  const showRef = useRef(show);
+  showRef.current = show;
+  useEffect(() => {
+    if (!active) return;
+    const go = () => {
+      const id = takePendingMeeting();
+      if (id) {
+        setSel(id);
+        void showRef.current(id);
+      }
+    };
+    go();
+    window.addEventListener(NAV_EVENT, go);
+    return () => window.removeEventListener(NAV_EVENT, go);
+  }, [active]);
 
   const shown = useMemo(() => {
     const s = q.trim().toLowerCase();
@@ -203,7 +220,7 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
       <ol className="mt-hp-lines">
         {plines.map((l: Line, i: number) => (
           <li key={i} className={`is-${l.who}`}>
-            <span className="mt-hp-who" style={{ color: colors[nameOf(l.who, l.name)] }}>{nameOf(l.who, l.name)}</span>
+            <span className="mt-hp-who" style={{ color: nameColor(colors[nameOf(l.who, l.name)]) }} title={nameOf(l.who, l.name)}>{nameOf(l.who, l.name)}</span>
             <span className="mt-hp-t">{l.t}</span>
             <span className="mt-hp-text"><Highlight text={l.text} q={q} /></span>
           </li>
@@ -253,7 +270,7 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
           <div className="mt-hsplit">
             <ul className="mt-hlist" role="listbox" aria-label={t('meeting.history.title')}>
               {shown.map((m) => (
-                <li key={m.id} className="mt-hitem">
+                <li key={m.id} className="mt-hitem" role="none">
                   <button
                     className={`mt-hrow ${m.id === picked ? 'is-sel' : ''}`}
                     role="option"

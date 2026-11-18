@@ -15,13 +15,13 @@ use crate::settings;
 pub const PORT: u16 = 47330;
 
 /// The 组会 project folder: config.json's `zuhui.project_dir` (install.ps1 writes it), else where install.ps1 puts it
-/// by default (%LOCALAPPDATA%\Bloom\app), else an `app` folder beside this exe.
+/// by default (%LOCALAPPDATA%\bloom-meeting\app), else an `app` folder beside this exe.
 fn project_dir() -> std::path::PathBuf {
     let cfg = settings::read_config();
     if let Some(d) = cfg.pointer("/zuhui/project_dir").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) {
         return std::path::PathBuf::from(d);
     }
-    if let Some(d) = std::env::var_os("LOCALAPPDATA").map(|l| std::path::PathBuf::from(l).join("Bloom").join("app")).filter(|d| d.is_dir()) {
+    if let Some(d) = std::env::var_os("LOCALAPPDATA").map(|l| std::path::PathBuf::from(l).join("bloom-meeting").join("app")).filter(|d| d.is_dir()) {
         return d;
     }
     std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.join("app"))).unwrap_or_else(|| std::path::PathBuf::from("app"))

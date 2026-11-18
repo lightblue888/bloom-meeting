@@ -199,7 +199,7 @@ export function Popup<V extends string | number | boolean>({ label, value, choic
         className="st-popup-btn"
         aria-haspopup="menu"
         aria-expanded={!!at}
-        aria-label={label}
+        aria-label={`${choices[idx]?.[1] ?? ''}, ${label}`}
         data-tip={choices[idx]?.[1]}
         data-tip-trunc
         disabled={disabled}

@@ -9,6 +9,7 @@ import { applyPlatform, applyTheme } from '@blurt/ui';
 import { setLang } from '../i18n';
 import { setGuestTransport, type Board, type Brain, type Line, type Meeting, type MeetingPaper, type Models, type Participant, type PartialLine, type Ready } from '../meetingApi';
 import { BloomMark, MeetingLayout } from '../components/MeetingLayout';
+import { nameColor } from '../components/Flower';
 import { GuestVoice, type VoiceSnapshot } from './voice';
 import { Follow, type HostFocus } from './follow';
 
@@ -560,7 +561,7 @@ function WhoIsIn({ st }: { st: RelayState | null }) {
       <span className="g-who-h">{L(`会上 ${list.length} 人`, `${list.length} in the meeting`)}</span>
       <span className="g-who-list">
         {list.slice(0, 8).map((p) => (
-          <span key={p.id ?? p.name} className="g-who-p" style={{ color: p.color ?? undefined }}>
+          <span key={p.id ?? p.name} className="g-who-p" style={{ color: nameColor(p.color) }}>
             <span className="g-who-n">{p.name}</span>
             {label(p) && <i>{label(p)}</i>}
           </span>

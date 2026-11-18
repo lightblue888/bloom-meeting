@@ -1,19 +1,23 @@
-// Settings → Storage (the Mac's PrivacyStoragePanes.swift StoragePane): everything big that Blurt keeps. The lead is
-// the total ("Blurt uses 3.9 GB"); then Recordings (all recordings and snaps; inside them the videos of organized
-// recordings, which can go — by age, or all — and "Delete videos automatically"), Models (one row per model folder,
-// what it is used for) and App data (dictation's history and audio, the index and build files as one Caches row, job
-// logs, hand-off notes, prompts, benchmark samples, temporary files, logs). Every row: an icon, a name, one plain line,
-// the size in one size column; what can be done with it (Show in File Explorer, Delete) is in its ⋯ menu and its
-// right-click menu. Deleting goes to the Recycle Bin (Windows' own undo, where the Mac's island offers Undo); turning
-// automatic deletion on asks first when it would delete something right away. Sizes come from housekeeping.rs
-// (`storage_scan`); which model is which from `transcribe.py models` / `dictation-models`.
-import { useCallback, useEffect, useState } from 'react';
+// Settings → Storage: what Bloom keeps on this PC, in Bloom's terms. The lead is the total and the disk's free space,
+// then one thin bar split into recordings / models / meeting records / other with its legend. Sections:
+//   录屏        meeting recordings (video and audio; transcripts, screenshots, summaries and revision history stay),
+//               recordings no meeting points at, and automatic deletion (asks first when it would take something now)
+//   模型        each model Bloom really uses, by what it is for; the ones nobody uses as one row
+//   会议记录    the meetings' records and the imported papers
+//   缓存和日志  the voice cache and temporary files (the temporary part can be cleared), the logs
+// Every row: an icon, a title, one line, ⋯ (also a right-click) and the size; its actions live in that menu. Moving
+// to the Recycle Bin is Windows' own undo. Sizes and clean-ups come from the meeting backend (zuhui/storage.py via
+// storageApi.ts); which Blurt-side speech model the app's speech settings use comes from `transcribe.py models`.
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Icon, type IconName } from '@blurt/icons';
-import { api, type AppStatus, type AsrModel, type DictationModels, type Settings, type StorageScan } from '../api';
+import { api, type AppStatus, type AsrModel, type Settings } from '../api';
 import { i18n } from '../i18n';
-import { Group, Line, Page, Popup, Row, S, Switch } from '../settings/kit';
+import { Group, Page, Popup, Row, S } from '../settings/kit';
+import { useMenu, type MenuAt, type MenuEntry } from './Menu';
+import { storageApi, type StorageInfo, type UsedModel } from '../storageApi';
+import './storage.css';
 
-/** "412 MB", "1.6 GB" — one formatter for every row (the Mac's ByteCountFormatter, file style). */
+/** "412 MB", "1.6 GB" — one formatter for every row (decimal units, like File Explorer's "size on disk" wording). */
 export function size(bytes: number): string {
   const units = ['KB', 'MB', 'GB', 'TB'];
   let v = Math.max(0, bytes) / 1000;
@@ -24,198 +28,267 @@ export function size(bytes: number): string {
   }
   return `${i18n().formatNumber(v, { maximumFractionDigits: v >= 100 || u === 0 ? 0 : 1 })} ${units[u]}`;
 }
-const P = (key: string, n: number) => i18n().plural(`st.win.n.${key}`, n);
-const CHOICES = [30, 90, 180];
+const P = (key: string, n: number) => i18n().plural(`st.settings.storage.n.${key}`, n);
+const AGES = [30, 90, 180];
+const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 
-type Action = { label: string; run: () => void; disabled?: boolean; sep?: boolean };
+type Part = 'recordings' | 'models' | 'records' | 'other';
+const PARTS: { key: Part; label: string }[] = [
+  { key: 'recordings', label: 'settings.storage.recordings' },
+  { key: 'models', label: 'settings.storage.models' },
+  { key: 'records', label: 'settings.storage.records' },
+  { key: 'other', label: 'settings.storage.other' },
+];
+const ROLE_ICON: Record<UsedModel['role'], IconName> = { live: 'captions', after: 'waveform', addr: 'character-bubble', voice: 'voice', turn: 'listening', asr: 'waveform' };
 
-function Menu({ actions, label }: { actions: Action[]; label: string }) {
-  const [open, setOpen] = useState<{ x: number; y: number } | null>(null);
-  useEffect(() => {
-    if (!open) return;
-    const c = () => setOpen(null);
-    setTimeout(() => window.addEventListener('mousedown', c), 0);
-    const k = (e: KeyboardEvent) => e.key === 'Escape' && c();
-    window.addEventListener('keydown', k);
-    return () => {
-      window.removeEventListener('mousedown', c);
-      window.removeEventListener('keydown', k);
-    };
-  }, [open]);
-  if (!actions.length) return <span className="st-more-slot" />;
+/** The split under the lead: an 8 px bar (no text, a 2 px gap between parts) and its legend, names and sizes. */
+function Split({ info }: { info: StorageInfo | null }) {
+  const total = info ? PARTS.reduce((a, p) => a + info.split[p.key], 0) : 0;
+  const pct = (b: number) => (total ? `${i18n().formatNumber((b / total) * 100, { maximumFractionDigits: b / total < 0.1 ? 1 : 0 })}%` : '');
+  const parts = PARTS.map((p) => ({ ...p, name: S(p.label), bytes: info?.split[p.key] ?? 0 }));
   return (
-    <span className="st-more-slot">
-      <button className="link st-more" aria-label={`${S('settings.storage.more')}: ${label}`} onClick={(e) => setOpen({ x: e.clientX, y: e.clientY })}><Icon name="more" size={14} /></button>
-      {open && (
-        <div className="st-menu" role="menu" style={{ left: Math.min(open.x, window.innerWidth - 260), top: open.y }} onMouseDown={(e) => e.stopPropagation()}>
-          {actions.map((a, i) => [
-            a.sep ? <div key={`s${i}`} className="st-menu-sep" /> : null,
-            <button key={i} role="menuitem" disabled={a.disabled} onClick={() => (setOpen(null), a.run())}>{a.label}</button>,
-          ])}
-        </div>
-      )}
-    </span>
+    <div className="sto-split">
+      <div className="sto-bar" role="img" aria-label={info ? parts.map((p) => S('settings.storage.part', p.name, size(p.bytes), pct(p.bytes))).join(i18n().lang === 'zh-Hans' ? '；' : '; ') : S('settings.storage.counting')}>
+        {parts.filter((p) => p.bytes > 0).map((p) => (
+          <span key={p.key} className={`sto-seg sto-${p.key}`} style={{ flexGrow: p.bytes }} data-tip={S('settings.storage.part', p.name, size(p.bytes), pct(p.bytes))} />
+        ))}
+      </div>
+      <ul className="sto-legend">
+        {parts.map((p) => (
+          <li key={p.key}>
+            <i className={`sto-dot sto-${p.key}`} />
+            <span>{p.name}</span>
+            <span className="sto-legend-n">{info ? size(p.bytes) : '—'}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
-function StorageRow({ icon, title, detail, bytes, tip, actions = [] }: { icon: IconName; title: string; detail?: string; bytes: number; tip?: string; actions?: Action[] }) {
+/** A row: icon, title and one line (both cut with … when long, the whole text on hover), ⋯ and the size. */
+function Item({ icon, title, detail, bytes, actions, onMenu, flash }: {
+  icon: IconName;
+  title: string;
+  detail: string;
+  bytes: number;
+  actions: MenuEntry[];
+  onMenu: (entries: MenuEntry[], at: MenuAt, label: string) => void;
+  flash?: string;
+}) {
+  const more = useRef<HTMLButtonElement>(null);
   return (
-    <div className="st-row st-storage" title={tip}>
+    <div className="st-row sto-row" data-setting={flash}
+      onContextMenu={(e) => {
+        if (!actions.length) return;
+        e.preventDefault();
+        onMenu(actions, { x: e.clientX, y: e.clientY }, title);
+      }}>
       <span className="st-icon"><Icon name={icon} size={16} /></span>
       <div className="st-text">
-        <div className="st-row-title"><span>{title}</span></div>
-        {detail && <div className="st-detail">{detail}</div>}
+        <div className="st-row-title"><span className="sto-cut" data-tip={title} data-tip-trunc>{title}</span></div>
+        <div className="st-detail sto-cut" data-tip={detail} data-tip-trunc>{detail}</div>
       </div>
       <div className="st-ctl">
-        <Menu actions={actions} label={title} />
+        <button ref={more} type="button" className="icon-btn sto-more" aria-label={`${S('settings.storage.more')}: ${title}`} disabled={!actions.length}
+          onClick={() => more.current && onMenu(actions, { x: 0, y: 0, anchor: more.current, align: 'end' }, title)}>
+          <Icon name="more" size={14} />
+        </button>
         <span className="st-size">{size(bytes)}</span>
       </div>
     </div>
   );
 }
 
-const FILES: Record<string, { title: string; detail: string; icon: IconName }> = {
-  dictation_history: { title: 'settings.storage.dictation_history', detail: 'settings.storage.managed_in_dictation', icon: 'character-cursor' },
-  dictation_audio: { title: 'settings.storage.dictation_audio', detail: 'settings.storage.managed_in_dictation', icon: 'waveform' },
-  runs: { title: 'settings.privacy.agent_runs', detail: 'settings.storage.detail.runs', icon: 'send' },
-  jobs: { title: 'settings.storage.jobs', detail: 'settings.storage.detail.jobs', icon: 'list-box' },
-  handoff: { title: 'settings.storage.handoff', detail: 'settings.storage.detail.handoff', icon: 'document' },
-  prompts: { title: 'settings.privacy.prompts', detail: 'settings.storage.detail.prompts', icon: 'quote' },
-  bench: { title: 'settings.privacy.benchmark_samples', detail: 'settings.storage.detail.bench', icon: 'waveform' },
-  tmp: { title: 'settings.storage.tmp', detail: 'settings.storage.detail.tmp', icon: 'inbox' },
-  logs: { title: 'win.storage.logs', detail: 'win.storage.logs.detail', icon: 'document' },
-};
-
-export function StoragePane({ status, s, save, onToast }: { status: AppStatus; s: Settings; save: (patch: Record<string, unknown>) => Promise<void>; onToast: (m: string) => void }) {
-  const [scan, setScan] = useState<StorageScan | null>(null);
+export function StoragePane({ s, save, onToast }: { status: AppStatus; s: Settings; save: (patch: Record<string, unknown>) => Promise<void>; onToast: (m: string) => void }) {
+  const [info, setInfo] = useState<StorageInfo | null>(null);
+  const [failed, setFailed] = useState(false);
   const [asr, setAsr] = useState<AsrModel[] | null>(null);
-  const [dict, setDict] = useState<DictationModels | null>(null);
   const [ask, setAsk] = useState<number | null>(null);
-  const load = useCallback(() => api.storageScan().then(setScan, (e) => onToast(String(e))), [onToast]);
+  const [busy, setBusy] = useState(false);
+  // rows that come and go with the data (recordings with no meeting, unused models) are decided on the first scan,
+  // so cleaning them up leaves the row in place (reading "None") instead of pulling the rows below it up
+  const shown = useRef<{ others: boolean; unused: boolean } | null>(null);
+  const menu = useMenu();
+
+  const load = useCallback(
+    () =>
+      storageApi.get().then(
+        (r) => {
+          shown.current ??= { others: r.recordings.others.count > 0, unused: r.models.unused.length > 0 };
+          setInfo(r);
+          setFailed(false);
+        },
+        () => setFailed(true),
+      ),
+    [],
+  );
   useEffect(() => {
     load();
     api.asrModels().then((r) => setAsr(r.models ?? []), () => setAsr([]));
-    api.dictationModels().then(setDict, () => {});
   }, [load]);
-  const cfg = s.config ?? {};
-  const reveal = (p: string) => api.reveal(p).catch((e) => onToast(String(e)));
-  const trash = async (paths: string[], name: string) => {
+
+  const run = async (job: () => Promise<string>) => {
+    setBusy(true);
     try {
-      await api.storageTrash(paths);
-      onToast(S('settings.storage.trashed', name));
+      onToast(await job());
     } catch (e) {
-      onToast(String(e));
+      onToast(S('settings.storage.failed', String((e as Error)?.message ?? e)));
     }
+    setBusy(false);
     load();
   };
-  const older = (d: number | null) => (scan?.videos ?? []).filter((v) => d == null || v.age_days >= d);
-  const bytesOf = (l: { bytes: number }[]) => l.reduce((a, b) => a + b.bytes, 0);
-  const trashVideos = async (d: number | null) => {
-    const r = await api.videosTrash(d);
-    onToast(S('settings.storage.videos.trashed', P('videos', r.count), size(r.bytes)));
-    load();
-  };
+  const show = (p: string | null | undefined, folder = true) => p && (folder ? storageApi.open(p) : storageApi.reveal(p)).catch((e) => onToast(String(e)));
+  const trashed = (what: string, bytes: number) => (bytes || what ? S('settings.storage.trashed', what, size(bytes)) : S('settings.storage.trash_none'));
+
+  // the app's speech settings may use another model on the Blurt side: whatever `transcribe.py models` says has a job
+  // stays out of "unused" and is listed as speech recognition
+  const asrUsed = (asr ?? []).filter((m) => typeof m.path === 'string' && Array.isArray(m.purposes) && (m.purposes as unknown[]).length > 0);
+  const isAsrUsed = (p: string) => asrUsed.some((m) => norm(String(m.path)) === norm(p));
+  const used: UsedModel[] = info ? [...info.models.used] : [];
+  const unused = (info?.models.unused ?? []).filter((u) => !isAsrUsed(u.path));
+  for (const u of (info?.models.unused ?? []).filter((x) => isAsrUsed(x.path))) {
+    const m = asrUsed.find((a) => norm(String(a.path)) === norm(u.path));
+    used.push({ role: 'asr', name: String(m?.name ?? u.name), paths: [u.path], bytes: u.bytes, langs: [] });
+  }
+  const unusedBytes = unused.reduce((a, b) => a + b.bytes, 0);
+
+  const rec = info?.recordings;
+  const preview = (d: number) => rec?.auto_preview[String(d)] ?? { count: 0, bytes: 0 };
   const setAuto = async (d: number) => {
-    if (d && older(d).length && ask !== d) return setAsk(d);
+    if (d && preview(d).count && ask !== d) return setAsk(d);
     setAsk(null);
-    await api.videosAutoSet(d || null);
-    load();
+    // Blurt's own "delete videos automatically" (organized takes only) is gone from this page: this one covers them
+    const old = s.config?.record?.delete_videos_after_days;
+    if (old) save({ record: { ...(s.config.record ?? {}), delete_videos_after_days: null } }).catch(() => {});
+    await run(async () => {
+      const r = await storageApi.setAuto(d);
+      return r.count ? trashed(P('recordings', r.count), r.bytes) : d ? S('settings.storage.auto_set', d) : S('settings.storage.auto_off');
+    });
   };
 
-  const recBytes = bytesOf(scan?.folders ?? []);
-  const sessions = (scan?.folders ?? []).reduce((a, f) => a + f.sessions, 0);
-  // models: the scripts say which folder is which model and what uses it
-  const named = (p: string, folder: string) => {
-    const norm = (x: string) => x.replace(/\\/g, '/').toLowerCase();
-    const a = asr?.find((m) => typeof m.path === 'string' && norm(String(m.path)) === norm(p));
-    const d = dict?.models.find((m) => m.id === folder || norm(p).endsWith(`/${m.id}`));
-    return { name: (a?.name as string | undefined) ?? d?.name ?? (folder === 'silero_vad.onnx' ? null : S('settings.storage.model.unknown')), purposes: (a?.purposes as string[] | undefined) ?? [], dictation: !!d && dict?.selected === d.id };
+  const recActions = (): MenuEntry[] => {
+    if (!rec) return [];
+    const by = (k: string) => rec.older[k] ?? { count: 0, bytes: 0 };
+    const item = (k: string, label: string, days: number | null): MenuEntry => ({
+      label,
+      keys: by(k).count ? size(by(k).bytes) : undefined,
+      disabled: busy || !by(k).count,
+      run: () => run(async () => {
+        const r = await storageApi.trashRecordings(days, 'meetings');
+        return trashed(r.count ? P('recordings', r.count) : '', r.bytes);
+      }),
+    });
+    return [
+      ...(rec.folder ? [{ label: S('settings.storage.show'), run: () => show(rec.folder) } as MenuEntry, { kind: 'separator' } as MenuEntry] : []),
+      { kind: 'header', label: S('settings.storage.trash') },
+      ...AGES.map((d) => item(String(d), S('settings.storage.older', d), d)),
+      item('all', S('settings.storage.all'), null),
+    ];
   };
-  const models = (scan?.models ?? []).filter((m) => m.folder !== 'silero_vad.onnx').sort((a, b) => b.bytes - a.bytes);
-  const files = scan?.files ?? [];
-  const caches = files.filter((f) => f.key === 'index' || f.key === 'build');
-  const others = files.filter((f) => f.key !== 'index' && f.key !== 'build');
-  const total = recBytes + bytesOf(scan?.models ?? []) + bytesOf(files);
+
+  const lead: ReactNode = failed ? (
+    <span className="sto-warn"><Icon name="warning" size={12} />{S('settings.storage.offline')}</span>
+  ) : info ? (
+    <span className="st-lead-split">
+      <span className="st-num">{S('settings.storage.uses', size(info.total))}</span>
+      {typeof info.free === 'number' && <span className="st-dim st-num">{S('settings.storage.available', size(info.free))}</span>}
+    </span>
+  ) : (
+    S('settings.storage.counting')
+  );
+  const acc = (b: number | undefined) => (info ? <span className="st-size">{size(b ?? 0)}</span> : undefined);
 
   return (
-    <Page id="storage" lead={scan ? (
-      <span className="st-lead-split">
-        <span>{S('settings.storage.uses', size(total))}</span>
-        {typeof scan.available === 'number' && <span className="st-dim st-num">{S('settings.storage.available', size(scan.available))}</span>}
-      </span>
-    ) : S('settings.storage.counting')}>
-      <Group id="storage.recordings" accessory={scan ? <span className="st-size">{size(recBytes)}</span> : undefined}>
-        {scan && (
-          <StorageRow icon="record" title={S('settings.privacy.recordings_screenshots')} bytes={recBytes}
-            detail={sessions ? P('recordings', sessions) + (scan.folders.length > 1 ? ` · ${P('folders', scan.folders.length)}` : '') : S('settings.storage.none_yet')}
-            tip={scan.folders.map((f) => f.path).join('\n')}
-            actions={scan.folders.map((f) => ({ label: scan.folders.length > 1 ? `${S('win.storage.show')} · ${f.path.split(/[\\/]/).slice(-3, -1).join('/')}` : S('win.storage.show'), run: () => reveal(f.path) }))} />
-        )}
-        {scan && scan.videos.length > 0 && (
-          <StorageRow icon="film" title={S('settings.storage.videos')} bytes={bytesOf(scan.videos)} tip={S('settings.storage.videos.footer')}
-            detail={S('settings.storage.videos.detail', P('videos', scan.videos.length))}
-            actions={[
-              ...CHOICES.map((d, i) => ({ label: `${S('settings.privacy.move_trash')} · ${S('settings.storage.videos.older', d)}${older(d).length ? ` (${size(bytesOf(older(d)))})` : ''}`, disabled: !older(d).length, run: () => trashVideos(d), sep: i === 0 && false })),
-              { label: `${S('settings.privacy.move_trash')} · ${S('settings.storage.videos.all')} (${size(bytesOf(scan.videos))})`, run: () => trashVideos(null), sep: true },
-            ]} />
-        )}
-        <Row id="storage.auto_delete" icon="history" detail={ask ? `${S('settings.storage.videos.auto_confirm')} ${P('videos', older(ask).length)} (${size(bytesOf(older(ask)))}). ${S('settings.storage.videos.confirm')}` : undefined} warn={!!ask}>
-          {ask ? (
-            <>
-              <button onClick={() => setAsk(null)}>{S('action.cancel')}</button>
-              <button className="danger" onClick={() => setAuto(ask)}>{S('settings.storage.videos.auto_on')}</button>
-            </>
-          ) : (
-            <Popup label={S('settings.storage.videos.auto')} value={scan?.auto_days ?? 0} dividers={[1]}
-              choices={[[0, S('settings.storage.videos.never')], ...CHOICES.map((d) => [d, S('settings.storage.videos.after', d)] as [number, string])]} onChange={setAuto} />
-          )}
-        </Row>
-      </Group>
+    <Page id="storage" lead={lead}>
+      <Split info={info} />
+      {info && rec && (
+        <>
+          <Group id="storage.recordings" accessory={acc(info.split.recordings)}>
+            <Item icon="video" title={S('settings.storage.rec.meetings')} bytes={rec.bytes} onMenu={menu.open}
+              detail={rec.meetings ? P('meetings', rec.meetings) : S('settings.storage.none')} actions={recActions()} />
+            {shown.current?.others && (
+              <Item icon="film" title={S('settings.storage.rec.others')} bytes={rec.others.bytes} onMenu={menu.open}
+                detail={rec.others.count ? P('clips', rec.others.count) : S('settings.storage.none')}
+                actions={[
+                  ...(rec.folder ? [{ label: S('settings.storage.show'), run: () => show(rec.folder) } as MenuEntry, { kind: 'separator' } as MenuEntry] : []),
+                  {
+                    label: S('settings.storage.trash'),
+                    keys: rec.others.ready.count ? size(rec.others.ready.bytes) : undefined,
+                    disabled: busy || !rec.others.ready.count,
+                    run: () => run(async () => {
+                      const r = await storageApi.trashRecordings(null, 'others');
+                      return trashed(r.count ? P('recordings', r.count) : '', r.bytes);
+                    }),
+                  },
+                ]} />
+            )}
+            <Row id="storage.auto_delete" icon="history" warn={!!ask}
+              detail={ask ? S('settings.storage.auto.confirm', P('recordings', preview(ask).count), size(preview(ask).bytes)) : undefined}>
+              {ask ? (
+                <span className="sto-confirm">
+                  <button type="button" onClick={() => setAsk(null)}>{S('action.cancel')}</button>
+                  <button type="button" className="danger" disabled={busy} onClick={() => setAuto(ask)}>{S('settings.storage.turn_on')}</button>
+                </span>
+              ) : (
+                <Popup label={S('settings.storage.rec.auto')} value={rec.auto_days} dividers={[1]} disabled={busy}
+                  choices={[[0, S('settings.storage.never')], ...AGES.map((d) => [d, S('settings.storage.after', d)] as [number, string])]} onChange={setAuto} />
+              )}
+            </Row>
+          </Group>
 
-      <Group id="storage.models" footer={S('settings.storage.model.footer')} accessory={scan ? <span className="st-size">{size(bytesOf(scan.models))}</span> : undefined}>
-        {scan && !models.length && <StorageRow icon="cpu" title={S('settings.storage.model.none')} bytes={0} />}
-        {models.map((m) => {
-          const n = named(m.path, m.folder);
-          const jobs = [...n.purposes.filter((p) => p !== 'live').map((p) => S(`speech.purpose.${p}`)), ...(n.dictation ? [S('speech.purpose.dictation')] : [])];
-          const line = jobs.length ? S('settings.storage.model.used_for', i18n().formatList(jobs.map((j) => j.toLocaleLowerCase(i18n().locale)))) : asr ? S('settings.storage.model.not_used') : undefined;
-          return (
-            <StorageRow key={m.path} icon="waveform" title={n.name ?? m.folder} bytes={m.bytes} detail={line} tip={m.path}
-              actions={[{ label: S('win.storage.show'), run: () => reveal(m.path) }, ...(!jobs.length && asr && n.name === S('settings.storage.model.unknown') ? [{ label: S('settings.privacy.move_trash'), run: () => trash([m.path], n.name ?? m.folder), sep: true }] : [])]} />
-          );
-        })}
-      </Group>
+          <Group id="storage.models" accessory={acc(info.split.models)}>
+            {used.map((m) => (
+              <Item key={m.role + m.paths[0]} icon={ROLE_ICON[m.role]} title={S(`settings.storage.model.${m.role}`)} bytes={m.bytes} onMenu={menu.open}
+                detail={m.role === 'addr' && m.langs.length ? i18n().formatList(m.langs.map((l) => S(`settings.storage.lang.${l === 'en' ? 'en' : 'zh'}`))) : m.name}
+                actions={[{ label: S('settings.storage.show'), run: () => show(m.paths[0], false) }]} />
+            ))}
+            {shown.current?.unused && (
+              <Item icon="archive" title={S('settings.storage.model.unused')} bytes={unusedBytes} onMenu={menu.open}
+                detail={unused.length ? unused.map((u) => u.name).join(i18n().lang === 'zh-Hans' ? '、' : ', ') : S('settings.storage.none')}
+                actions={unused.length ? [
+                  { label: S('settings.storage.show'), run: () => show(unused[0].path, false) },
+                  { kind: 'separator' },
+                  {
+                    label: S('settings.storage.trash'),
+                    keys: size(unusedBytes),
+                    disabled: busy || asr === null,
+                    run: () => run(async () => {
+                      const r = await storageApi.trashModels(unused.map((u) => u.path));
+                      return trashed(r.count ? P('models', r.count) : '', r.bytes);
+                    }),
+                  },
+                ] : []} />
+            )}
+          </Group>
 
-      <Group id="storage.files" accessory={scan ? <span className="st-size">{size(bytesOf(files))}</span> : undefined}>
-        {others.slice(0, 1).map((f) => fileRow(f))}
-        {caches.length > 0 && (
-          <StorageRow icon="sync" title={S('settings.storage.caches')} detail={S('settings.storage.rebuilt')} bytes={bytesOf(caches)} tip={caches.map((c) => c.path).join('\n')}
-            actions={[
-              { label: S('win.storage.show'), run: () => reveal(caches[caches.length - 1].path) },
-              ...caches.filter((c) => c.removable).map((c) => ({ label: S('settings.privacy.move_trash'), run: () => trash([c.path], S('settings.storage.caches')), sep: true })),
-            ]} />
-        )}
-        {others.slice(1).map((f) => fileRow(f))}
-        {/* paths, not sizes: each its own glyph, its action behind the same ⋯ as every other row (sizes are the only
-            text at the trailing edge) */}
-        {([['win.storage.config', s.config_path, 'sliders'], ['win.storage.scripts', status.scripts, 'code'], ['win.storage.uv', status.uv, 'terminal']] as [string, string | null | undefined, IconName][]).map(([k, p, ic]) => (
-          <Line key={k} icon={ic} title={S(k)} detail={p ?? S('win.storage.missing')} warn={!p}>
-            <Menu actions={p ? [{ label: S('win.storage.show'), run: () => reveal(p) }] : []} label={S(k)} />
-          </Line>
-        ))}
-        {status.os === 'linux' && (
-          <Line title={S('win.storage.dmabuf')} detail={S('win.storage.restart')}>
-            <Switch on={!!cfg.app?.disable_dmabuf} label={S('win.storage.dmabuf')} set={(v) => save({ app: { ...(cfg.app ?? {}), disable_dmabuf: v } })} />
-          </Line>
-        )}
-      </Group>
+          <Group id="storage.records" accessory={acc(info.split.records)}>
+            <Item icon="list-box" title={S('settings.storage.meetings')} bytes={info.records.meetings.bytes} onMenu={menu.open}
+              detail={info.records.meetings.count ? P('meeting_records', info.records.meetings.count) : S('settings.storage.none')}
+              actions={[{ label: S('settings.storage.show'), run: () => show(info.records.meetings.path) }]} />
+            <Item icon="document" title={S('settings.storage.papers')} bytes={info.records.papers.bytes} onMenu={menu.open}
+              detail={info.records.papers.count ? P('papers', info.records.papers.count) : S('settings.storage.none')}
+              actions={[{ label: S('settings.storage.show'), run: () => show(info.records.papers.path) }]} />
+          </Group>
+
+          <Group id="storage.cleanup" accessory={acc(info.caches.bytes + info.logs.bytes)}>
+            <Item icon="sync" title={S('settings.storage.caches')} detail={S('settings.storage.caches.detail')} bytes={info.caches.bytes} onMenu={menu.open}
+              actions={[
+                { label: S('settings.storage.show'), run: () => show(info.caches.path) },
+                { kind: 'separator' },
+                {
+                  label: S('settings.storage.clear'),
+                  keys: info.caches.clearable ? size(info.caches.clearable) : undefined,
+                  disabled: busy || !info.caches.clearable,
+                  run: () => run(async () => S('settings.storage.cleared', size((await storageApi.clearCaches()).bytes))),
+                },
+              ]} />
+            <Item icon="lines" title={S('settings.storage.logs')} detail={S('settings.storage.logs.detail')} bytes={info.logs.bytes} onMenu={menu.open}
+              actions={[{ label: S('settings.storage.show'), run: () => show(info.logs.path) }]} />
+          </Group>
+        </>
+      )}
+      {menu.node}
     </Page>
   );
-
-  function fileRow(f: StorageScan['files'][number]) {
-    const meta = FILES[f.key] ?? { title: f.key, detail: '', icon: 'document' as IconName };
-    return (
-      <StorageRow key={f.key} icon={meta.icon} title={S(meta.title)} detail={meta.detail ? S(meta.detail) : undefined} bytes={f.bytes} tip={f.path}
-        actions={[{ label: S('win.storage.show'), run: () => reveal(f.path) }, ...(f.removable ? [{ label: S('settings.privacy.move_trash'), run: () => trash([f.path], S(meta.title)), sep: true }] : [])]} />
-    );
-  }
 }

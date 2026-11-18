@@ -71,7 +71,9 @@ class Paper:
             self.sections.append(Section(lvl, title, start, end, "\n".join(self.lines[start:end])))
 
     def outline(self) -> str:
-        return "\n".join(("  " * (s.level - 1)) + s.title for s in self.sections) or "（还没有论文镜像）"
+        if not self.sections:
+            return "（这篇论文没有标题）" if self.lines else "（还没有论文）"
+        return "\n".join(("  " * (s.level - 1)) + s.title for s in self.sections)
 
     def find(self, utterance: str) -> Section | None:
         """按小节号（3.1）> 标题词命中 > 上一次的小节。"""

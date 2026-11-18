@@ -338,3 +338,8 @@ body {
 .g-toast {
   overflow-wrap: anywhere;
 }
+
+/* the light theme: "not started" reads at more than 4.5:1 on the pill's grey (2026-11-18 UI audit) */
+:root[data-theme="light"] .g-pill.is-wait {
+  color: #6f4704;
+}

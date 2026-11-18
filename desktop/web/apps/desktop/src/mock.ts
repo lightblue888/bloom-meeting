@@ -38,10 +38,12 @@ function mockDownload(id: string) {
     if (!mdl) return;
     mdl.done = Math.min(mdl.total, mdl.done + mdl.total / 12);
     if (mdl.done >= mdl.total) {
+      // the state cleared before the event, as models.rs does: a list read on "done" must not see it still running
+      const id = mdl.id;
       clearInterval(mdl.timer);
-      modelsIn.add(mdl.id);
-      emit('model-download', { id: mdl.id, state: 'done', done_mb: 0, total_mb: 0 });
+      modelsIn.add(id);
       mdl = null;
+      emit('model-download', { id, state: 'done', done_mb: 0, total_mb: 0 });
     } else emit('model-download', { id: mdl.id, state: 'running', done_mb: mdl.done, total_mb: mdl.total });
   }, 400) };
 }

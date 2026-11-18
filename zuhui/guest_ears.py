@@ -38,13 +38,13 @@ import json
 import logging
 import os
 import queue
-import shutil
 import subprocess
 import threading
 import time
 from collections import deque
 from pathlib import Path
 
+from . import components
 from .config import STATE
 
 log = logging.getLogger(__name__)
@@ -53,7 +53,7 @@ SR = 16000
 FRAME = 512                         # Silero 一帧 32 毫秒
 FRAME_S = FRAME / SR
 HERE = Path(__file__).resolve().parent
-UV_WITH = ["--with", "sherpa-onnx==1.13.8", "--with", "numpy==2.3.4"]
+UV_WITH = components.UV_WITH
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 _BELOW_NORMAL = 0x00004000 if os.name == "nt" else 0
 
@@ -135,6 +135,10 @@ class AsrWorker:
         self._busy: tuple | None = None             # (id, cb, samples, 送出去的时刻) 正在转的
         self._dropped: set[int] = set()
         self._n = 0
+        self._offline = True                        # uv 先只用缓存起（不碰网）；起不来再联网起一次（_read 末尾）
+
+    def _cmd(self, job: Path) -> list[str]:
+        return [*components.uv_run(self._offline), "python", "-I", "-X", "utf8", str(HERE / "guest_asr_worker.py"), str(job)]
 
     def backlog_s(self) -> float:
         """排着的 + 正在转的，按最近的速度估还要转多少秒。"""
@@ -154,9 +158,7 @@ class AsrWorker:
         if self.lite_hotwords is not None and self.lite_hotwords != self.hotwords:
             jd["hotwords_lite"] = self.lite_hotwords
         job.write_text(json.dumps(jd, ensure_ascii=False), encoding="utf-8")
-        uv = shutil.which("uv") or "uv"
-        cmd = [uv, "run", "--offline", "--no-project", "--quiet", *UV_WITH, "python", "-I", "-X", "utf8",
-               str(HERE / "guest_asr_worker.py"), str(job)]
+        cmd = self._cmd(job)
         self._t0 = time.time()
         try:
             self._proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -244,12 +246,14 @@ class AsrWorker:
 
     def _read(self) -> None:
         p = self._proc
+        heard = False
         try:
             for raw in p.stdout:
                 try:
                     r = json.loads(raw)
                 except ValueError:
                     continue
+                heard = True
                 if "ready" in r:
                     if not r.get("ready"):
                         self.error = f"转写模型没加载起来：{r.get('error')}"
@@ -278,6 +282,12 @@ class AsrWorker:
                 self._pump()
         except Exception as e:
             self.error = f"读转写结果出错：{e!r}"
+        if self._proc is p and not heard and self._offline and self.error is None:
+            # 一句话没说就退了：多半是 uv 缓存里没有 sherpa-onnx（新装的机器、缓存清过），联网再起一次；排着的段留着
+            self._offline = False
+            log.warning("访客转写：只用缓存起不来，联网再起一次（见 %s）", STATE / "tmp" / "guest_asr" / "worker.log")
+            self.start()
+            return
         if self._proc is p and self.error is None:
             self.error = "转写进程退出了"
         with self._lock:                            # 没转完的都算失败（文字为 None）

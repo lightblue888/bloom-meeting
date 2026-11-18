@@ -5,7 +5,7 @@ description = "Bloom: an AI assistant for research group meetings that turns spo
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.14"
-# The meeting backend (python -m zuhui serve). Heavy or machine-specific parts are extras:
+# The meeting backend (python -m zuhui serve). Optional parts are extras (install.ps1 installs both):
 #   relay  : invite links / people joining from a browser (needs your own LiveKit relay, see relay/README.md)
 #   voice  : edge-tts as the online voice (default is the offline Windows voice)
 dependencies = [
@@ -16,6 +16,7 @@ dependencies = [
   "pillow>=10.0",
   "pymupdf>=1.24",
   "lxml>=5.0",
+  "pypandoc-binary>=1.17",  # a pandoc of its own (Word import and write-back), so none has to be installed
 ]
 
 [project.optional-dependencies]

@@ -8,6 +8,12 @@ export const CLAUDE_COLOR = '#e3906f';
  * Claude's orange (the guest page's PALETTE) */
 const PALETTE = ['#4ade80', '#facc15', '#f472b6', '#22d3ee', '#c084fc', '#f87171', '#2dd4bf', '#a3e635', '#e879f9', '#fbbf24'];
 
+/** A name written in its person's colour: the colours are picked to read on the dark theme; the light theme mixes them
+ *  with black (`--name-mix`, meeting.css) so a name keeps at least 3:1 against the light greys. Use it for `color:`
+ *  wherever a name is drawn in its person's colour (the flower itself keeps the colour as picked). */
+export const nameColor = (c: string | null | undefined): string | undefined =>
+  c ? `color-mix(in srgb, ${c} var(--name-mix, 100%), #000)` : undefined;
+
 const isHost = (p: Participant) => !!p.you || p.rank === 'host';
 const isClaude = (p: Participant) => p.id === 'claude';
 

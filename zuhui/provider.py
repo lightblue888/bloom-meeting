@@ -13,15 +13,16 @@ from .config import STATE
 
 PROVIDER_FILE = STATE / "provider.json"
 
-# 各家官方 Claude Code 接入页上的地址和型号（2026-11 查的；型号常换，界面上可以改）
+# 各家官方 Anthropic 兼容接口的地址和型号（2026-11 查的；型号常换，界面上可以改）。型号写接口认的原名，
+# 不带 Claude Code 自己的 "[1m]" 写法（设置页上直接显示这些）
 PRESETS = {
     # ai：没起名字时会上那位 AI 默认叫什么（也是叫它的名字）
     "deepseek": {"label": "DeepSeek", "ai": "DeepSeek", "base_url": "https://api.deepseek.com/anthropic",
-                 "fast": "deepseek-flash", "main": "deepseek-flash[1m]"},
+                 "fast": "deepseek-flash", "main": "deepseek-flash"},
     "kimi": {"label": "Kimi", "ai": "Kimi", "base_url": "https://api.moonshot.cn/anthropic",
-             "fast": "kimi-k3", "main": "kimi-k3[1m]"},
+             "fast": "kimi-k3", "main": "kimi-k3"},
     "glm": {"label": "智谱 GLM", "ai": "GLM", "base_url": "https://open.bigmodel.cn/api/anthropic",
-            "fast": "glm-5.3-flash", "main": "glm-5.3[1m]"},
+            "fast": "glm-5.3-flash", "main": "glm-5.3"},
     "qwen": {"label": "通义千问", "ai": "千问", "base_url": "https://dashscope.aliyuncs.com/apps/anthropic",
              "fast": "qwen3.6-flash", "main": "qwen3.7-max"},
     "anthropic": {"label": "Anthropic API", "ai": "Claude", "base_url": "https://api.anthropic.com",

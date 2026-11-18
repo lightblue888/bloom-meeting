@@ -1614,15 +1614,9 @@ def _deep_link(url: str) -> bool:
 
 
 def _tts_name() -> str:
-    """语音合成用的是哪个引擎（~/.zuhui/voice.json 的 engine）：状态面板上显示。"""
-    try:
-        v = json.loads((STATE / "voice.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        v = {}
-    if str(v.get("engine") or "").lower() == "gptsovits":
-        ver = str((v.get("gsv") or {}).get("version") or "v2ProPlus")
-        return f"GPT-SoVITS {ver}"
-    return "IndexTTS2"
+    """语音合成：会上实际用的（onboard.tts_label：设置 → 语音 选的 + 这台电脑有的），状态面板上显示。"""
+    from .onboard import tts_label
+    return tts_label()
 
 
 # ---------- 回顾：录屏 + 逐字稿对时间 ----------
@@ -3027,11 +3021,41 @@ class Viewer:
             from .config import current_paper
             cur = current_paper() or {}
             name = cur.get("name") if Path(str(cur.get("path") or "")) == self.mirror else None
+            words, outline = self._paper_outline(st)
             return {"path": str(self.mirror), "name": name or self.mirror.stem, "exists": True, "bytes": st.st_size,
                     "modified": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st.st_mtime)),
-                    "kind": "latex" if self.mirror.suffix.lower() == ".tex" else "markdown"}
+                    "kind": "latex" if self.mirror.suffix.lower() == ".tex" else "markdown",
+                    "words": words, "outline": outline}
         except OSError:
             return {"path": str(self.mirror), "name": self.mirror.stem, "exists": False}
+
+    _outline_cache: tuple = (None, (0, []))
+
+    def _paper_outline(self, st) -> tuple[int, list[str]]:
+        """论文大概多少字（中文按字、英文按词）和一二级标题（大厅里看是不是这篇、哪一版）。按修改时间缓存。"""
+        key = (str(self.mirror), st.st_mtime_ns, st.st_size)
+        if self._outline_cache[0] == key:
+            return self._outline_cache[1]
+        words, heads = 0, []
+        try:
+            if st.st_size < 8_000_000:
+                txt = self.mirror.read_text(encoding="utf-8", errors="replace")
+                body = re.sub(r"\\[A-Za-z]+\*?", " ", txt) if self.mirror.suffix.lower() == ".tex" else txt
+                words = len(re.findall(r"[\u4e00-\u9fff]", body)) + len(re.findall(r"[A-Za-z]+(?:'[a-z]+)?", body))
+                for line in txt.splitlines():
+                    m = re.match(r"^#{1,2}\s+(.+?)\s*#*\s*$", line) or re.match(r"^\s*\\(?:chapter|section)\*?\{(.+?)\}", line)
+                    if not m:
+                        continue
+                    h = re.sub(r"[*_`$]|\\[A-Za-z]+\{([^}]*)\}", r"\1", m.group(1)).strip()
+                    if h:
+                        heads.append(h[:60])
+                    if len(heads) >= 12:
+                        break
+        except OSError:
+            pass
+        out = (int(words), heads)
+        self._outline_cache = (key, out)
+        return out
 
     _ready_cache = (0.0, None)
 
@@ -3053,17 +3077,23 @@ class Viewer:
                 r["fast"] = mode == "api"           # API：设好了就算接上（通不通看设置里的"测试连接"）；没设：没接上
         except Exception:
             pass
-        try:
-            port = self.cfg["mouth"].get("tts_port", 47321)
-            try:
-                port = json.loads((STATE / "tts_server.json").read_text(encoding="utf-8")).get("port") or port
+        from .onboard import tts_engine
+        eng = tts_engine()
+        r["tts_off"] = eng is None                              # 设置 → 语音 选了不出声
+        if eng != "clone":
+            r["tts"] = eng is not None                          # 微软在线 / Windows 自带：不用等服务加载
+        else:
+            try:                                                # 克隆音色：本机服务加载好了没有
+                port = self.cfg["mouth"].get("tts_port", 47321)
+                try:
+                    port = json.loads((STATE / "tts_server.json").read_text(encoding="utf-8")).get("port") or port
+                except Exception:
+                    pass
+                op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                with op.open(f"http://127.0.0.1:{port}/health", timeout=1.5) as h:
+                    r["tts"] = bool(json.loads(h.read().decode("utf-8")).get("loaded"))
             except Exception:
                 pass
-            op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-            with op.open(f"http://127.0.0.1:{port}/health", timeout=1.5) as h:
-                r["tts"] = bool(json.loads(h.read().decode("utf-8")).get("loaded"))
-        except Exception:
-            pass
         try:
             import glob as _g
             jobs = Path(os.environ.get("BLURT_HOME") or Path.home() / ".blurt") / "jobs"
@@ -3090,11 +3120,16 @@ class Viewer:
         hcfg = self.cfg.get("hands") or {}
         from . import provider
         from .llm_api import model as api_model
-        pv = provider.mode() == "api"                             # 用 API：显示那家的型号
-        r["models"] = {"fast": api_model("fast") if pv else _pretty_model(self.cfg["fast"].get("model")),
-                       "hands": (api_model("main") if pv else _pretty_model(hcfg.get("model", "claude-opus-5-5"))) + {"low": " · Low", "medium": " · Medium", "high": " · High",
-                                                                          "xhigh": " · Extra", "max": " · Max"}.get(str(hcfg.get("effort", "xhigh")), ""),
+        mode = provider.mode()
+        pv = mode == "api"                                        # 用 API：显示那家的型号
+        from .config import pretty_model
+        effort = "" if mode != "claude" else {"low": " · Low", "medium": " · Medium", "high": " · High", "xhigh": " · Extra",
+                                "max": " · Max"}.get(str(hcfg.get("effort", "xhigh")), "")    # 思考强度只有 Claude 有
+        r["models"] = {"fast": pretty_model(api_model("fast")) if pv else _pretty_model(self.cfg["fast"].get("model")),
+                       "hands": (pretty_model(api_model("main")) if pv else _pretty_model(hcfg.get("model", "claude-opus-5-5"))) + effort,
                        "tts": _tts_name(), "asr": asr}
+        if mode not in ("api", "claude"):                       # 还没设模型来源：没有在用的型号（不说成 Claude）
+            r["models"]["fast"] = r["models"]["hands"] = "—"
         try:                                                    # 接话分类模型：没开 None；加载中 / 就绪（在哪块设备上）/ 加载失败
             from . import addr as _addr
             m = _addr._insts.get(_addr.model_path(self.cfg))
@@ -3698,6 +3733,17 @@ class Viewer:
                     self._json(provider.public())
                 elif p == "/api/profile":          # 设置 → 你在会上：昵称、头像
                     self._json(_profile(viewer))
+                elif p == "/api/setup":            # 首次引导：走没走过；基础组件在不在；会上实际先用哪种声音
+                    from . import onboard, voice_prefs
+                    v = voice_prefs.public(viewer.cfg)
+                    self._json({**onboard.state(), "components": onboard.components(),
+                                "voice_engine": onboard.voice_engine(v["voice"], v["has_clone"], v["has_edge"])})
+                elif p == "/api/voice":            # 设置 → 语音：AI 的声音、能选的声音、专有名词
+                    from . import voice_prefs
+                    self._json(voice_prefs.public(viewer.cfg))
+                elif p == "/api/storage":          # 设置 → 存储：占了多少、各是什么、能清什么（zuhui/storage.py）
+                    from . import storage
+                    self._json(storage.scan(viewer))
                 elif p == "/api/mic/stream":       # 静音没有、谁在出声：会议页上的静音标记和头像外的亮圈
                     self._mic_stream()
                 elif p == "/api/paper":
@@ -3891,6 +3937,42 @@ class Viewer:
                         return self._json({"ok": True, "ms": int((time.time() - t0) * 1000)})
                     except Exception as e:
                         return self._json({"ok": False, "error": str(e)[-160:]})
+                if p == "/api/setup":          # 引导走完 {"done": true} / 跳过 {"skipped": true} / 再走一遍 {"reset": true}
+                    from . import onboard
+                    try:
+                        return self._json(onboard.mark(done=bool(body["done"]) if "done" in body else None,
+                                                       skipped=bool(body["skipped"]) if "skipped" in body else None,
+                                                       reset=bool(body.get("reset"))))
+                    except OSError:
+                        return self._json({"error": "failed"}, 500)
+                if p == "/api/voice":          # 换声音 {voice, edge_voice, sapi_voice}、专有名词 {hotwords: 列表或一行一个} → 现在的
+                    from . import voice_prefs
+                    try:
+                        voice_prefs.save(body if isinstance(body, dict) else {})
+                    except ValueError as e:
+                        return self._json({"error": str(e)}, 400)
+                    except OSError:
+                        return self._json({"error": "failed"}, 500)
+                    voice_prefs.apply(viewer.cfg)              # 后端共用的这份配置马上换上（专有名词下一场转写生效）
+                    return self._json(voice_prefs.public(viewer.cfg))
+                if p == "/api/voice/test":     # 试听：按现在选的声音念一句 → {ok, engine} 或 {ok: false, error: off|busy|live|failed|not_ready}
+                    from . import voice_prefs
+                    if voice_prefs.voice() == "off":
+                        return self._json({"ok": False, "error": "off"})
+                    fn = getattr(viewer, "voice_test", None)
+                    if not callable(fn):
+                        return self._json({"ok": False, "error": "not_ready"})
+                    try:
+                        eng = fn(str(body.get("text") or "").strip()[:120])
+                    except RuntimeError as e:
+                        return self._json({"ok": False, "error": str(e) if str(e) in ("busy", "live") else "failed"})
+                    except Exception:
+                        return self._json({"ok": False, "error": "failed"})
+                    return self._json({"ok": True, "engine": eng} if eng else {"ok": False, "error": "failed"})
+                if p.startswith("/api/storage/"):  # 设置 → 存储：清录屏 / 自动删除 / 不用的模型 / 临时文件（zuhui/storage.py）
+                    from . import storage
+                    out, code = storage.post(viewer, p, body)
+                    return self._json(out, code)
                 if p == "/api/profile/avatar":  # 设置里换头像 {"data": data: 地址或 base64}，移除 {"remove": true}
                     from . import host_profile
                     try:

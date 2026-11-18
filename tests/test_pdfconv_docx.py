@@ -266,16 +266,18 @@ class ConvertVersion(unittest.TestCase):
         self.dst = self.out / "申报书.md"
         self.dst.write_text("旧版转出来的\n", encoding="utf-8")
         self.calls = 0
-        self._orig = (pdfconv.convert_docx, papers.shutil.which)
+        from zuhui import components
+        self.components = components
+        self._orig = (pdfconv.convert_docx, components.pandoc)
 
         def fake_convert(src, stage, pandoc):
             self.calls += 1
             return "# 新版转出来的\n", {"engine": "pandoc", "tables": 0}
         pdfconv.convert_docx = fake_convert
-        papers.shutil.which = lambda name: "pandoc"
+        components.pandoc = lambda: "pandoc"                     # 没装 pandoc 的机器上也能测
 
     def tearDown(self):
-        pdfconv.convert_docx, papers.shutil.which = self._orig
+        pdfconv.convert_docx, self.components.pandoc = self._orig
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def meta(self, **kw):

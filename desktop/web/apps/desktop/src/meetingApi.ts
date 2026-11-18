@@ -211,6 +211,8 @@ export interface Ready {
   paper: boolean;
   fast: boolean;
   tts: boolean;
+  /** Settings → Speech: the AI stays silent (text only) */
+  tts_off?: boolean;
   blurt: boolean;
   recording: boolean;
   hands?: string;

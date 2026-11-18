@@ -117,6 +117,8 @@ def main(argv=None):
         took = netenv.strip_proxy()          # 会议连接不走本机代理（见 netenv.py）；claude / edge-tts 子进程再加回去
         if took:
             print(f"会议连接不走代理：已从后端环境拿掉 {', '.join(sorted(took))}（改稿的 claude、备用嗓子照样走代理）", flush=True)
+        from . import components
+        components.extend_path()             # ~/.blurt/bin、~/.local/bin 接到 PATH 后面：桌面端给的 PATH 里常常没有刚装的 uv、ffmpeg
         from .app import Meeting
         m = Meeting(dry=a.dry, mute=a.mute)
         m.run(replay_session=getattr(a, "session", None), speed=getattr(a, "speed", 1.0),

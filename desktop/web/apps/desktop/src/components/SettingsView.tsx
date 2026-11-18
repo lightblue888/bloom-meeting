@@ -14,6 +14,7 @@ import { meetingApi, avatarUrl, PROFILE_EVENT, type Profile, type Provider, type
 import { isImeKey } from '../ime';
 import { Flower, HOST_COLOR } from './Flower';
 import { ModelsPane } from './ModelsSettings';
+import { setupApi } from '../setupApi';
 import { StoragePane } from './StorageSettings';
 
 // a tray "nav" to a pane can arrive before this page is mounted: kept until it is
@@ -334,6 +335,9 @@ function GeneralPane({ status, cfg, save, onLang }: {
               onLang(v);
             }} />
         </Row>
+        <Row id="general.guide">
+          <button onClick={() => void setupApi.mark({ reset: true }).catch(() => {})} data-testid="guide-again">{S('settings.guide.again')}</button>
+        </Row>
       </Group>
 
       {/* About, as one quiet line: the version */}
@@ -372,8 +376,11 @@ const profileError = (e: unknown) => {
 };
 
 /** Profile: your photo, your name, and the AI's name in meetings (empty: it goes by the model). They live in the Bloom
- *  backend (not this app's config), so they need it running; while it isn't, the group says so and waits. */
-function ProfileGroup() {
+ *  backend (not this app's config), so they need it running; while it isn't, the group says so and waits. The first-run
+ *  guide shows your part and the AI's part on two steps (`part`), without the heading (`title` ''). */
+export function ProfileGroup({ part = 'all', title }: { part?: 'all' | 'me' | 'ai'; title?: string } = {}) {
+  const me = part !== 'ai';
+  const them = part !== 'me';
   const [p, setP] = useState<Profile | null>(null);
   const [down, setDown] = useState(false);
   const [name, setName] = useState('');
@@ -502,7 +509,8 @@ function ProfileGroup() {
     }
   };
   return (
-    <Group id="general.profile" footer={down ? S('settings.profile.offline') : undefined}>
+    <Group id="general.profile" title={title} footer={down ? S('settings.profile.offline') : undefined}>
+      {me && <>
       <Row id="general.avatar" detail={picErr ?? undefined} warn={!!picErr}>
         <span className="st-avatar" data-testid="profile-avatar">
           {p?.avatar ? <img src={avatarUrl(p.avatar)} alt="" draggable={false} /> : <Flower color={p?.color || HOST_COLOR} />}
@@ -544,6 +552,8 @@ function ProfileGroup() {
       <Row id="general.color" detail={colorErr} warn={!!colorErr}>
         {p && <Swatches value={p.color} palette={p.palette} label={S('settings.general.color')} onPick={(c) => void pickColor('color', c)} />}
       </Row>
+      </>}
+      {them && <>
       <Row id="general.ai_name" detail={aiErr ?? undefined} warn={!!aiErr}>
         <input
           className="st-name"
@@ -572,6 +582,7 @@ function ProfileGroup() {
       <Row id="general.ai_color">
         {p && <Swatches value={p.ai_color} palette={p.palette} label={S('settings.general.ai_color')} onPick={(c) => void pickColor('ai_color', c)} />}
       </Row>
+      </>}
     </Group>
   );
 }
@@ -583,7 +594,7 @@ const PROVIDER_ERRORS = ['key', 'base_url', 'model'];
 /** Model source: Claude Code's own login, or an API key (DeepSeek, Kimi, GLM, Qwen, Anthropic, any Anthropic-compatible
  *  endpoint). Bloom runs every model call through Claude Code; an API source hands it the endpoint, the key and the
  *  provider's models. The key goes to the backend once and is never shown again, only its last four. */
-function ProviderGroup() {
+export function ProviderGroup({ title }: { title?: string } = {}) {
   const [p, setP] = useState<Provider | null>(null);
   const [down, setDown] = useState(false);
   const [kind, setKind] = useState<ProviderKind>('claude');
@@ -669,25 +680,27 @@ function ProviderGroup() {
   const endpoint = api && kind !== 'anthropic';
   const dirty = !!p && (kind !== p.kind || !!key || (endpoint && (base !== p.base_url || fast !== p.fast || main !== p.main)));
   const keyHint = p && p.kind === kind && p.key_set ? S('settings.provider.key_saved', p.key_tail) : S('settings.provider.key_placeholder');
-  const field = (v: string, set: (s: string) => void, max: number, wide?: boolean, testid?: string) => (
+  const field = (v: string, set: (s: string) => void, max: number, wide: boolean, testid: string, label: string) => (
     <input
       className={`st-name ${wide ? 'st-wide' : ''}`}
       value={v}
       maxLength={max}
       spellCheck={false}
       disabled={!p || busy}
+      aria-label={label}
+      title={v || undefined}
       data-testid={testid}
       onChange={(e) => set(e.target.value.trim())}
     />
   );
   return (
-    <Group id="general.model_source" footer={down ? S('settings.profile.offline') : undefined}>
+    <Group id="general.model_source" title={title} footer={down ? S('settings.profile.offline') : undefined}>
       <Row
         id="general.source"
         detail={p?.kind === 'unset' ? S('settings.provider.unset') : !api ? S('settings.provider.claude_detail') : kind === 'custom' ? S('settings.provider.billed_any') : S('settings.provider.billed', name(kind))}
         warn={p?.kind === 'unset'}
       >
-        <Popup label={S('settings.general.source')} value={kind} choices={SOURCES.map((k) => [k, name(k)] as [ProviderKind, string])} dividers={[4, 6]}
+        <Popup wide label={S('settings.general.source')} value={kind} choices={SOURCES.map((k) => [k, name(k)] as [ProviderKind, string])} dividers={[4, 6]}
           onChange={choose} disabled={!p || busy} />
       </Row>
       {api && (
@@ -706,10 +719,10 @@ function ProviderGroup() {
           />
         </Row>
       )}
-      {endpoint && <Row id="general.base_url">{field(base, setBase, 200, true, 'provider-url')}</Row>}
-      {endpoint && <Row id="general.fast_model">{field(fast, setFast, 80, false, 'provider-fast')}</Row>}
-      {endpoint && <Row id="general.main_model">{field(main, setMain, 80, false, 'provider-main')}</Row>}
-      <Row id="general.provider_check" detail={msg?.text ?? null} warn={!!msg?.warn}>
+      {endpoint && <Row id="general.base_url">{field(base, setBase, 200, true, 'provider-url', S('settings.general.base_url'))}</Row>}
+      {endpoint && <Row id="general.fast_model">{field(fast, setFast, 80, true, 'provider-fast', S('settings.general.fast_model'))}</Row>}
+      {endpoint && <Row id="general.main_model">{field(main, setMain, 80, true, 'provider-main', S('settings.general.main_model'))}</Row>}
+      <Row id="general.provider_check" detail={msg?.text ?? undefined} warn={!!msg?.warn}>
         {api && (
           <button className="primary" disabled={!p || busy || !dirty} onClick={() => void save()} data-testid="provider-save">
             {S('settings.provider.save')}

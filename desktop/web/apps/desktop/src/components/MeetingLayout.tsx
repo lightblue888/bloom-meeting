@@ -41,7 +41,7 @@ import {
 } from '../meetingApi';
 import { SummaryView, TaskBoard, TodoList } from './MeetingSummary';
 import { Highlight } from './Highlight';
-import { CLAUDE_COLOR, colorsById, colorsByName, Flower, HOST_COLOR, ownPhoto } from './Flower';
+import { CLAUDE_COLOR, colorsById, colorsByName, Flower, HOST_COLOR, nameColor, ownPhoto } from './Flower';
 
 export type Tab = 'diff' | 'notes' | 'todos' | 'video';
 // the transcript is where you see what Claude does (each reply's kind, the background work): wide by default
@@ -431,7 +431,15 @@ export function MeetingLayout({
           <div className="mt-meta">
             <span className={`mt-state is-${state}`}>
               <span className="mt-state-dot" />
-              {t(stateKey)}
+              {/* the three words share one box as wide as the widest: 录制中 → 已结束 never moves the date, nor 新增 after
+                  the name block (2026-11-18) */}
+              <span className="mt-state-t">
+                {(['meeting.state.live', 'meeting.state.ended', 'meeting.state.idle'] as const).map((k) => (
+                  <span key={k} className={k === stateKey ? undefined : 'is-ghost'} aria-hidden={k === stateKey ? undefined : true}>
+                    {t(k)}
+                  </span>
+                ))}
+              </span>
             </span>
             {meeting?.started && <span className="mt-meta-item">{fmtWhen(meeting.started, lang)}</span>}
             {meeting && state !== 'idle' && <span className="mt-meta-item mt-clock">{fmtDuration(duration)}</span>}
@@ -443,11 +451,9 @@ export function MeetingLayout({
           <PaperMenu papers={papers ?? []} active={activePaper ?? null} onSwitch={onSwitchPaper ?? null} onAdd={onAddPaper ?? null} />
         )}
         <People people={who} status={status ?? null} onRole={onRole} active={active} uiLang={appI18n().lang} />
-        {onRole && suggest && suggest.length > 0 && <RoleSuggest list={suggest} onRole={onRole} />}
         {invite && <InviteButton topic={title} active={active} uiLang={appI18n().lang} />}
         {actions && <div className="mt-head-acts">{actions}</div>}
       </header>
-      {notice && <div className="mt-notice">{notice}</div>}
       <div className="mt-cols" style={{ gridTemplateColumns: `minmax(0, 1fr) ${Math.max(TR_MIN, Math.min(trW, Math.round(vw * 0.42)))}px` }}>
         <section className="mt-left" aria-label={t('meeting.left.label')}>
           {left ?? (
@@ -530,6 +536,10 @@ export function MeetingLayout({
               </div>
             </>
           )}
+          {/* what comes and goes floats over the paper's column and takes no room: the reminder under the paper's
+              bar, the notice at the column's foot (2026-11-18: over the transcript they hid its header and newest line) */}
+          {onRole && suggest && suggest.length > 0 && <RoleSuggest list={suggest} onRole={onRole} />}
+          {notice && <div className="mt-notice">{notice}</div>}
         </section>
         <Transcript
           uiLang={appI18n().lang}
@@ -725,6 +735,22 @@ function PaperTools({ s, send }: { s: PaperState; send: (m: object) => void }) {
   );
 }
 
+/** One popover of the top bar at a time: opening a person's card closes 邀请, opening 邀请 closes the cards (they were
+ *  laid over each other when the pointer crossed a person while 邀请 was open). */
+const POP_EVENT = 'mt-popover';
+function useOnePopover(id: string, open: boolean, close: () => void) {
+  useEffect(() => {
+    if (open) window.dispatchEvent(new CustomEvent(POP_EVENT, { detail: id }));
+  }, [open, id]);
+  useEffect(() => {
+    const on = (e: Event) => {
+      if ((e as CustomEvent<string>).detail !== id) close();
+    };
+    window.addEventListener(POP_EVENT, on);
+    return () => window.removeEventListener(POP_EVENT, on);
+  }, [id, close]);
+}
+
 /** 邀请: a fixed link to this user's room on the relay; the popover shows it with one button that copies the link itself. */
 // uiLang: only so a change of the app's language re-renders these cached parts
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -736,6 +762,8 @@ const InviteButton = memo(function InviteButton({ topic, active, uiLang: _ui }: 
   const box = useRef<HTMLDivElement>(null);
   // a press anywhere else (the paper included), Esc, or switching pages closes it
   useDismiss(open, () => setOpen(false), box, active);
+  const closeInvite = useCallback(() => setOpen(false), []);
+  useOnePopover('invite', open, closeInvite);
   useEffect(() => {
     if (!open) return;
     let alive = true;
@@ -849,7 +877,8 @@ function partLevels(r: Ready): Record<'fast' | 'hands' | 'tts' | 'asr', { level:
   return {
     fast: { level: fastBad ? 'bad' : 'ok', text: t(fastBad ? 'meeting.status.offline' : 'meeting.status.online') },
     hands: { level: handsBad ? 'bad' : editing ? 'busy' : 'ok', text: t(handsBad ? 'meeting.status.unavailable' : editing ? 'meeting.status.editing' : 'meeting.status.ready') },
-    tts: { level: r.tts ? 'ok' : 'wait', text: t(r.tts ? 'meeting.status.ready' : 'meeting.status.loading') },
+    // silent (Settings → Speech): nothing to load; the Microsoft / Windows voices are ready at once (r.tts true)
+    tts: r.tts_off ? { level: 'ok', text: t('meeting.status.silent') } : { level: r.tts ? 'ok' : 'wait', text: t(r.tts ? 'meeting.status.ready' : 'meeting.status.loading') },
     asr: { level: !r.blurt ? 'bad' : r.recording ? 'busy' : 'ok', text: t(!r.blurt ? 'meeting.status.disconnected' : r.recording ? 'meeting.status.listening' : 'meeting.status.ready') },
   };
 }
@@ -912,6 +941,7 @@ const People = memo(function People({ people, status, onRole, active, uiLang: _u
     if (f && box.current?.contains(f)) f.blur();
   }, []);
   useDismiss(openId != null, shut, box, active);
+  useOnePopover('people', openId != null, shut);
   const dragging = useRef(false);
   dragging.current = drag != null;
   useEffect(() => {
@@ -1004,8 +1034,8 @@ const People = memo(function People({ people, status, onRole, active, uiLang: _u
     const row = (key: string, label: string, name: ReactNode, st: { level: Level; text: string }) => (
       <span key={key} className="mt-status-row" data-testid={`model-row-${key}`}>
         <span className="mt-status-hit">
-          <span className="mt-status-label">{label}</span>
-          <span className="mt-status-model">{name}</span>
+          <span className="mt-status-label" title={label}>{label}</span>
+          <span className="mt-status-model">{typeof name === 'string' ? <span className="mt-mname-t" title={name}>{name}</span> : name}</span>
         </span>
         <span className={`mt-status-state is-${st.level}`}>{st.text}</span>
       </span>
@@ -1017,13 +1047,14 @@ const People = memo(function People({ people, status, onRole, active, uiLang: _u
           onClick={() => cycle(part)}
           disabled={!!busy}
           aria-label={t('meeting.models.switch', { a: t(`meeting.models.${part}`), b: text })}
+          title={text}
           data-testid={`model-${part}`}
         >
-          {text}
+          <span className="mt-mname-t">{text}</span>
           <Icon name="sync" size={11} />
         </button>
       ) : (
-        text
+        <span className="mt-mname-t" title={text}>{text}</span>
       );
     return (
       <>
@@ -1041,12 +1072,15 @@ const People = memo(function People({ people, status, onRole, active, uiLang: _u
                   onClick={() => setPick((x) => (x === 'effort' ? null : 'effort'))}
                   aria-expanded={pick === 'effort'}
                   aria-label={t('meeting.models.effort_open', { a: effort })}
+                  title={effort}
                   data-testid="model-effort-chip"
                 >
-                  {t('meeting.models.effort_short', { a: effort })}
+                  <span className="mt-effort-t">{t('meeting.models.effort_short', { a: effort })}</span>
                 </button>
               ) : (
-                <span className="mt-effort">{t('meeting.models.effort_short', { a: effort })}</span>
+                <span className="mt-effort" title={effort}>
+                  <span className="mt-effort-t">{t('meeting.models.effort_short', { a: effort })}</span>
+                </span>
               ))}
           </>,
           lv.hands,
@@ -1133,7 +1167,7 @@ const People = memo(function People({ people, status, onRole, active, uiLang: _u
     <>
       <span className="mt-card-head">
         <Avatar person={p} color={colorOf[p.id]} />
-        <span className="mt-card-name" style={{ color: colorOf[p.id] }}>{p.name}</span>
+        <span className="mt-card-name" style={{ color: nameColor(colorOf[p.id]) }} title={p.name}>{p.name}</span>
         <span className={`mt-rank is-${rank(p)}`}>{t(`meeting.rank.${rank(p)}`)}</span>
       </span>
       {p.id === 'claude' && claudeRows()}
@@ -1197,15 +1231,18 @@ const People = memo(function People({ people, status, onRole, active, uiLang: _u
         {p.you && hasStatus && mic.muted && <MutedMark onUnmute={mic.toggle} />}
         {p.id === 'claude' && rows.length > 0 && <span className={`mt-status-dot is-${overall}`} aria-hidden="true" />}
       </span>
-      <span className="mt-person-name" style={{ color: colorOf[p.id] }}>{p.name}</span>
+      <span className="mt-person-name" style={{ color: nameColor(colorOf[p.id]) }} title={p.name}>{p.name}</span>
       <span className={`mt-status-pop mt-card-pop ${p.id === 'claude' ? 'is-claude' : ''}`} role="dialog" aria-label={p.name}>
         {card(p)}
       </span>
     </span>
   );
+  // how narrow the group may get on a narrow bar: every chip down to its avatar and three letters (CHIP_MIN, meeting.css
+  // .mt-person min-width), the stack never (a flex item's own minimum would be its names' full width, so the bar
+  // couldn't shrink them and pushed 散会 off the window: 2026-11-18, 1024 px, English)
   if (people.length <= 3) {
     return (
-      <div className="mt-people" ref={box} aria-label={t('meeting.people.label')} data-testid="meeting-people">
+      <div className="mt-people" ref={box} style={{ minWidth: people.length * CHIP_MIN + (people.length - 1) * 6 }} aria-label={t('meeting.people.label')} data-testid="meeting-people">
         {people.map(chip)}
       </div>
     );
@@ -1214,8 +1251,10 @@ const People = memo(function People({ people, status, onRole, active, uiLang: _u
   const claude = people.find((p) => p.id === 'claude');
   const shown = humans.slice(0, 4);
   const more = humans.length - shown.length;
+  // the stack: 8 px, then 20 px per avatar (and the +N); its margin, the gap, Claude's chip
+  const stackW = 8 + (shown.length + (more > 0 ? 1 : 0)) * 20 + 4;
   return (
-    <div className="mt-people" ref={box} aria-label={t('meeting.people.label')} data-testid="meeting-people">
+    <div className="mt-people" ref={box} style={{ minWidth: stackW + (claude ? 6 + CHIP_MIN : 0) }} aria-label={t('meeting.people.label')} data-testid="meeting-people">
       <span
         className={`mt-stack has-status ${openId === 'stack' ? 'is-open' : ''}`}
         tabIndex={0}
@@ -1233,11 +1272,13 @@ const People = memo(function People({ people, status, onRole, active, uiLang: _u
         ))}
         {more > 0 && <span className="mt-stack-more">+{more}</span>}
         <span className="mt-status-pop mt-card-pop is-list" role="dialog" aria-label={t('meeting.people.label')}>
-          {humans.map((p) => (
-            <span key={p.id} className="mt-card-item">
-              {card(p)}
-            </span>
-          ))}
+          <span className="mt-card-scroll">
+            {humans.map((p) => (
+              <span key={p.id} className="mt-card-item">
+                {card(p)}
+              </span>
+            ))}
+          </span>
         </span>
       </span>
       {claude && chip(claude)}
@@ -1246,6 +1287,8 @@ const People = memo(function People({ people, status, onRole, active, uiLang: _u
 });
 
 const SILENT: ReadonlySet<string> = new Set();
+/** a person's chip at its narrowest (meeting.css .mt-people > .mt-person): 3 + 24 avatar + 7 + 32 name + 10 */
+const CHIP_MIN = 76;
 
 /** Your microphone's mute switch and who is talking now, from /api/mic/stream (on the guest page: the guest's own mute).
  *  Both are React state, replaced only when they change (the stream itself pushes only changes). */
@@ -1553,12 +1596,14 @@ function ClaudeNow({ brain, board, ai }: { brain: Brain; board: Board | null; ai
     <div className="mt-now" role="status" aria-live="polite" data-testid="claude-now">
       <div className="mt-now-row">
         <span className={`mt-now-dot is-${brain.front}`} aria-hidden="true" />
-        {brain.front_model && <span className="mt-now-m">{brain.front_model}</span>}
+        {brain.front_model && <span className="mt-now-m" title={brain.front_model}>{brain.front_model}</span>}
         <span className="mt-now-v">{front}</span>
       </div>
       <div className="mt-now-row">
         <span className={`mt-now-dot ${back.length ? 'is-busy' : 'is-idle'}`} aria-hidden="true" />
-        <span className="mt-now-m">{(dp ? dp.model || brain.deep_model : brain.edit_model) || brain.back_model || t('meeting.ai.back')}</span>
+        <span className="mt-now-m" title={(dp ? dp.model || brain.deep_model : brain.edit_model) || brain.back_model || undefined}>
+          {(dp ? dp.model || brain.deep_model : brain.edit_model) || brain.back_model || t('meeting.ai.back')}
+        </span>
         <span className="mt-now-v">
           {back.length ? back.join('；') : t('meeting.ai.back_idle')}
           {tail && <span className="mt-now-notes">{tail}</span>}
@@ -1794,7 +1839,7 @@ export const Transcript = memo(function Transcript({
     return (
       <header className="mt-turn-head">
         <Avatar person={personOf(w, name)} color={c} />
-        <span className="mt-line-who" style={{ color: c }}>{nameOf(w, name)}</span>
+        <span className="mt-line-who" style={{ color: nameColor(c) }} title={nameOf(w, name)}>{nameOf(w, name)}</span>
         {w === 'student' && first && <ClaudeChips l={first as ShownLine} />}
       </header>
     );
@@ -1829,7 +1874,7 @@ export const Transcript = memo(function Transcript({
   const claudeWho = () => (
     <>
       <Avatar person={personOf('student')} color={colorOf('student')} />
-      <span className="mt-line-who" style={{ color: colorOf('student') }}>{nameOf('student')}</span>
+      <span className="mt-line-who" style={{ color: nameColor(colorOf('student')) }} title={nameOf('student')}>{nameOf('student')}</span>
     </>
   );
   // · a revision being made: under the bubble that recorded it ("派任务 T3 …"), its steps as the worker goes
@@ -1878,6 +1923,9 @@ export const Transcript = memo(function Transcript({
       <div
         className="mt-lines"
         ref={box}
+        tabIndex={0}
+        role="region"
+        aria-label={ut('meeting.transcript')}
         onScroll={onScroll}
         onWheel={onWheel}
         onPointerDown={onPointerDown}

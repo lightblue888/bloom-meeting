@@ -26,14 +26,9 @@ FALLBACK_TEMPLATE = (
 
 
 def app_facts() -> str:
-    """软件现状（prompts/app_facts.md）：学生答软件问题以它为准。"""
-    try:
-        from .config import assistant_name
-        from . import provider
-        return ((PROMPTS / "app_facts.md").read_text(encoding="utf-8-sig").strip().replace("@AI", assistant_name())
-                + provider.facts())
-    except OSError:
-        return "（软件现状读不到）"
+    """软件现状（prompts/app_facts.md，模型、声音、邀请按现在的设置填）：学生答软件问题以它为准。"""
+    from . import app_facts as _facts
+    return _facts.render()
 
 
 class _SafeDict(dict):

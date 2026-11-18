@@ -2,7 +2,7 @@ https://github.com/user-attachments/assets/815369c9-5372-4953-84ec-d6c1b68a329c
 
 # Bloom
 
-<p align="center"><img src="docs/bloom-demo.gif" width="720" alt="会上说定一处改法，论文里马上出现修订"></p>
+https://github.com/user-attachments/assets/59b28cfb-14b0-43d2-bd3d-1de72682a463
 
 开组会用的 AI 助手。会上它听大家讨论，被叫到时用语音回答；主持人说定一处改法，它就去改论文，改动用修订标记显示在稿子上。散会后可以看修订对比、逐字稿和纪要。
 

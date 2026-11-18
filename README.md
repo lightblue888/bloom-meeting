@@ -35,21 +35,22 @@ irm https://raw.githubusercontent.com/lightblue888/bloom-meeting/main/install.ps
 
 别人用浏览器打开邀请链接就能进会。这需要一台有公网地址的服务器跑会议中继，见 [relay/README.md](relay/README.md)。不配中继也能一个人用。
 
-## 在 Claude Code 里用
+## 在 AI 助手里用
 
-装了 Claude Code 的话，可以装上 `/bloom` 技能，在 Claude Code 里读 Bloom 的会议。在 PowerShell 里运行：
+`skills/bloom` 是一个技能（SKILL.md 格式），能让 Claude Code、Codex、Gemini CLI、Cursor、GitHub Copilot、OpenCode 这些 AI 助手读 Bloom 的会议。在 PowerShell 里运行：
 
 ```powershell
-$d = "$HOME\.claude\skills\bloom"; New-Item -ItemType Directory -Force "$d\scripts" | Out-Null
-foreach ($f in "SKILL.md", "scripts/watch.py", "scripts/history.py") { irm "https://raw.githubusercontent.com/lightblue888/bloom-meeting/main/skills/bloom/$f" -OutFile "$d\$f" }
+irm https://raw.githubusercontent.com/lightblue888/bloom-meeting/main/skills/install.ps1 | iex
 ```
 
-装好后在 Claude Code 里：
+它装到 `~/.agents/skills/bloom`（Codex、Gemini CLI、Cursor、Copilot、OpenCode 读这里），电脑上有 Claude Code 的话再装一份到 `~/.claude/skills/bloom`。以后更新再运行一次。
 
-- 输入 `/bloom` 或"接上组会"：接上正在开的会，会上的每句话实时传过来，有人提问时它帮你想答法。
-- 问"上次组会老师对第三章怎么说的""上周让我改的有哪些"：它去翻往期会议，回答带上是哪一场、几分几秒。
+装好后对 AI 助手说：
 
-它只读会议，不改论文，也不往会里发东西。往期会议直接读本机 `~/.zuhui/meetings` 下的文件，Bloom 不用开着。
+- "接上组会"（Claude Code 里也可以输入 `/bloom`）：接上正在开的会，会上新说的话一批批传过来，有人提问时它帮你想答法。
+- "上次组会老师对第三章怎么说的""上周让我改的有哪些"：它去翻往期会议，回答带上是哪一场、几分几秒。
+
+不认识技能的工具，让它先读一遍 `skills/bloom/SKILL.md` 再照着做。它只读会议，不改论文，也不往会里发东西。往期会议直接读本机 `~/.zuhui/meetings` 下的文件，Bloom 不用开着。
 
 ## 隐私
 

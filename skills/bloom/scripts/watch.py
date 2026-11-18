@@ -5,6 +5,9 @@
   python -X utf8 watch.py watch --since N         第一段实时推送：攒成一批推（最多攒 8 秒；AI 一开口、有人点 AI
                                                   的名就马上推）；散会就退出（退出码 0）
   python -X utf8 watch.py watch --run R --gen G   接力的下一段（第一段到点前自己打印这条命令）
+  python -X utf8 watch.py poll --since N [--wait 25]
+                                                  不能在后台持续收输出的工具用这个：等到有新的话（最多等 --wait 秒），
+                                                  打出这一批就退出，最后一行给出下一次的命令；散会退出码 3
 
 一段最多跑 28 分钟（Monitor 最长 30 分钟）。第 26 分钟它打印一行 "== 接力：…"，带着下一段的命令；下一段一起来就从
 上一段推到的那一句接着推，两段共用一本账（临时目录 bloom_watch/<run>.json），同一句只推一次；上一段看到下一段接上了，
@@ -109,7 +112,7 @@ def catchup():
     print(f"== 逐字稿（共 {len(lines)} 句{'，只列最后 400 句' if len(lines) > len(keep) else ''}）")
     for ln in keep:
         print(fmt(ln, me))
-    print(f"== 到这里为止 {len(lines)} 句。实时接着看：watch.py watch --since {len(lines)}")
+    print(f"== 到这里为止 {len(lines)} 句。实时接着看：watch.py watch --since {len(lines)}（不能在后台持续收输出的工具用 watch.py poll --since {len(lines)}）")
     return 0
 
 
@@ -431,12 +434,79 @@ def watch(since=None, max_minutes=MAX_MIN, after_sec=None, run=None, gen=1, over
             st["p"]._closed = True        # 出了异常：别写"完成"，看门狗按进程没了报 GONE
 
 
+def poll(since=None, wait=25.0):
+    """轮询一次：有新的话（或接着说长了的）就攒最多 BATCH_S 秒打出来，没有就最多等 wait 秒。
+    推过哪几句记在临时目录 bloom_watch/poll-<会议 id>.json；第一次用 --since N 把前 N 句当作推过（补前情里已经看过）。"""
+    try:
+        cur = current()
+    except Exception as ex:
+        print(f"连不上 Bloom 后端（{BASE}）：{type(ex).__name__}。")
+        return 1
+    on, m = live(cur)
+    path = os.path.join(tempfile.gettempdir(), "bloom_watch", f"poll-{m.get('id') or 'x'}.json")
+    if not on:
+        if os.path.exists(path):              # 一直跟着的那场散了
+            os.remove(path)
+            print("== 散会了")
+            return 3
+        print("现在没有在开的会。")
+        return 2
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        with open(path, encoding="utf-8") as f:
+            pushed = json.load(f)
+    except (OSError, ValueError):
+        lines = cur.get("transcript") or []
+        n = len(lines) if since is None else max(0, min(int(since), len(lines)))
+        pushed = {_key(ln): str(ln.get("text") or "") for ln in lines[:n]}
+    t0, first_new, out = time.time(), None, []
+    while True:
+        me = names(cur)
+        for ln in cur.get("transcript") or []:
+            d = _delta(ln, pushed)
+            if d is None:
+                continue
+            text, more = d
+            out.append(fmt(dict(ln, text=text), me, more))
+            pushed[_key(ln)] = str(ln.get("text") or "")
+            if first_new is None:
+                first_new = time.time()
+        now = time.time()
+        if (first_new is not None and now - first_new >= BATCH_S) or (first_new is None and now - t0 >= wait):
+            break
+        on, m2 = live(cur)
+        if not on:
+            break
+        time.sleep(1.0)
+        try:
+            cur = current()
+        except Exception:
+            break
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(pushed, f, ensure_ascii=False)
+    if out:
+        print(f"== {time.strftime('%H:%M:%S')} 这一批 {len(out)} 句")
+        print(chr(10).join(out))
+    else:
+        print(f"== {time.strftime('%H:%M:%S')} 这 {int(wait)} 秒没人说话")
+    if not live(cur)[0]:
+        os.remove(path)
+        print("== 散会了")
+        return 3
+    print(f'== 下一次：python -X utf8 "{SELF}" poll')
+    return 0
+
+
 def main(argv):
-    if not argv or argv[0] not in ("catchup", "watch"):
+    if not argv or argv[0] not in ("catchup", "watch", "poll"):
         print(__doc__)
         return 64
     if argv[0] == "catchup":
         return catchup()
+    if argv[0] == "poll":
+        a = argv[1:]
+        get = lambda k: a[a.index(k) + 1] if k in a and a.index(k) + 1 < len(a) else None
+        return poll(int(get("--since")) if get("--since") else None, float(get("--wait") or 25))
     since, mx, after, run, gen, ov = None, MAX_MIN, None, None, 1, OVERLAP_MIN
     a = argv[1:]
     for i, x in enumerate(a):

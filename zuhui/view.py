@@ -324,6 +324,28 @@ INJECT = r"""
   }
   window.addEventListener('scroll', function(){ if (!sRaf) sRaf = requestAnimationFrame(streamNow); }, {passive: true});
   setTimeout(focusNow, 400); setInterval(focusNow, 3000);
+  /* 先选中再说：在正文里选中一段（松开鼠标 / 抬起按键时），把选中的字和它在哪一节报给外壳；外壳给主持人、共同主持人
+     显示一个能清掉的小条，下一句对 AI 说的话以它为准（zuhui/inmeeting.py Anchor）。删掉的字、批注、按钮不算 */
+  var selLast = '';
+  function selNow(){
+    if (!LIVE || window.parent === window) return;
+    var sel = window.getSelection ? window.getSelection() : null;
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+    var rg = sel.getRangeAt(0);
+    if (!docs.contains(rg.commonAncestorContainer)) return;
+    var box = document.createElement('div'); box.appendChild(rg.cloneContents());
+    Array.prototype.forEach.call(box.querySelectorAll('del, .notes, button, .zh-pins, .zh-editor, .zh-thumb'), function(x){ x.parentNode.removeChild(x); });
+    var text = (box.textContent || '').replace(/\s+/g, ' ').trim();
+    if (text.length < 2 || text.length > 1000 || text === selLast) return;
+    selLast = text;
+    var idx = -1;
+    for (var i = 0; i < sects.length; i++) { if (sects[i].compareDocumentPosition(rg.startContainer) & 4) idx = i; else break; }
+    try { window.parent.postMessage({zhSel: {text: text, section: idx >= 0 ? titleOf(sects[idx]) : null}}, '*'); } catch (e) {}
+  }
+  document.addEventListener('mouseup', function(){ setTimeout(selNow, 0); });
+  document.addEventListener('keyup', function(e){ if (e.shiftKey || e.key === 'Shift') setTimeout(selNow, 0); });
+  document.addEventListener('touchend', function(){ setTimeout(selNow, 300); });
+  document.addEventListener('selectionchange', function(){ var s = window.getSelection(); if (!s || s.isCollapsed) selLast = ''; });
   /* 批注：一条任务一个小圆标，贴在它改的那一段右边（还没改完的贴在你说话时看着的那一段）；点开才看内容；
      打勾 = 看过了，这条连同它的修订标记一起消掉 */
   var TASKS = __TASKS__, ME = __ME__;
@@ -1473,7 +1495,7 @@ INJECT_TEXT = {'connecting': ('组会 · 连接中', 'Meeting · connecting'), '
 
 
 def _inject(build: int | None, tasks: list, me: str, figs: dict | None = None, lang: str = "zh",
-            paper: str | None = None) -> str:
+            paper: str | None = None, readonly: bool = False) -> str:
     """页尾注入：自动刷新 + 章节栏 + 批注标记。build=None 是以往会议的快照：不轮询、不上报、批注只读。
     lang：界面语言（zh / en），注入部分的界面字照它填。paper：这一页是哪篇论文（换版本时读到哪按论文各记各的）。"""
     s = INJECT
@@ -1484,7 +1506,16 @@ def _inject(build: int | None, tasks: list, me: str, figs: dict | None = None, l
             .replace("__TASKS__", "/*zh-tasks*/" + _js(_briefs(tasks, me)) + "/*zh-tasks-end*/")
             .replace("__ME__", _js(me or "你"))
             .replace("__FIGS__", _js(figs or {}))
-            .replace("__MJV__", _mathjax_version()))
+            .replace("__MJV__", _mathjax_version())) + _comments_inject(lang, readonly)
+
+
+def _comments_inject(lang: str, readonly: bool) -> str:
+    """第 6 批：论文上打字批注的气泡和卡片（zuhui/comments.py）；readonly = PPT 讲稿，"编辑"按钮去掉。"""
+    try:
+        from .comments import inject
+        return inject(lang, readonly)
+    except Exception:
+        return ""
 
 
 def _mathjax_version() -> str:
@@ -2048,6 +2079,9 @@ class Viewer:
 
     def para_source(self, text: str) -> dict:
         """页面上的一段 → 它在稿子里的原文（Markdown / LaTeX 源码）和段落序号。"""
+        from .pptx_conv import READONLY_SAY, readonly
+        if readonly(self.mirror):                     # 第 6 批：PPT 讲稿只能看
+            return {"ok": False, "error": READONLY_SAY[1 if getattr(self, "ui_lang", "zh") == "en" else 0]}
         want = self._key(text)
         if len(want) < 2:
             return {"ok": False, "error": "这一段是空的"}
@@ -2080,6 +2114,9 @@ class Viewer:
         """把第 index 段从 old 改成 new（new 为空 = 删掉这一段）。别的字节一个不动（换行统一成 \\n 改，写回时 CRLF / LF、BOM 照原样）。"""
         norm = lambda s: (s or "").replace("\r\n", "\n").strip()    # noqa: E731
         old_n, new_n = norm(old), norm(new)
+        from .pptx_conv import READONLY_SAY, readonly
+        if readonly(self.mirror):                     # 第 6 批：PPT 讲稿只能看
+            return {"ok": False, "error": READONLY_SAY[1 if getattr(self, "ui_lang", "zh") == "en" else 0]}
         with _DOC_LOCK:
             try:
                 src, bom, nl = _read_doc(self.mirror)
@@ -2786,7 +2823,8 @@ class Viewer:
         with self.lock:
             self.build += 1
             self._raw = out                       # 不带注入的页面：访客的只读快照从它做
-            inj = _inject(self.build, tasks, me, figs, self.ui_lang, paper=pid)
+            from .pptx_conv import readonly as _ro
+            inj = _inject(self.build, tasks, me, figs, self.ui_lang, paper=pid, readonly=_ro(mirror))
             self.html = out.replace("</body>", inj + "</body>", 1) if "</body>" in out else out + inj
             self._shown = pid
 
@@ -3292,7 +3330,95 @@ class Viewer:
         except Exception as e:                  # 录屏对不上不该让整场会打不开
             m["video"] = None
             m["video_error"] = repr(e)[:200]
+        m["summary_job"] = self.summary_job(mid)
+        try:                                    # 第 6 批：会上在论文上打的批注（回顾里只读）
+            from .comments import load as _cm_load
+            m["comments"] = _cm_load(self.meetings.root / Path(str(mid)).name)
+        except Exception:
+            m["comments"] = []
         return m
+
+    # ---------- 回顾：换一种格式重新生成纪要（用户点了才调模型） ----------
+    SUMMARY_JOB_KEEP_S = 600                    # 生成失败的那条消息留多久（回顾页上显示"生成失败：原因"）
+
+    def summary_job(self, mid: str) -> dict | None:
+        """这场会重新生成纪要的进度：{"state": running|failed, "template", "started", "error"}；没在生成、成功了：None。"""
+        jobs = self.__dict__.setdefault("_summary_jobs", {})
+        j = jobs.get(str(mid))
+        if not j or j.get("state") == "done":
+            return None
+        if j.get("state") == "failed" and time.time() - float(j.get("ended") or 0) > self.SUMMARY_JOB_KEEP_S:
+            jobs.pop(str(mid), None)
+            return None
+        return {k: j.get(k) for k in ("state", "template", "started", "error")}
+
+    def regen_summary(self, mid: str, template: str) -> dict:
+        """POST /api/meetings/<id>/summary：后台按 template 重新生成这场会的纪要，马上返回进度。
+        不认识的格式 ValueError("template")；自定义格式还没写要求 ValueError("custom_empty")；没有这场会 KeyError；
+        会还开着、散会收尾还在跑、上一次重新生成还没完 RuntimeError("busy")。"""
+        from . import summary_prefs
+        from .meetings import regenerate
+        mid = Path(str(mid or "")).name
+        if template not in summary_prefs.TEMPLATES:
+            raise ValueError("template")
+        g = self.meetings.get(mid) if (mid and self.meetings) else None
+        if not g:
+            raise KeyError("not_found")
+        if template == "custom" and not summary_prefs.load()["custom"].strip():
+            raise ValueError("custom_empty")
+        if (g.get("meeting") or {}).get("state") == "live" or self.processing(mid):
+            raise RuntimeError("busy")
+        jobs = self.__dict__.setdefault("_summary_jobs", {})
+        lock = self.__dict__.setdefault("_summary_lock", threading.Lock())
+        with lock:
+            if (jobs.get(mid) or {}).get("state") == "running":
+                raise RuntimeError("busy")
+            job = {"state": "running", "template": template, "started": time.time(), "error": None}
+            jobs[mid] = job
+
+        def run():
+            try:
+                from . import usage
+                with usage.bind(self.meetings.root / mid):      # 重新生成纪要的用量算那一场的
+                    regenerate(self.meetings, self.cfg, mid, template)
+                job.update(state="done", ended=time.time())
+            except Exception as e:
+                job.update(state="failed", ended=time.time(), error=(str(e) or type(e).__name__)[:200])
+
+        threading.Thread(target=run, name=f"summary-{mid}", daemon=True).start()
+        return {k: job.get(k) for k in ("state", "template", "started", "error")}
+
+    # ---------- 往期会议：大厅的遗留项、回顾里提问、阶段汇总（zuhui/past.py） ----------
+    def paper_here(self) -> dict:
+        """屏幕上这篇论文在会议 meta 里的样子 {id, name, path, source}：认往期会是不是同一篇用。"""
+        from .config import current_paper
+        from .meetings import paper_entry
+        cur = current_paper() or {}
+        same = _same_file(cur.get("path"), self.mirror) if cur.get("path") else False
+        return paper_entry(self.mirror, (cur.get("name") if same else None) or self.mirror.stem,
+                           source=cur.get("source") if same else None)
+
+    def carry_items(self) -> dict:
+        """GET /api/carry：这篇论文最近几场会留下、还没勾掉的事（大厅里列出来，能勾掉）。"""
+        from . import past
+        if not self.meetings or not self.mirror.is_file():
+            return {"paper": None, "items": []}
+        live = self.meetings.current()
+        here = self.paper_here()
+        return {"paper": here.get("name"), "items": past.carry(self.meetings, here, exclude=live.get("id") if live else None)}
+
+    def past_ask(self, question, mids=None) -> dict:
+        """POST /api/past/ask：回顾里问往期会议（调模型）。问题空的 / 太长 ValueError，模型没答出来 RuntimeError。"""
+        from . import past
+        return past.ask(self.meetings, self.cfg, question, mids=mids if isinstance(mids, list) else None)
+
+    def start_digest(self, mids) -> dict:
+        """POST /api/digests：选的几场会写一份阶段汇总（后台调模型），马上返回"生成中"的那份。"""
+        from . import past
+        d = past.start_digest(self.meetings, mids)
+        threading.Thread(target=past.run_digest, args=(self.meetings, self.cfg, d["id"]), name=f"digest-{d['id']}",
+                         daemon=True).start()
+        return d
 
     def video_path(self, mid: str) -> Path | None:
         m = self.meetings.get(Path(str(mid)).name) if self.meetings else None
@@ -3307,7 +3433,7 @@ class Viewer:
         cur = self.meetings.current() if self.meetings else None
         if not cur:
             return None
-        from .share import captions as share_captions
+        from .share import captions as share_captions, rec_mode as share_rec_mode
         people = self.participants(guests=False)
         title = re.sub(r"\s*·\s*\d{1,2}月\d{1,2}日\s*\d{1,2}:\d{2}\s*$", "", str(cur.get("title") or "")).strip()
         try:
@@ -3323,6 +3449,7 @@ class Viewer:
                "colors": {p["name"]: p.get("color") for p in everyone if p.get("color")},
                "assistant": assistant,
                "captions": share_captions(lines, people[0]["name"], people[1]["name"]),   # 旧访客页的字幕：最近几句
+               "rec": share_rec_mode(),             # 第 8 批：录制告知（录屏 screen / 录音 audio / 没在录 None）
                # 主持人屏幕上正看着哪一节哪一段：访客页据此"跟随主持人"（section 名 + 那一段的编号和开头几个字）
                "focus": ({k: (self.focus or {}).get(k) for k in ("section", "no", "text", "top", "ri", "off", "k")} if self.focus else None)}
         # v2（2026-11-17）：访客页用和主持人一样的会议界面，看到的东西和主持人一样（逐字稿、修改卡片、几篇论文、Claude 在做什么），
@@ -3347,6 +3474,11 @@ class Viewer:
                     out["brain"] = self.brain()
                 except Exception:
                     out["brain"] = None
+            # 第 3 批：书签、共同主持人选中的那段。多久没人说话不推给访客
+            from . import live_api
+            out.update(live_api.extras(self, host=False))
+            from .comments import current as _cm_now   # 第 6 批：论文上的批注
+            out["comments"] = _cm_now(self)
         except Exception as e:
             out["v2_error"] = repr(e)[:200]
         return out
@@ -3385,6 +3517,18 @@ class Viewer:
             if callable(log):
                 log("guest_act", text=f"{by}：{path} {json.dumps(body, ensure_ascii=False)[:120]}")
             return self._local_post(path, body)
+        from . import live_api
+        from . import paper_api
+        if path in paper_api.GUEST_PATHS:          # 第 6 批：论文上打字批注（谁都能写、回复、解决；删只有共同主持人）
+            if callable(log):
+                log("guest_act", text=f"{by}：{path} {json.dumps(body, ensure_ascii=False)[:120]}")
+            out, _code = paper_api.post(self, path, body if isinstance(body, dict) else {}, by=by, guest=True)
+            return out
+        if path in live_api.GUEST_PATHS:           # 打字问 AI、标记、选中一段：谁能做什么在 live_api 里按人定
+            if callable(log):
+                log("guest_act", text=f"{by}：{path} {json.dumps(body, ensure_ascii=False)[:120]}")
+            out, _code = live_api.post(self, path, body if isinstance(body, dict) else {}, by=by, guest=True)
+            return out
         return {"ok": False, "error": "做不了"}
 
     def _local_post(self, path: str, body: dict, timeout: float = 60) -> dict:
@@ -3428,7 +3572,8 @@ class Viewer:
             name = _guest_asset_name(name, data)          # 带内容哈希：两篇的同名图不互相盖、手机能长期缓存
             assets[name] = (ctype.split(";")[0], data)
             figs[no] = dict(f, src=base + name)
-        inj = _inject(None, self._active_tasks(), self.me_name(), figs)   # 访客看到的也只是屏幕上这一篇的批注
+        from .pptx_conv import readonly as _ro
+        inj = _inject(None, self._active_tasks(), self.me_name(), figs, readonly=_ro(self.mirror))   # 访客看到的也只是屏幕上这一篇的批注
         page = raw.replace("</body>", inj + "</body>", 1) if "</body>" in raw else raw + inj
         return _guest_lite(_embed(page)), assets          # 字体、公式、插图都不挡着访客页露出论文（见 _guest_lite）
 
@@ -3507,6 +3652,7 @@ class Viewer:
             out["active_paper"] = paper_id(self.mirror)
         except Exception:
             out["active_paper"] = None
+        last = None
         if cur:
             out.update({"meeting": cur, "transcript": self.meetings.current_lines(), "summary": None})
         else:
@@ -3519,6 +3665,21 @@ class Viewer:
                             "cleanup": m.get("cleanup"), "processing": self.processing(last[0]["id"])})
             else:
                 out.update({"meeting": None, "transcript": [], "summary": None})
+        try:                                          # 第 3 批：书签、选中的那段、多久没人说话
+            from . import live_api
+            out.update(live_api.extras(self, host=True, last_mid=last[0]["id"] if last else None))
+        except Exception as e:
+            out["extras_error"] = repr(e)[:200]
+        try:                                          # 第 6 批：论文上打的批注（开着会是这场的，散会后是上一场的）
+            from .comments import current as _cm_now
+            out["comments"] = _cm_now(self)
+        except Exception:
+            out["comments"] = []
+        try:                                          # 第 5 批：散会后自动保存的结果（失败了界面提示"保存失败：原因"）
+            from . import autosave
+            out["autosave"] = autosave.last_result()
+        except Exception:
+            out["autosave"] = None
         return out
 
     # ---------- HTTP ----------
@@ -3731,6 +3892,9 @@ class Viewer:
                 elif p == "/api/provider":         # 设置 → 模型来源（密钥只给最后四位）
                     from . import provider
                     self._json(provider.public())
+                elif p == "/api/usage":            # 设置 → 模型来源 → 本月用量 {month, models, tokens, costs}；Claude Code 账号 {"month", "mode": "claude"}
+                    from . import provider, usage
+                    self._json(dict(usage.month(), mode=provider.mode()))
                 elif p == "/api/profile":          # 设置 → 你在会上：昵称、头像
                     self._json(_profile(viewer))
                 elif p == "/api/setup":            # 首次引导：走没走过；基础组件在不在；会上实际先用哪种声音
@@ -3741,6 +3905,12 @@ class Viewer:
                 elif p == "/api/voice":            # 设置 → 语音：AI 的声音、能选的声音、专有名词
                     from . import voice_prefs
                     self._json(voice_prefs.public(viewer.cfg))
+                elif p == "/api/relay":            # 设置 → 通用 → 邀请：中继配没配、地址（密钥只给最后四位）
+                    from . import relay_cfg
+                    self._json(relay_cfg.public(viewer.cfg))
+                elif p == "/api/summary/prefs":    # 设置 → 通用 → 纪要：格式、自定义要求
+                    from . import summary_prefs
+                    self._json(summary_prefs.public())
                 elif p == "/api/storage":          # 设置 → 存储：占了多少、各是什么、能清什么（zuhui/storage.py）
                     from . import storage
                     self._json(storage.scan(viewer))
@@ -3787,7 +3957,27 @@ class Viewer:
                             r["processing"] = viewer.processing(r.get("id"))
                         except Exception:
                             r["processing"] = False
+                    if not rows and "sample=1" in self.path:   # 第 8 批：还没开过会时回顾里列出自带的示例会议（zuhui/sample.py；删过就不再有）
+                        try:
+                            from . import sample
+                            b = sample.brief(viewer.meetings, ui or viewer.ui_lang)
+                            if b:
+                                rows.append(b)
+                        except Exception as e:
+                            print(f"[sample] {e!r}", flush=True)
                     self._json(rows)
+                elif p == "/api/carry":         # 大厅：这篇论文上一场（最近几场）留下、还没勾掉的事
+                    self._json(viewer.carry_items())
+                elif p == "/api/digests":       # 回顾 → 阶段汇总：存下的几份（新的在前，不带正文）
+                    from . import past
+                    self._json(past.list_digests())
+                elif p.startswith("/api/digests/"):
+                    from . import past
+                    try:
+                        d = past.get_digest(p.rsplit("/", 1)[-1])
+                    except ValueError:
+                        d = None
+                    self._json(d if d else {"error": "not_found"}, 200 if d else 404)
                 elif p == "/api/dev/runs":      # Dev：模拟组会一场一场（只读 scratch_ab/sim/runs，不碰真的会议库）
                     from . import dev
                     self._json(dev.list_runs(viewer.cfg))
@@ -3805,6 +3995,10 @@ class Viewer:
                     from . import dev
                     d = dev.detail(viewer.cfg, p.rsplit("/", 1)[-1], viewer.dev_people)
                     self._json(d if d else {"error": "not found"}, 200 if d else 404)
+                elif p == "/api/autosave" or (p.startswith("/api/meetings/") and p.endswith("/minutes")):
+                    from . import export                 # 第 5 批：自动保存的设置；纪要带格式复制（HTML + 纯文本），zuhui/export.py
+                    code, out = export.http_get(viewer, self.path)
+                    self._json(out, code)
                 elif p.startswith("/api/meetings/") and p.endswith("/export"):   # 回顾 → 分享：逐字稿导出成 md / txt，干净版或原始版
                     from urllib.parse import parse_qs, urlsplit
                     q = parse_qs(urlsplit(self.path).query)
@@ -3837,6 +4031,13 @@ class Viewer:
                             inj = _inject(None, tasks, viewer.me_name(), viewer.figures(), ui or viewer.ui_lang)
                             body = body.replace("</body>", inj + "</body>", 1) if "</body>" in body else body + inj
                         self._send(200, (_embed(body, local_fonts=hosted) if embed else body).encode("utf-8"))
+                elif p in ("/api/paper/prefs", "/api/paper/versions", "/api/paper/versions/diff"):
+                    from . import paper_api      # 第 6 批：Word 交回方式、论文的历次版本和两版对比（zuhui/paper_api.py）
+                    code, data, ctype = paper_api.get(viewer, self.path)
+                    if ctype == "json":
+                        self._json(data, code)
+                    else:
+                        self._send(code, data, ctype)
                 elif p in ("/record", "/rebuild", "/rebase") and not self._origin_ok():
                     self._json({"error": "origin not allowed"}, 403)    # 这几个 GET 会改东西：别的网站不行
                 elif p == "/record":
@@ -3929,6 +4130,30 @@ class Viewer:
                         except Exception:
                             pass
                     return self._json(provider.public())
+                if p == "/api/provider/models":   # OpenAI 格式的接口有哪些型号 {kind, base_url, key?} → {models} / {error}（不花钱）
+                    from . import llm_api, provider
+                    kind = str(body.get("kind") or "")
+                    if provider.PRESETS.get(kind, {}).get("format") != "openai":
+                        return self._json({"error": "kind"}, 400)
+                    try:
+                        base = provider.clean_base(kind, body.get("base_url") or provider.PRESETS[kind]["base_url"])
+                    except ValueError:
+                        return self._json({"error": "base_url"}, 400)
+                    key = str(body.get("key") or "").strip()[:400]
+                    old = provider.load()
+                    if not key and old.get("kind") == kind and provider.key_rule(kind) != "none":
+                        key = str(old.get("key") or "")          # 没重填：用存着的
+                    try:
+                        return self._json({"models": llm_api.list_models(kind, base, key)})
+                    except llm_api.ApiError as e:
+                        return self._json({"error": str(e)[:200]})
+                if p == "/api/provider/lit":   # 设置里"查文献"开关 {on} → 现在的来源（含 lit）
+                    from . import littools, provider
+                    try:
+                        littools.set_enabled(bool(body.get("on")))
+                    except OSError:
+                        return self._json({"error": "failed"}, 500)
+                    return self._json(provider.public())
                 if p == "/api/provider/test":  # 用存好的来源问一句"好"：{ok, ms} 或 {ok: false, error}（会花一点点那家的额度）
                     from . import claude_text
                     t0 = time.time()
@@ -3955,6 +4180,46 @@ class Viewer:
                         return self._json({"error": "failed"}, 500)
                     voice_prefs.apply(viewer.cfg)              # 后端共用的这份配置马上换上（专有名词下一场转写生效）
                     return self._json(voice_prefs.public(viewer.cfg))
+                if p == "/api/summary/prefs":  # 纪要格式 {"template"?, "custom"?} → 现在的；不对 400 {"error": template|too_long}
+                    from . import summary_prefs
+                    try:
+                        summary_prefs.save(body if isinstance(body, dict) else {})
+                    except ValueError as e:
+                        return self._json({"error": str(e)}, 400)
+                    except OSError:
+                        return self._json({"error": "failed"}, 500)
+                    return self._json(summary_prefs.public())
+                if p == "/api/relay":          # 中继：{"mode": public|off} / 自己服务器的连接码 {"code"} / 回到公共中继 {"clear"} /
+                    from . import relay_cfg     # 允许别人加入 {"invite_on": bool} → 现在的；不对 400 {"error": code|mode}
+                    try:
+                        if "invite_on" in body:
+                            relay_cfg.set_invite(bool(body.get("invite_on")))
+                        elif body.get("clear"):
+                            relay_cfg.clear()
+                        elif "mode" in body:
+                            relay_cfg.set_mode(str(body.get("mode") or ""))
+                        else:
+                            relay_cfg.save(str(body.get("code") or ""))
+                    except ValueError as e:
+                        return self._json({"error": str(e)}, 400)
+                    except OSError:
+                        return self._json({"error": "failed"}, 500)
+                    url = str(((load().get("share") or {}).get("base_url")) or "")
+                    viewer.cfg.setdefault("share", {})["base_url"] = url
+                    try:
+                        viewer.share.reconfigure(url)
+                    except Exception:
+                        pass
+                    cb = getattr(viewer, "on_invite", None)
+                    if body.get("invite_on") and callable(cb):   # 开会时才打开邀请：语音桥马上进房间
+                        try:
+                            cb()
+                        except Exception:
+                            pass
+                    return self._json(relay_cfg.public(viewer.cfg))
+                if p == "/api/relay/test":     # 测中继：{ok, ms} 或 {ok: false, error: unset|unreachable|auth|livekit}
+                    from . import relay_cfg
+                    return self._json(relay_cfg.test(viewer.share))
                 if p == "/api/voice/test":     # 试听：按现在选的声音念一句 → {ok, engine} 或 {ok: false, error: off|busy|live|failed|not_ready}
                     from . import voice_prefs
                     if voice_prefs.voice() == "off":
@@ -3969,6 +4234,14 @@ class Viewer:
                     except Exception:
                         return self._json({"ok": False, "error": "failed"})
                     return self._json({"ok": True, "engine": eng} if eng else {"ok": False, "error": "failed"})
+                from . import live_api
+                if p in live_api.PATHS:        # 会中：打字问 AI、标记、先选中再说（zuhui/live_api.py）
+                    out, code = live_api.post(viewer, p, body)
+                    return self._json(out, code)
+                from . import paper_api
+                if p in paper_api.POST_PATHS:  # 第 6 批：批注、恢复历史版本、Word 交回方式（zuhui/paper_api.py）
+                    out, code = paper_api.post(viewer, p, body)
+                    return self._json(out, code)
                 if p.startswith("/api/storage/"):  # 设置 → 存储：清录屏 / 自动删除 / 不用的模型 / 临时文件（zuhui/storage.py）
                     from . import storage
                     out, code = storage.post(viewer, p, body)
@@ -4052,6 +4325,48 @@ class Viewer:
                         self._json({"ok": True, "paper": fn(str(body.get("id") or ""))})
                     except (KeyError, ValueError, RuntimeError) as e:
                         self._json({"ok": False, "error": str(e)}, 400)
+                elif p == "/api/carry":          # 大厅里勾掉 / 取消勾掉一条遗留 {"id": "<会议编号>/<key>", "done"}
+                    from . import past
+                    try:
+                        r = past.tick(viewer.meetings, str(body.get("id") or ""), bool(body.get("done", True)))
+                    except ValueError as e:
+                        return self._json({"ok": False, "error": str(e)}, 404 if str(e) == "not_found" else 400)
+                    except OSError:
+                        return self._json({"ok": False, "error": "failed"}, 500)
+                    self._json({"ok": True, **r})
+                elif p == "/api/past/ask":       # 回顾里问往期会议 {"question", "mids"?}（会调模型；问题最长 past.ASK_MAX 字）
+                    try:
+                        r = viewer.past_ask(body.get("question"), body.get("mids"))
+                    except ValueError as e:
+                        return self._json({"ok": False, "error": str(e)}, 400)
+                    except RuntimeError as e:
+                        return self._json({"ok": False, "error": str(e)[:200] or "failed"}, 502)
+                    self._json({"ok": True, **r})
+                elif p == "/api/digests":        # 回顾 → 阶段汇总：选几场会写一份 {"mids": [...]}（后台调模型）
+                    try:
+                        d = viewer.start_digest(body.get("mids"))
+                    except ValueError as e:
+                        return self._json({"ok": False, "error": str(e)}, 400)
+                    except RuntimeError as e:
+                        return self._json({"ok": False, "error": str(e) or "busy"}, 409)
+                    self._json({"ok": True, "digest": d})
+                elif p.startswith("/api/meetings/") and p.endswith("/summary"):  # 回顾 → 纪要：换一种格式重新生成 {"template"}（会调模型）
+                    try:
+                        job = viewer.regen_summary(p.split("/")[3], str(body.get("template") or ""))
+                    except ValueError as e:
+                        return self._json({"ok": False, "error": str(e)}, 400)
+                    except KeyError:
+                        return self._json({"ok": False, "error": "not_found"}, 404)
+                    except RuntimeError as e:
+                        return self._json({"ok": False, "error": str(e) or "busy"}, 409)
+                    self._json({"ok": True, "job": job})
+                elif p.startswith("/api/meetings/") and p.endswith("/transcript"):   # 回顾里手改逐字稿 {op: line|replace|speaker|undo}（zuhui/transcript_edit.py）
+                    from . import transcript_edit
+                    out, code = transcript_edit.post(viewer, p.split("/")[3], body)
+                    self._json(out, code)
+                elif p == "/api/meetings/sample/delete":   # 第 8 批：删掉示例会议（记下来以后不再出现，zuhui/sample.py）
+                    from . import sample
+                    self._json(sample.delete(viewer.meetings))
                 elif p.startswith("/api/meetings/") and p.endswith("/delete"):   # 回顾里删一场会（会议挪进回收站，录屏送进 Windows 回收站）
                     busy = viewer.busy_session() if callable(getattr(viewer, "busy_session", None)) else None
                     self._json(viewer.meetings.delete(p.split("/")[3], busy_session=busy))
@@ -4089,6 +4404,10 @@ class Viewer:
                         self._json(viewer.resolve_task(str(body.get("id") or "")))
                 elif p == "/api/board/reject":   # 批注卡片上点了 ×：这条改动不要了，撤回原样
                     self._json(viewer.reject_task(str(body.get("id") or "")))
+                elif p == "/api/autosave" or (p.startswith("/api/meetings/") and p.endswith("/save")):
+                    from . import export                 # 第 5 批：自动保存的设置；纪要存成 Word / PDF、会议包，存到你选的位置
+                    code, out = export.http_post(viewer, p, body)
+                    self._json(out, code)
                 elif p == "/api/recording/save":   # 回顾：存录屏（复制到你选的位置）
                     src = viewer.video_path(str(body.get("meeting") or ""))
                     to = Path(str(body.get("to") or "")).expanduser()

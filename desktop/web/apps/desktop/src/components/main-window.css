@@ -130,8 +130,9 @@ body.mw-resizing * {
 /* ------------------------------------------------------------ menus (Menu.tsx) */
 .mw-menu {
   position: fixed;
-  /* above every sheet and its scrim (the hand-off panels sit at 60): a sheet's own ⋯ menu opened under it */
-  z-index: 80;
+  /* above every sheet, scrim and overlay (the highest, the first-run guide .ob, sits at 300): a menu opened from any of
+     them shows on top, the guide's 来源 popup included */
+  z-index: 400;
   min-width: 160px;
   max-width: 360px;
   max-height: calc(100vh - 16px);

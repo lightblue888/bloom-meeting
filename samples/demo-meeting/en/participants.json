@@ -1,0 +1,31 @@
+[
+ {
+  "id": "me",
+  "name": "{ME}",
+  "role": "teacher",
+  "rank": "host",
+  "you": true,
+  "color": "#60a5fa"
+ },
+ {
+  "id": "claude",
+  "name": "{AI}",
+  "role": "student",
+  "rank": "assistant",
+  "color": "#e3906f"
+ },
+ {
+  "id": "guest-1",
+  "name": "Prof. Wang",
+  "role": "guest",
+  "rank": "cohost",
+  "color": "#4ade80"
+ },
+ {
+  "id": "guest-2",
+  "name": "Chen Yu",
+  "role": "guest",
+  "rank": "participant",
+  "color": "#facc15"
+ }
+]

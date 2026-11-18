@@ -3,7 +3,7 @@
 // microphone, the AI's voice. Asked again when Settings or the guide change something, and every 10 s while shown.
 import { useEffect, useState } from 'react';
 import { inTauri } from '../api';
-import { meetingApi, PROFILE_EVENT, type Devices, type Profile, type Provider } from '../meetingApi';
+import { meetingApi, PROFILE_EVENT, ZUHUI_BASE, type Devices, type Profile, type Provider } from '../meetingApi';
 import { SETUP_EVENT } from '../setupApi';
 import { useDictationModels, type DictationModelsState } from './ModelDownload';
 import { engineOf, useVoice } from './VoiceSettings';
@@ -21,14 +21,25 @@ export interface Readiness {
   speech: DictationModelsState;
   mic: Devices | null;
   voiceEngine: 'clone' | 'edge' | 'sapi' | null | undefined;
+  /** the model in use for edits and paper questions (the conversation's in `modelFast`), as the status panel names
+   *  them; null while unknown or when no model source is set */
+  model: string | null;
+  modelFast: string | null;
   /** what keeps 开始会议 off, in the order to fix them */
   blockers: Blocker[];
 }
+
+/** "Claude Opus 5.5 · Extra" → "Claude Opus 5.5"; "—" / "" → null */
+const named = (m: string | undefined): string | null => {
+  const s = (m ?? '').split(' · ')[0].trim();
+  return s && s !== '—' ? s : null;
+};
 
 export function useReadiness(active = true): Readiness {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [provider, setProvider] = useState<Provider | null>(null);
   const [mic, setMic] = useState<Devices | null>(null);
+  const [models, setModels] = useState<{ fast?: string; hands?: string } | null>(null);
   const [voice] = useVoice();
   const speech = useDictationModels();
   useEffect(() => {
@@ -38,6 +49,9 @@ export function useReadiness(active = true): Readiness {
       meetingApi.profile().then((x) => alive && setProfile(x), () => {});
       meetingApi.provider().then((x) => alive && setProvider(x), () => {});
       meetingApi.devices().then((x) => alive && setMic(x), () => {});
+      fetch(`${ZUHUI_BASE}/api/ready`, { cache: 'no-store', signal: AbortSignal.timeout(8000) })
+        .then((x) => (x.ok ? x.json() : null))
+        .then((x: { models?: { fast?: string; hands?: string } } | null) => alive && setModels(x?.models ?? null), () => {});
     };
     load();
     const h = window.setInterval(load, 10_000);
@@ -66,6 +80,8 @@ export function useReadiness(active = true): Readiness {
     speech,
     mic,
     voiceEngine: voice ? engineOf(voice) : undefined,
+    model: named(models?.hands),
+    modelFast: named(models?.fast),
     blockers,
   };
 }

@@ -188,7 +188,7 @@ body {
   border-radius: 999px;
   font-size: 12px;
   font-weight: 600;
-  color: #fcd34d;
+  color: var(--attn-ink, #fcd34d);
   background: rgba(251, 191, 36, 0.13);
   white-space: nowrap;
 }
@@ -207,8 +207,55 @@ body {
 .g-leave {
   color: var(--err);
 }
+
+/* 第 8 批：录制告知。进会页一行（开着会就占着这一行，没在录时只是看不见），会中顶栏一个小标记（位置一直留着） */
+.g-rec-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ef4444;
+}
+.g-rec-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  min-height: 19px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.g-rec-note > span {
+  min-width: 0;
+}
+.g-rec {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+  background: rgba(239, 68, 68, 0.1);
+  white-space: nowrap;
+  cursor: default;
+}
+.g-rec.is-off,
+.g-rec-note.is-off {
+  visibility: hidden;
+}
 .g-back {
   color: var(--brand-ink, var(--ink));
+}
+/* 浮在论文底部的几样（连接、语音、回到主持人位置）排成一行 */
+.g-notes {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
 }
 .g-conn {
   display: flex;
@@ -301,11 +348,14 @@ body {
   }
   .g-app .mt-cols {
     grid-template-columns: minmax(0, 1fr) !important;
-    grid-template-rows: minmax(0, 1fr) minmax(150px, 36%);
+    grid-template-rows: minmax(0, 1fr) minmax(300px, 50%);
   }
-  .g-app .mt-right {
+  .g-app .mt-rcol {
     border-top: 1px solid var(--line);
     min-width: 0;
+  }
+  .g-app .mt-rcol > .mt-divider {
+    display: none;
   }
   .g-back {
     display: none;
@@ -342,4 +392,142 @@ body {
 /* the light theme: "not started" reads at more than 4.5:1 on the pill's grey (2026-11-18 UI audit) */
 :root[data-theme="light"] .g-pill.is-wait {
   color: #6f4704;
+}
+
+/* ---------------------------------------------------------------- phones (2026-11-18 phone pass, UI_AUDIT_MOBILE=1) */
+/* 进会卡片：长会议名、长人名都不把卡片撑出屏幕（格子按屏宽来，不按里面最长的那行） */
+.g-center {
+  grid-template-columns: minmax(0, 1fr);
+}
+.g-card {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+@media (max-width: 560px) {
+  .g-card {
+    padding: 22px 18px 20px;
+  }
+  /* 论文上面那排（上一处、下一处、编辑、修订标记、修订后、原文）：放不下就折成两行，不左右滑 */
+  .g-app .mt-bar {
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+  /* 上面那条"每块都不缩、放不下就横着滑"在手机上放开：论文工具这一块跟着屏宽，里面折行 */
+  .g-app .mt-bar > .mt-ptools {
+    flex: 1 1 0;
+    min-width: 0;
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  .g-app .mt-pgap {
+    display: none;
+  }
+}
+/* ---------------------------------------------------------------- phones: an app, not a squeezed desktop page
+   (2026-11-18 "手机ui真的太丑了"). A compact bar on top, the paper or the transcript on the whole screen, a tab bar at
+   the bottom (论文 / 逐字稿); the AI's status box and the transcript search are left out: the transcript already shows
+   what the AI says, and nobody searches on a phone mid-meeting */
+.g-mtabs {
+  display: none;
+}
+@media (max-width: 640px) {
+  .g-app.is-in {
+    height: 100dvh;
+  }
+  .g-app.is-in .mt-root {
+    flex: 1;
+    min-height: 0;
+    height: auto;
+  }
+  /* the bar: the meeting's name and 离开 on the first row; the people and 新增 small on the second */
+  .g-app .mt-head {
+    gap: 6px 8px;
+    padding: 8px max(12px, env(safe-area-inset-right, 0px)) 8px max(12px, env(safe-area-inset-left, 0px));
+  }
+  .g-app .mt-head-main {
+    flex: 1 1 60%;
+    order: 0;
+  }
+  .g-app .mt-head-acts {
+    order: 1;
+  }
+  .g-app .mt-head > .mt-people {
+    order: 2;
+    min-width: 0 !important;
+  }
+  .g-app .mt-head > .mt-paper-btn {
+    order: 3;
+  }
+  .g-app [data-testid='claude-now'],
+  .g-app .mt-search,
+  .g-app .g-co {
+    display: none;
+  }
+  /* one panel at a time */
+  .g-app .mt-cols {
+    grid-template-rows: minmax(0, 1fr) !important;
+  }
+  .g-app[data-mtab='paper'] .mt-rcol,
+  .g-app[data-mtab='talk'] .mt-left {
+    display: none;
+  }
+  .g-app .mt-rcol {
+    border-top: 0;
+  }
+  /* the paper's tools on one row: 上一处 / 下一处 as arrows only (their names stay as the buttons' labels) */
+  .app.g-app [data-testid='paper-prev'],
+  .app.g-app [data-testid='paper-next'] {
+    gap: 0;
+    padding: 0 9px;
+    font-size: 0;
+  }
+  .g-mtabs {
+    display: flex;
+    flex: none;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    border-top: 1px solid var(--line);
+    background: var(--bg-2);
+  }
+  .app .g-mtabs > button {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 50px;
+    min-height: 0;
+    padding: 0;
+    font-size: 14.5px;
+    font-weight: 600;
+    color: var(--mute);
+    background: none;
+    border: 0;
+    border-radius: 0;
+    box-shadow: inset 0 2px 0 transparent;
+  }
+  .app .g-mtabs > button.is-sel {
+    color: var(--ink);
+    box-shadow: inset 0 2px 0 var(--bloom, #3b82f6);
+  }
+  .g-mtab-t {
+    position: relative;
+  }
+  .g-mtab-dot {
+    position: absolute;
+    top: -1px;
+    right: -10px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--bloom, #3b82f6);
+  }
+}
+
+/* 手机上输入框的字至少 16px：iPhone 一点输入框就把整页放大，就是因为字小于 16px */
+@media (pointer: coarse) {
+  .g-app input:not([type='checkbox']):not([type='radio']),
+  .g-app textarea,
+  .g-name {
+    font-size: 16px;
+  }
 }

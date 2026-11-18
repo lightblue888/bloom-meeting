@@ -12,9 +12,12 @@
     cleanup.json       删改清单 {"version":1,"items":[{"id","line","kind","before","after","reason","restored"}]}
                        kind：retract 说错改口 / fact 不符合事实 / sensitive 不宜传播 / profanity 脏话；
                        before = 原始版这一行里被删 / 被改的那一截（原文照抄），after = 换成的（删掉就是 ""）
+    transcript.edits.json  回顾里手改的（改一句、整场替换、访客改名，zuhui/transcript_edit.py）：叠在干净版上，上面几份都不动
     board.json         散会时的任务板快照
     diff.html          散会时的修订对比快照（完整页面）
-    summary.json/.md   AI 纪要（照腾讯会议的"图文总结"结构）
+    summary.json/.md   AI 纪要（照腾讯会议的"图文总结"结构；格式按设置 → 纪要选的，字段见下面"纪要"一节）
+    carry.json         这场会留下的事（待办、标注、没收下的改动）勾掉了哪些（zuhui/past.py）
+    carry_in.json      开会时带进这场的上次遗留（zuhui/past.py）：散会纪要写出每条落实了没有
 前端（口喷鸡改版）只读这些，经 view.py 的 /api/*。
 """
 from __future__ import annotations
@@ -176,6 +179,9 @@ class Meetings:
 
     # ---------- 内部 ----------
     def _dir(self, mid: str) -> Path:
+        if mid == "sample":                 # 第 8 批：自带的示例会议在会议库旁边，不在库里（zuhui/sample.py）
+            from .sample import folder
+            return folder(self.root)
         return self.root / mid
 
     def _write_meta(self):
@@ -500,6 +506,23 @@ class Meetings:
         with self._lock:
             return list(self._lines)
 
+    def live_dir(self) -> Path | None:
+        """正在开的这场会的目录（书签存在里面）；没在开会 None。"""
+        with self._lock:
+            return self._dir(self._cur["id"]) if self._cur else None
+
+    def elapsed(self, ts: float | None = None) -> float | None:
+        """正在开的这场会开了几秒（书签记的"此刻"）；没在开会 None。"""
+        with self._lock:
+            if not self._cur:
+                return None
+            return max(0.0, (ts or time.time()) - (self._t0 or time.time()))
+
+    @property
+    def t0(self) -> float | None:
+        """正在开的这场会开始的墙上时刻。"""
+        return self._t0 if self._cur else None
+
     def list(self) -> list[dict]:
         out = []
         for d in sorted(self.root.glob("*"), reverse=True):
@@ -518,6 +541,8 @@ class Meetings:
                 "state": m.get("state"), "duration_s": m.get("duration_s", 0),
                 "n_tasks": len(tasks), "n_done": sum(1 for t in tasks if t.get("status") == "done"),
                 "n_lines": len(lines), "has_summary": (d / "summary.json").exists(), "has_diff": (d / "diff.html").exists(),
+                # 这场会摊开过的论文（回顾里按论文筛）
+                "papers": [{"id": p["id"], "name": str(p.get("name") or Path(str(p["path"])).stem)} for p in papers_of(m)],
             })
         return out
 
@@ -541,10 +566,41 @@ class Meetings:
         raw = self._load_lines(d)
         items = load_cleanup(d)
         clean = apply_cleanup(raw, items) if items is not None else [dict(l, i=i) for i, l in enumerate(raw)]
-        return {"meeting": m, "transcript": clean, "transcript_raw": raw, "cleanup": items,
+        named, edits = raw, {"n": 0, "last": None}
+        try:                                       # 回顾里手改过（第 7 批，transcript_edit.py）：叠在干净版上，文件都不动
+            from . import transcript_edit
+            ops = transcript_edit.load(d)
+            if ops:
+                clean = transcript_edit.apply(clean, ops)
+                named = transcript_edit.apply_speakers(raw, ops)
+                people = transcript_edit.rename_people(people, ops)
+            edits = transcript_edit.public(ops)
+        except Exception:
+            log.warning("会议 %s 的手改没叠上", mid, exc_info=True)
+        try:                                       # 每人发言时长：按原始版（说了多久就是多久，整理删掉的话也算；改过名的按新名字）
+            talk = talk_time(named)
+        except Exception:
+            talk = []
+        try:                                       # 会上标的书签（第 3 批；旧会议没有：空）
+            from . import inmeeting
+            marks = inmeeting.load_bookmarks(d)
+        except Exception:
+            marks = []
+        try:                                       # 遗留项勾掉了哪些（carry.json）：回顾的修改清单和大厅用同一份
+            done = (json.loads((d / "carry.json").read_text(encoding="utf-8")).get("done") or {})
+            carry_done = sorted(k for k in done if isinstance(k, str))
+        except (OSError, ValueError, AttributeError):
+            carry_done = []
+        try:                                       # 用 API 时这场会的 token 用量和估算费用（没用 API 的会：None）
+            from . import usage
+            use = usage.meeting(d)
+        except Exception:
+            use = None
+        return {"meeting": m, "transcript": clean, "transcript_raw": raw, "cleanup": items, "usage": use,
                 "board": board, "summary": summary,
                 "diff_url": f"/meetings/{mid}/diff.html" if (d / "diff.html").exists() else None,
-                "participants": people}
+                "participants": people, "talk": talk, "bookmarks": marks, "carry_done": carry_done,
+                "edits": edits}
 
     def restore(self, mid: str, ids: list[str], restored: bool = True) -> dict | None:
         """删改清单里的几条恢复成原话（restored=False：再删掉）。改 cleanup.json，重写 transcript.clean.jsonl，
@@ -681,17 +737,24 @@ class Meetings:
         for n in [me, ai] + [who(l) for l in lines if l.get("who") == "guest"]:
             if n not in people:
                 people.append(n)
+        en = str(m.get("lang") or "") == "en"          # 文件里的标题行跟会议的语言走：英文会就写英文
+        L = {"when": "Time", "dur": "Duration", "people": "Participants", "tx": "Transcript", "file": "transcript",
+             "raw": " raw", "sep": ", ", "colon": ": ", "len": f"{dur // 60} min {dur % 60} s"} if en else \
+            {"when": "时间", "dur": "时长", "people": "参会人", "tx": "逐字稿", "file": "逐字稿",
+             "raw": " 原始版", "sep": "、", "colon": "：", "len": f"{dur // 60} 分 {dur % 60} 秒"}
+        c = L["colon"]
         if fmt == "txt":
-            head = [title, f"时间：{when}　时长：{dur // 60} 分 {dur % 60} 秒", "参会人：" + "、".join(people), ""]
-            body = [f"[{l.get('t')}] {who(l)}：{l.get('text').strip()}" for l in lines]
+            head = [title, f"{L['when']}{c}{when}{'   ' if en else '　'}{L['dur']}{c}{L['len']}", L["people"] + c + L["sep"].join(people), ""]
+            body = [f"[{l.get('t')}] {who(l)}{c}{l.get('text').strip()}" for l in lines]
             text = CRLF.join(head + body) + CRLF
         else:
-            head = [f"# {title}", "", f"- 时间：{when}", f"- 时长：{dur // 60} 分 {dur % 60} 秒", "- 参会人：" + "、".join(people), "", "## 逐字稿", ""]
+            head = [f"# {title}", "", f"- {L['when']}{c}{when}", f"- {L['dur']}{c}{L['len']}", f"- {L['people']}{c}" + L["sep"].join(people),
+                    "", f"## {L['tx']}", ""]
             body = [f"**{who(l)}** `{l.get('t')}`  " + LF + l.get("text").strip() + LF for l in lines]
             text = LF.join(head + body)
         safe = _BAD_NAME.sub(" ", title).strip() or "组会"
-        kind = " 原始版" if version == "raw" else ""
-        return {"ok": True, "name": f"{safe} 逐字稿{kind} {stamp}.{'txt' if fmt == 'txt' else 'md'}", "text": text,
+        kind = L["raw"] if version == "raw" else ""
+        return {"ok": True, "name": f"{safe} {L['file']}{kind} {stamp}.{'txt' if fmt == 'txt' else 'md'}", "text": text,
                 "lines": len(lines), "version": "raw" if version == "raw" else "clean"}
 
     def diff_path(self, mid: str) -> Path | None:
@@ -892,40 +955,380 @@ def _retry_soon(every: float = 10.0, tries: int = 60) -> None:
 
 
 # ---------- 纪要 ----------
+# 纪要 JSON（summary.json）：title / speakers / abstract / conclusions / sections[{title, cards[{title, bullets}]}] / todos，
+# 新写的纪要另有：
+#   template   按哪种格式写的（summary_prefs.TEMPLATES）
+#   people     每个人一项 [{name, said, feedback, asks}]：他讲了什么、别人给他的意见、要他做的事
+#   各条内容   {"text", "t", "sec"}：t / sec = 逐字稿里说到它的那一行（"mm:ss" 和秒），回顾里点一下跳到逐字稿和录屏；
+#              feedback / asks 多一个 by（谁说的），todos 多一个 who（谁做）；sections 和卡片也带 t / sec（这一节从哪开始）
+#   carried    开会时带着上次遗留时才有：每条一项 [{id, ref, kind, item, from, started, done, text, t?, sec?}]（_carried）
+# 旧纪要的各条是纯字符串、没有 people / template：照原样显示（前端两种都认），这里不改旧文件。
+# 每人发言时长不在纪要里：Meetings.get 每次按逐字稿算（talk_time），旧会议也有。
+_TIME_RE = re.compile(r"^\[?\s*(?:(\d{1,2}):)?(\d{1,3}):(\d{2})(?:\.\d+)?\s*\]?$")
+_TAIL_TIME = re.compile(r"\s*[（(\[【]\s*((?:\d{1,2}:)?\d{1,3}:\d{2})\s*[）)\]】]\s*$")
+_ITEM_MAX = 400          # 一条最多多少字（模型偶尔把一整段塞进一条）
+_NAME_MAX = 40
+_SNAP_S = 90.0           # 模型写的时间离最近的一行超过这么多秒：当它编的，不要
+
+
+def _one(v, n: int) -> str:
+    """一行字：并掉换行和连着的空格，截到 n 字。"""
+    return " ".join(str(v if v is not None else "").split())[:n]
+
+
+def parse_clock(v) -> float | None:
+    """"03:21" / "75:12" / "1:02:03" / "[03:21]" / 秒数 → 秒；认不出返回 None。"""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v) if v >= 0 else None
+    m = _TIME_RE.match(str(v or "").strip())
+    if not m or int(m.group(3)) >= 60:
+        return None
+    return int(m.group(1) or 0) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+
+
+class _Clock:
+    """纪要里写的时间 → 逐字稿里的那一行：照抄的 "mm:ss" 先找一模一样的那行，没有就找开口时刻最近的；
+    离得太远（_SNAP_S）就当它编的，不写时间。"""
+
+    def __init__(self, lines: list[dict]):
+        self.rows: list[tuple[float, str]] = []
+        self.by_t: dict[str, tuple[str, float]] = {}
+        for l in lines or []:
+            if l.get("who") == "system" or not str(l.get("text") or "").strip():
+                continue
+            try:
+                sec = float(l.get("sec") or 0)
+            except (TypeError, ValueError):
+                continue
+            t = str(l.get("t") or "") or _fmt(sec)
+            self.rows.append((sec, t))
+            self.by_t.setdefault(t, (t, sec))
+
+    def at(self, v) -> tuple[str, float] | None:
+        if not self.rows or v is None or v == "":
+            return None
+        s = str(v).strip().strip("[]【】").strip() if isinstance(v, str) else ""
+        if s in self.by_t:
+            return self.by_t[s]
+        x = parse_clock(v)
+        if x is None:
+            return None
+        sec, t = min(self.rows, key=lambda r: abs(r[0] - x))
+        return (t, sec) if abs(sec - x) <= _SNAP_S else None
+
+
+def _item(x, clock: _Clock, keys: tuple[str, ...] = ()) -> dict | None:
+    """一条内容 → {"text", "t"?, "sec"?, by/who?}。字符串（旧格式、模型没照做）也收；时间写在句末括号里的也认。"""
+    if isinstance(x, str):
+        src: dict = {}
+        text = x
+    elif isinstance(x, dict):
+        src = x
+        text = x.get("text") or x.get("content") or ""
+    else:
+        return None
+    text = _one(text, _ITEM_MAX * 2)
+    tv = src.get("t")
+    m = _TAIL_TIME.search(text)
+    if m:                                   # "……（12:34）"：时间挪出来
+        text = text[:m.start()].rstrip()
+        if tv in (None, ""):
+            tv = m.group(1)
+    text = text[:_ITEM_MAX]
+    if not text:
+        return None
+    out: dict = {"text": text}
+    hit = clock.at(tv)
+    if hit:
+        out["t"], out["sec"] = hit
+    for k in keys:
+        v = _one(src.get(k), _NAME_MAX)
+        if v:
+            out[k] = v
+    return out
+
+
+def _items(xs, clock: _Clock, limit: int, keys: tuple[str, ...] = ()) -> list[dict]:
+    out = []
+    for x in xs if isinstance(xs, list) else []:
+        it = _item(x, clock, keys)
+        if it:
+            out.append(it)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _earliest(*groups) -> tuple[str, float] | None:
+    best = None
+    for g in groups:
+        for it in g or []:
+            if isinstance(it, dict) and it.get("sec") is not None and (best is None or it["sec"] < best[1]):
+                best = (it["t"], it["sec"])
+    return best
+
+
+def normalize_summary(s: dict, lines: list[dict], carried: list[dict] | None = None) -> dict:
+    """模型交回来的纪要 → 存盘的样子：类型对、长度有上限、各条的时间对到逐字稿里真有的那一行。
+    旧格式（各条是字符串、没有 people）也能过：各条变成 {"text"}，没有时间。别的键（source、generated……）原样留着。"""
+    clock = _Clock(lines)
+    out = dict(s if isinstance(s, dict) else {})
+    out["title"] = _one(out.get("title"), 60)
+    speakers = []
+    for n in out.get("speakers") if isinstance(out.get("speakers"), list) else []:
+        n = _one(n.get("name") if isinstance(n, dict) else n, _NAME_MAX)
+        if n and n not in speakers:
+            speakers.append(n)
+    out["speakers"] = speakers[:40]
+    out["abstract"] = " ".join(str(out.get("abstract") or "").split())[:1200]
+    out["conclusions"] = _items(out.get("conclusions"), clock, 12)
+    sections = []
+    for sec in out.get("sections") if isinstance(out.get("sections"), list) else []:
+        if not isinstance(sec, dict):
+            continue
+        cards = []
+        for c in sec.get("cards") if isinstance(sec.get("cards"), list) else []:
+            if not isinstance(c, dict):
+                continue
+            bullets = _items(c.get("bullets"), clock, 12)
+            title = _one(c.get("title"), 80)
+            if not title and not bullets:
+                continue
+            card: dict = {"title": title, "bullets": bullets}
+            hit = clock.at(c.get("t")) or _earliest(bullets)
+            if hit:
+                card["t"], card["sec"] = hit
+            cards.append(card)
+            if len(cards) >= 12:
+                break
+        title = _one(sec.get("title"), 80)
+        if not title and not cards:
+            continue
+        row: dict = {"title": title, "cards": cards}
+        hit = clock.at(sec.get("t")) or _earliest(cards)
+        if hit:
+            row["t"], row["sec"] = hit
+        sections.append(row)
+        if len(sections) >= 12:
+            break
+    out["sections"] = sections
+    people, seen = [], set()
+    for p in out.get("people") if isinstance(out.get("people"), list) else []:
+        if not isinstance(p, dict):
+            continue
+        name = _one(p.get("name"), _NAME_MAX)
+        if not name or name in seen:
+            continue
+        row = {"name": name, "said": _items(p.get("said"), clock, 8),
+               "feedback": _items(p.get("feedback"), clock, 8, ("by",)), "asks": _items(p.get("asks"), clock, 8, ("by",))}
+        if not (row["said"] or row["feedback"] or row["asks"]):
+            continue
+        seen.add(name)
+        people.append(row)
+        if len(people) >= 30:
+            break
+    out["people"] = people
+    out["todos"] = _items(out.get("todos"), clock, 20, ("who",))
+    if carried:
+        out["carried"] = _carried(out.get("carried"), carried, clock)
+    else:
+        out.pop("carried", None)
+    return out
+
+
+def _carried(raw, carried: list[dict], clock: _Clock) -> list[dict]:
+    """上次遗留的每一条这次落实了没有：[{id, ref, kind, item（原来那条）, from, started, done, text（怎么落实的 / 还差什么）, t?, sec?}]。
+    模型漏掉的几条也列上（done=False、text 空），编号对不上的不要。"""
+    by_id = {str(c.get("id")): c for c in carried if isinstance(c, dict) and c.get("id")}
+    got: dict[str, dict] = {}
+    for x in raw if isinstance(raw, list) else []:
+        if not isinstance(x, dict) or str(x.get("id")) not in by_id or str(x.get("id")) in got:
+            continue
+        d = x.get("done")
+        r = {"done": d is True or str(d).strip().lower() in ("true", "yes", "1", "是"), "text": _one(x.get("text"), _ITEM_MAX)}
+        hit = clock.at(x.get("t"))
+        if hit:
+            r["t"], r["sec"] = hit
+        got[str(x["id"])] = r
+    out = []
+    for cid, c in by_id.items():
+        row = {"id": cid, "ref": str(c.get("ref") or ""), "kind": str(c.get("kind") or "todo"), "item": _one(c.get("text"), 200),
+               "from": c.get("from"), "started": c.get("started")}
+        row.update(got.get(cid) or {"done": False, "text": ""})
+        out.append(row)
+    return out
+
+
+# 每人发言时长（不调模型）：重转写过的行有 start / end（录屏里的秒）就用实测的；别的按字数估，且不超过到下一句开口的间隔
+CJK_PER_S = 4.5          # 中文每秒几个字（aftermeeting._speech_guess 也是这个数）
+WORDS_PER_S = 2.6        # 英文每秒几个词（约 150 词每分钟）
+_CJK = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
+_WORD = re.compile(r"[A-Za-z0-9]+(?:['’][A-Za-z]+)?")
+
+
+def speech_seconds(text) -> float:
+    """按字数估一句话要说几秒。"""
+    s = str(text or "")
+    return len(_CJK.findall(s)) / CJK_PER_S + len(_WORD.findall(s)) / WORDS_PER_S
+
+
+def talk_time(lines: list[dict]) -> list[dict]:
+    """每个人说了多久：[{who, name, sec, n, share}]，按时长从多到少。who = teacher（主持人）/ student（AI）/ guest（访客，
+    name 是名字）；n = 几句；share = 占全场发言的比例。系统行、没念出来的 AI 答案（unspoken）不算。"""
+    rows = []
+    for l in lines or []:
+        if l.get("who") not in ("teacher", "student", "guest") or not str(l.get("text") or "").strip() or l.get("unspoken"):
+            continue
+        try:
+            rows.append((float(l.get("sec") or 0), l))
+        except (TypeError, ValueError):
+            continue
+    rows.sort(key=lambda r: r[0])
+    nxt: list[float | None] = [None] * len(rows)       # 每句之后下一句（开口时刻更晚的）什么时候开口
+    later, k = None, len(rows) - 1
+    while k >= 0:                                       # 从后往前，同一时刻开口的几句一组
+        j = k
+        while j >= 0 and rows[j][0] == rows[k][0]:
+            j -= 1
+        for i in range(j + 1, k + 1):
+            nxt[i] = later
+        later, k = rows[k][0], j
+    acc: dict[tuple[str, str], dict] = {}
+    for k, (sec, l) in enumerate(rows):
+        dur = None
+        try:
+            d = float(l["end"]) - float(l["start"])
+            if 0 < d < 900:
+                dur = d
+        except (KeyError, TypeError, ValueError):
+            pass
+        if dur is None:
+            dur = speech_seconds(l.get("text"))
+            if nxt[k] is not None:
+                dur = min(dur, nxt[k] - sec)
+        who = str(l.get("who"))
+        name = _one(l.get("name"), _NAME_MAX) if who == "guest" else ""
+        r = acc.setdefault((who, name), {"who": who, "name": name or None, "sec": 0.0, "n": 0})
+        r["sec"] += max(0.0, dur)
+        r["n"] += 1
+    total = sum(r["sec"] for r in acc.values())
+    out = sorted(acc.values(), key=lambda r: (-r["sec"], r["who"], r["name"] or ""))
+    for r in out:
+        r["share"] = round(r["sec"] / total, 3) if total > 0 else 0.0
+        r["sec"] = round(r["sec"], 1)
+    return out
+
+
+# 每个人那一节三栏的名字（进展汇报换成"进展 / 意见 / 下周任务"）
+PEOPLE_LABELS = {"default": ("讲了什么", "收到的意见", "要做的事"), "progress": ("进展", "意见", "下周任务")}
+
+
+def _md_item(x) -> str:
+    if not isinstance(x, dict):
+        return str(x or "")
+    s = str(x.get("text") or "")
+    if x.get("by"):
+        s = f"{x['by']}：{s}"
+    return s + (f" `{x['t']}`" if x.get("t") else "")
+
+
 def render_markdown(s: dict) -> str:
     out = [f"# {s.get('title') or '组会纪要'}", ""]
     if s.get("speakers"):
-        out.append("发言人：" + "、".join(s["speakers"]))
+        out.append("发言人：" + "、".join(str(x) for x in s["speakers"]))
     if s.get("abstract"):
         out += ["", "主题摘要：" + s["abstract"]]
     if s.get("conclusions"):
-        out += ["", "## 核心结论", ""] + [f"- {c}" for c in s["conclusions"]]
+        out += ["", "## 核心结论", ""] + [f"- {_md_item(c)}" for c in s["conclusions"]]
+    people: list[str] = []
+    if s.get("people"):
+        heads = PEOPLE_LABELS.get(s.get("template") or "", PEOPLE_LABELS["default"])
+        people = ["", "## 每个人"]
+        for p in s["people"]:
+            people += ["", f"### {p.get('name', '')}"]
+            for head, key in zip(heads, ("said", "feedback", "asks")):
+                if p.get(key):
+                    people += ["", head, ""] + [f"- {_md_item(x)}" for x in p[key]]
+    topics: list[str] = []
     for sec in s.get("sections") or []:
-        out += ["", f"## {sec.get('title', '')}"]
+        topics += ["", f"## {sec.get('title', '')}" + (f" `{sec['t']}`" if sec.get("t") else "")]
         for i, card in enumerate(sec.get("cards") or [], 1):
-            out += ["", f"### {i:02d} {card.get('title', '')}", ""] + [f"- {b}" for b in card.get("bullets") or []]
+            topics += ["", f"### {i:02d} {card.get('title', '')}", ""] + [f"- {_md_item(b)}" for b in card.get("bullets") or []]
+    out += (people + topics) if s.get("template") == "progress" else (topics + people)
     if s.get("todos"):
-        out += ["", "## 后续工作安排", ""] + [f"- {t}" for t in s["todos"]]
+        out += ["", "## 后续工作安排", ""] + [f"- {_md_item(t)}" for t in s["todos"]]
+    if s.get("carried"):
+        rows = [c for c in s["carried"] if isinstance(c, dict)]
+        out += ["", "## 上次遗留", ""] + [
+            f"- [{'x' if c.get('done') else ' '}] {c.get('item') or ''}" + (f"：{c['text']}" if c.get("text") else "")
+            + (f" `{c['t']}`" if c.get("t") else "") for c in sorted(rows, key=lambda c: not c.get("done"))]
     return "\n".join(out) + "\n"
 
 
-SUMMARY_PROMPT = """你是组会的记录员。下面是一场论文修改组会的逐字稿（每行开头是说话人的名字：主持人口述意见，Claude 即时回应并异步改稿，也可能有通过链接进来的参会者）和任务板（Claude 实际改了什么）。
-提到人的时候一律写他的名字（逐字稿里的写法，比如 主持人、Claude），不要写"老师""学生""主持人""助手"这类称呼。
-请输出一份"图文总结"式的会议纪要，严格用 JSON，字段：
+# <AI> / <ME> 换成会上 AI 的名字和主持人的名字（AI 叫什么由设置定，这里不写死型号）
+SUMMARY_PROMPT = """你是组会的记录员。下面是一场组会的逐字稿和任务板。逐字稿每行是"[时间] 说话人：内容"：<ME> 是主持人；<AI> 是会上的 AI 助手，即时回应、在后台改论文；其余是通过链接进来的参会者。任务板是 <AI> 实际改了什么。
+提到人的时候一律写他的名字（逐字稿里的写法），不要写"老师""学生""主持人""助手"这类称呼。
+严格用 JSON 输出，字段：
 {
  "title": "六到十二字的会议主题",
  "speakers": ["逐字稿里出现过的说话人名字"],
  "abstract": "两三句话的主题摘要：这场会围绕什么、定了什么、改了什么",
- "conclusions": ["核心结论，三到五条，每条一句话"],
- "sections": [{"title": "主题名（如：定义与符号章的详略）", "cards": [{"title": "小标题", "bullets": ["要点一句话", "..."]}]}],
- "todos": ["后续工作安排，每条一句话，含谁做、做什么"]
+ "conclusions": [{"text": "核心结论，一句话", "t": "mm:ss"}],
+ "sections": [{"title": "主题名（如：定义与符号章的详略）", "t": "mm:ss", "cards": [{"title": "小标题", "bullets": [{"text": "要点一句话", "t": "mm:ss"}]}]}],
+ "people": [{"name": "名字", "said": [{"text": "他讲的内容", "t": "mm:ss"}], "feedback": [{"text": "别人给他的意见", "by": "提意见的人", "t": "mm:ss"}], "asks": [{"text": "要他做的事", "by": "提出的人", "t": "mm:ss"}]}],
+ "todos": [{"text": "后续工作，一句话，含谁做、做什么", "who": "负责的人", "t": "mm:ss"}]
 }
-要求：只写逐字稿和任务板里有的内容，不编造；Claude "已改"的以任务板为准，"排队/改中/失败"的要写进 todos；用中文，不用 markdown 符号；JSON 之外不要输出任何文字。"""
+t：照抄逐字稿行首方括号里的时间，指向这条内容最早说到的那一行；sections 的 t 是这个主题开始讨论的那一行；说不准就不写 t，不要编。
+people：会上开口说过话的每个人一项（不含 <AI>），按第一次开口的先后排；said 写他自己讲的内容、汇报的进展、提的观点；feedback 写别人针对他说的意见和评价；asks 写别人要他做的事；没有的给空数组。
+conclusions 三到五条；每条一句话。
+要求：只写逐字稿和任务板里有的内容，不编造；<AI> "已改"的以任务板为准，"排队/改中/失败"的要写进 todos；用中文，不用 markdown 符号；JSON 之外不要输出任何文字。"""
+
+# 各种格式在上面之外多交代的（自定义 = 设置里写的本组要求）
+SUMMARY_TEMPLATES = {
+    "default": "",
+    "progress": "这是一场进展汇报：大家轮流讲自己这段时间的进展，别人给意见、布置下一步。people 是重点：said 写他汇报的进展"
+                "（做了什么、结果怎样、卡在哪里），feedback 写别人给他的意见，asks 写他下周要做的事。sections 只放不属于某一个人的"
+                "公共议题，没有就给空数组。todos 汇总每个人下周的任务，who 写是谁的。",
+    "paper": "这是一场论文讨论：sections 按论文的章节或讨论到的问题分组（如：第三章 实验设置、相关工作的定位），卡片写具体问题、"
+             "各人的看法和定下的改法；conclusions 写定下来的修改决定；todos 写要改的地方，说明是哪一章、谁来改。",
+    "proposal": "这是一场开题或预答辩：通常一个人汇报，其余人提问、质疑、给意见。sections 依次是：汇报内容（研究问题、方法、进度安排）；"
+                "提问与回答（每张卡片一个问题：谁问的、问了什么、怎么答的）；评审意见（按提意见的人分卡片）。conclusions 写会上给的"
+                "总体评价和必须修改的地方，会上没给结论就不要编。todos 写会后必须完成的修改。",
+}
+# 这场会带着上次遗留的事（开会时抄进来的 carry_in.json，见 zuhui/past.py）：纪要里写出哪些这次落实了
+CARRIED_RULE = ('这场会带着上次遗留的事（用户消息最后列着，方括号里是编号）。JSON 里再加一个字段 '
+                '"carried": [{"id": "c1", "done": true, "text": "这次怎么落实的，或者还差什么，一句话", "t": "mm:ss"}]：'
+                '每条遗留一项，id 照抄；会上说已经做完了、或者任务板上这次改好了的，done 为 true；没做完、没提到的，done 为 false，'
+                '没提到就 text 写"会上没提到"。t 指向说到它的那一行，没说到就不写。')
+_CARRY_KIND = {"todo": "待办", "note": "标注", "edit": "没收下的改动"}
+CUSTOM_HEAD = "本组对纪要的要求（按这些要求组织 sections、conclusions、people、todos 的内容；JSON 字段和格式不变）：\n"
 
 
-def summarize(cfg: dict, meeting: dict, lines: list[dict], tasks: list[dict]) -> dict:
-    """用套餐里的 Sonnet 生成纪要（claude_text，不走 API）；失败时返回一份纯规则拼出来的兜底纪要。"""
+def summary_prompt(template: str, custom: str = "", me: str = "主持人", ai: str = "AI") -> str:
+    """这种格式的纪要用的系统提示词。自定义格式没写要求时按默认格式写。"""
+    base = SUMMARY_PROMPT.replace("<ME>", me).replace("<AI>", ai)
+    if template == "custom":
+        extra = CUSTOM_HEAD + custom.strip() if custom.strip() else ""
+    else:
+        extra = SUMMARY_TEMPLATES.get(template, "")
+    return base + ("\n\n" + extra if extra else "")
+
+
+def summarize(cfg: dict, meeting: dict, lines: list[dict], tasks: list[dict], template: str | None = None,
+              custom: str | None = None, fallback: bool = True, carried: list[dict] | None = None,
+              bookmarks: list[dict] | None = None) -> dict:
+    """生成纪要：template 不给就按设置里选的格式（summary_prefs），custom 不给就用设置里写的自定义要求。
+    carried：开会时带进来的上次遗留（past.carry_in）：纪要里多一节 carried，写出每条这次落实了没有。
+    走模型来源（claude_text：API 或 Claude Code 账号）。模型没答出来时：fallback=True 返回一份纯规则拼出来的兜底纪要
+    （散会后的流水线），False 抛 RuntimeError（回顾里重新生成：别拿兜底盖掉原来的纪要）。"""
     import getpass
+    from . import summary_prefs
+    prefs = summary_prefs.load()
+    template = template if template in summary_prefs.TEMPLATES else prefs["template"]
+    custom = str(prefs["custom"] if custom is None else custom)[:summary_prefs.CUSTOM_MAX]
+    used = "default" if template == "custom" and not custom.strip() else template
     me = str((cfg.get("meeting") or {}).get("me") or getpass.getuser() or "我")
     ai = assistant_name(cfg)
 
@@ -933,25 +1336,41 @@ def summarize(cfg: dict, meeting: dict, lines: list[dict], tasks: list[dict]) ->
         w = l.get("who")
         return me if w == "teacher" else ai if w == "student" else (l.get("name") or "参会者") if w == "guest" else "系统"
 
-    transcript = "\n".join(f"[{l.get('t')}] {who(l)}：{l.get('text')}" for l in lines)
+    transcript = "\n".join(f"[{l.get('t') or _fmt(float(l.get('sec') or 0))}] {who(l)}：{l.get('text')}" for l in lines)
     multi = len({t.get("paper") for t in tasks if t.get("paper")}) > 1    # 会上改了不止一篇：每条标上是哪篇的
-    board = "\n".join(f"{t['id']}（{t['status']}）" + (f"《{t.get('paper_name') or '论文'}》" if multi else "")
+    board = "\n".join(f"{t.get('id')}（{t.get('status')}）" + (f"《{t.get('paper_name') or '论文'}》" if multi else "")
                       + f"{t.get('title')}：{(t.get('result') or t.get('error') or '')[:160]}" for t in tasks) or "（无）"
-    user = f"会议：{meeting.get('title')}，时长 {meeting.get('duration_s', 0) // 60} 分钟。\n\n逐字稿：\n{transcript or '（空）'}\n\n任务板：\n{board}"
+    user = f"会议：{meeting.get('title')}，时长 {int(meeting.get('duration_s') or 0) // 60} 分钟。\n\n逐字稿：\n{transcript or '（空）'}\n\n任务板：\n{board}"
+    carried = [c for c in (carried or []) if isinstance(c, dict) and c.get("id")]
+    if carried:
+        user += "\n\n上次遗留：\n" + "\n".join(
+            f"[{c['id']}] {_CARRY_KIND.get(str(c.get('kind')), '待办')}：{_one(c.get('text'), 200)}"
+            + (f"（{_one(c.get('who'), 40)}）" if c.get("who") else "") for c in carried)
+    from . import inmeeting
+    bookmarks = [b for b in (bookmarks or []) if isinstance(b, dict)]
+    if bookmarks:                              # 会上点"标记"标的重点：纪要优先写这几处附近的
+        user += "\n\n会上标的重点：\n" + inmeeting.bookmarks_block(bookmarks)
+    system = (summary_prompt(used, custom, me, ai) + ("\n\n" + CARRIED_RULE if carried else "")
+              + ("\n\n" + inmeeting.BOOKMARK_RULE if bookmarks else ""))
     try:
-        from .claude_text import SONNET, ask_json                  # 走套餐里的 Sonnet（不走 API）
+        from .claude_text import SONNET, ask_json
 
         def ask(extra: str = "") -> dict:
-            s0 = ask_json(user, system=SUMMARY_PROMPT + extra, model=SONNET, timeout=300)
+            s0 = ask_json(user, system=system + extra, model=SONNET, timeout=300)
             if not isinstance(s0, dict):
                 raise ValueError("纪要不是 JSON 对象")
             return s0
         try:
             s = ask()
         except ValueError:                     # 还是太长被截断：再要一次精简版
-            s = ask("\n\n这次务必精简：每条不超过 40 字，sections 最多 4 组，每组最多 4 条。")
+            s = ask("\n\n这次务必精简：每条不超过 40 字，sections 最多 4 组，每组最多 4 条，people 每人每栏最多 3 条。")
+        s = normalize_summary(s, lines, carried)
+        if not s["title"]:
+            s["title"] = _one(meeting.get("title"), 60) or "组会纪要"
         s["source"] = "claude"
-    except Exception as e:  # 兜底：规则拼
+    except Exception as e:
+        if not fallback:
+            raise RuntimeError(str(e) or type(e).__name__) from None
         done = [t for t in tasks if t.get("status") == "done"]
         rest = [t for t in tasks if t.get("status") != "done"]
         s = {
@@ -963,8 +1382,28 @@ def summarize(cfg: dict, meeting: dict, lines: list[dict], tasks: list[dict]) ->
             "todos": [f"{t.get('title')}（{t.get('status')}）" for t in rest],
             "source": f"fallback: {e!r}",
         }
-    s.setdefault("generated", _now_iso())
+    s["template"] = used
+    s["generated"] = _now_iso()
     s["markdown"] = render_markdown(s)
+    return s
+
+
+def regenerate(meetings: "Meetings", cfg: dict, mid: str, template: str) -> dict:
+    """回顾里换一种格式重新生成纪要（用户点了才调模型）：按这场会的干净版逐字稿和散会时的任务板写，写好了替换 summary.json。
+    模型没答出来抛 RuntimeError，原来的纪要不动；没有这场会抛 KeyError。"""
+    mid = Path(str(mid)).name
+    g = meetings.get(mid)
+    if not g:
+        raise KeyError(mid)
+    tasks = (g.get("board") or {}).get("tasks") or []
+    from . import past
+    s = summarize(cfg, g["meeting"], g["transcript"], tasks, template=template, fallback=False,
+                  carried=past.carry_in(meetings, mid), bookmarks=g.get("bookmarks"))
+    meetings.set_summary(mid, s)
+    try:                                       # 纪要说落实了的遗留项：在原来那场会里勾掉
+        past.settle(meetings, mid, s)
+    except Exception:
+        pass
     return s
 
 

@@ -9,6 +9,7 @@ const STEP_KEYS: Record<string, string> = {
   没改成: 'meeting.ai.step.failed', 没核对上: 'meeting.ai.step.unverified', 看截图: 'meeting.ai.step.look',
   联网搜: 'meeting.ai.step.web', 打开网页: 'meeting.ai.step.open', 找文件: 'meeting.ai.step.glob',
   读论文: 'meeting.ai.step.read_paper', 想法: 'meeting.ai.step.thought',
+  查文献: 'meeting.ai.step.lit', 核对引用: 'meeting.ai.step.cite',
 };
 
 export function stepK(k: string): string {
@@ -36,6 +37,8 @@ export function stepV(v: string | undefined): string | undefined {
     [/^读论文$/, () => t('meeting.ai.step.read_paper')],
     [/^看截图$/, () => t('meeting.ai.step.look')],
     [/^找文件$/, () => t('meeting.ai.step.glob')],
+    [/^查文献$/, () => t('meeting.ai.step.lit')],
+    [/^核对引用$/, () => t('meeting.ai.step.cite')],
     [/^整篇重写论文$/, () => t('meeting.ai.step.rewrite')],
     [/^开始$/, () => t('meeting.ai.step.start')],
   ];

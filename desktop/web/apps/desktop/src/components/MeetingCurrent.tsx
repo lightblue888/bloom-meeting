@@ -9,9 +9,11 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { inTauri, listen } from '../api';
 import { t } from '../i18n';
-import { meetingApi, POLL_MS, watchBrain, type Brain, type Current, type Line } from '../meetingApi';
+import { exportReason, meetingApi, POLL_MS, watchBrain, type Brain, type Current, type Line } from '../meetingApi';
 import { MeetingLayout } from './MeetingLayout';
 import { MeetingLobby } from './MeetingLobby';
+import { PaperHistory } from './PaperHistory';
+import type { LiveTools } from './MeetingTools';
 import { keep } from './useDismiss';
 
 type Backend = 'unknown' | 'up' | 'down' | 'starting';
@@ -20,7 +22,27 @@ type Backend = 'unknown' | 'up' | 'down' | 'starting';
 const webview = () =>
   (window as unknown as { chrome?: { webview?: { postMessageWithAdditionalObjects?: (m: string, o: FileList) => void } } }).chrome?.webview;
 
-const PAPER_EXT = /\.(pdf|md|markdown|tex|latex|docx?|txt)$/i;
+const PAPER_EXT = /\.(pdf|md|markdown|tex|latex|docx?|pptx|txt)$/i;
+
+/** an auto-save failure already said (this run, and the last one across restarts): true; else marks it said */
+const AUTOSAVE_TOLD = 'bloom.autosave.told';
+const toldNow = new Set<string>();
+function autosaveTold(key: string): boolean {
+  let last: string | null = null;
+  try {
+    last = localStorage.getItem(AUTOSAVE_TOLD);
+  } catch {
+    /* private window */
+  }
+  if (toldNow.has(key) || last === key) return true;
+  toldNow.add(key);
+  try {
+    localStorage.setItem(AUTOSAVE_TOLD, key);
+  } catch {
+    /* this run only */
+  }
+  return false;
+}
 const NO_LINES: Line[] = [];
 
 export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: string) => void; active?: boolean }) {
@@ -79,6 +101,14 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
   useEffect(() => {
     if (active) kick.current();
   }, [active]);
+  // 散会后自动保存 failed (the backend says so for a few hours): "自动保存失败：原因" once, in a toast (nothing moves)
+  const autosave = cur?.autosave ?? null;
+  const autosaveKey = autosave && !autosave.ok ? `${autosave.meeting}:${autosave.at}` : null;
+  useEffect(() => {
+    if (!autosaveKey || !autosave || autosaveTold(autosaveKey)) return;
+    onToast(t('meeting.autosave.failed', { a: exportReason({ code: autosave.error ?? '', detail: autosave.detail ?? '' }) }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autosaveKey]);
   // "Claude 在干什么" is pushed by the backend the moment it changes (2026-11-13, the user: don't pull it; the page only
   // keeps time). The poll's copy is the fallback while the push channel is down.
   const isLive = cur?.meeting?.state === 'live';
@@ -281,6 +311,21 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
     const name = paperName ?? (cur?.paper?.exists ? cur.paper.name : null);
     return name ? [{ id: cur?.active_paper || cur?.paper?.id || 'current', name }] : [];
   }, [cur?.papers, cur?.paper, cur?.active_paper, paperName]);
+  // 第 6 批: the comments typed on the paper (the host writes, replies, resolves and deletes while the meeting is on;
+  // after it they stay on the paper to read), and the paper on screen's 历史版本
+  const comments = useMemo(
+    () => ({ items: cur?.comments ?? [], canAdd: state === 'live', canDelete: state === 'live' }),
+    [cur?.comments, state],
+  );
+  const [histOpen, setHistOpen] = useState(false);
+  const histPaper = useMemo(() => {
+    const id = cur?.active_paper ?? null;
+    const p = id ? papers.find((x) => x.id === id) : null;
+    return id ? { id, name: p?.name ?? paperTitle ?? '' } : null;
+  }, [cur?.active_paper, papers, paperTitle]);
+  useEffect(() => {
+    if (!active) setHistOpen(false);
+  }, [active]);
   // dropping a paper = 新增: it joins the papers on the desk (the backend keeps the earlier ones) and comes up
   const canDrop = backend === 'up' && busy !== 'paper';
   const isFileDrag = (e: DragEvent) => [...e.dataTransfer.items].some((i) => i.kind === 'file');
@@ -372,6 +417,26 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
     }
   };
 
+  // in the meeting (第 3 批): the box to type to the AI, 标记, the answer only you see, the passage selected in the
+  // paper, the quiet reminder. Kept after the meeting ends (switched off): nothing moves then
+  const onChanged = useCallback(() => kick.current(), []);
+  const onToolError = useCallback((msg: string) => setError(msg), []);
+  const endRef = useRef<() => void>(() => {});
+  endRef.current = () => void endMeeting();
+  const onQuietEnd = useCallback(() => endRef.current(), []);
+  const tools = useMemo<LiveTools>(
+    () => ({
+      role: 'host',
+      live: state === 'live',
+      anchor: cur?.anchor ?? null,
+      quietS: cur?.quiet_s ?? null,
+      onError: onToolError,
+      onEnd: onQuietEnd,
+      onChanged,
+    }),
+    [state, cur?.anchor, cur?.quiet_s, onToolError, onQuietEnd, onChanged],
+  );
+
   // no backend yet: nothing to click — the app starts it by itself (the effect above) and this page waits
   if (backend === 'down' || backend === 'starting' || (backend === 'unknown' && !cur)) {
     return (
@@ -395,7 +460,13 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
 
   if (view === 'lobby' && !live) {
     return (
+      <>
+      {/* 历史版本 opens from the lobby's paper too: between meetings is when you'd look back or restore */}
+      {histOpen && histPaper && active && (
+        <PaperHistory paper={histPaper.id} name={histPaper.name} onClose={() => setHistOpen(false)} onToast={onToast} />
+      )}
       <MeetingLobby
+        onHistory={histPaper ? () => setHistOpen(true) : null}
         cur={cur}
         paperName={paperName}
         busy={busy ?? (waitLive ? 'start' : null)}
@@ -412,6 +483,7 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
         over={over}
         active={active}
       />
+      </>
     );
   }
   const endBtn = (ghost: boolean) => (
@@ -465,12 +537,19 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
         actions={actions}
         notice={notice}
         left={hasPaper ? undefined : dropZone}
+        tools={meeting ? tools : null}
+        bookmarks={cur?.bookmarks ?? null}
+        comments={hasPaper ? comments : null}
+        onHistory={hasPaper && histPaper ? () => setHistOpen(true) : null}
       />
       {over && hasPaper && (
         <div className="mt-drop-veil" aria-hidden="true">
           <Icon name="document" size={28} />
           {t(live ? 'meeting.paper.drop_add' : 'meeting.paper.drop_new')}
         </div>
+      )}
+      {histOpen && histPaper && active && (
+        <PaperHistory paper={histPaper.id} name={histPaper.name} onClose={() => setHistOpen(false)} onToast={onToast} />
       )}
     </div>
   );

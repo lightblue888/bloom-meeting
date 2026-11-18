@@ -264,6 +264,10 @@ class EnglishMeeting(Base):
 
 class Ask(Base):
     def test_ask_paper(self):
+        from zuhui import littools                  # 查文献关着：照旧没有工具、说查不了网（开着的见 test_b4_models）
+        was = littools.enabled()
+        littools.set_enabled(False)
+        self.addCleanup(littools.set_enabled, was)
         Fake.script = ["论文里写的是 92.7%，在 3 实验那一节。网上的我这边查不了。"]
         steps = []
         ans, err = self.hands.ask_paper("准确率是多少？顺便上网查一下别人的", {"section": "3 实验"}, "我：在的",

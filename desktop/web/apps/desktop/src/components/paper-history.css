@@ -1,0 +1,237 @@
+/* 第 6 批 · 历史版本：一个固定尺寸的对话框。左边版本列表自己滚，底下两个按钮和一行消息位置固定（消息按两行留好高度）；
+   右边是两版的修订对比页（iframe）。浮在会议页上面，不挤动任何东西。 */
+.ph-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 220;
+  display: grid;
+  place-items: center;
+  background: rgb(0 0 0 / 0.5);
+}
+.ph-dlg {
+  box-sizing: border-box;
+  width: min(1120px, calc(100vw - 48px));
+  height: min(720px, calc(100vh - 56px));
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  border: 1px solid var(--line-2, var(--line));
+  background: var(--panel, var(--bg-2));
+  color: var(--ink);
+  box-shadow: 0 20px 60px rgb(0 0 0 / 0.45);
+  overflow: hidden;
+}
+.ph-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 48px;
+  padding: 0 10px 0 18px;
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+.ph-head h2 {
+  flex: none;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.ph-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--mute);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app .ph-x {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  min-height: 0;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  border-radius: var(--r-sm, 6px);
+  border: 0;
+  background: transparent;
+  color: var(--faint);
+}
+.app .ph-x:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.ph-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+}
+.ph-side {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+}
+.ph-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  scrollbar-width: thin;
+}
+.app .ph-row {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 0;
+  height: 52px;
+  padding: 7px 10px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: stretch;
+  gap: 3px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  font-weight: 400;
+  box-shadow: none;
+}
+.app .ph-row:hover {
+  background: var(--hover);
+}
+.app .ph-row.is-sel {
+  background: color-mix(in srgb, var(--bloom, #3b82f6) 16%, transparent);
+  border-color: color-mix(in srgb, var(--bloom, #3b82f6) 45%, transparent);
+}
+.app .ph-row.is-cmp:not(.is-sel) {
+  border-color: var(--line-2, var(--line));
+  border-style: dashed;
+}
+.ph-r1,
+.ph-r2 {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.ph-kind {
+  flex: none;
+  font-size: 13px;
+  font-weight: 600;
+}
+.ph-when,
+.ph-n {
+  margin-left: auto;
+  flex: none;
+  color: var(--mute);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.ph-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--ink-2, var(--faint));
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ph-foot {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--line);
+}
+.app .ph-cmp {
+  justify-content: flex-start;
+  font-weight: 400;
+  min-width: 0;
+}
+.ph-cmp-t {
+  flex: none;
+  color: var(--mute);
+}
+.ph-cmp-v {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app .ph-restore {
+  justify-content: center;
+}
+.app .ph-restore.is-confirm:not(:disabled) {
+  background: var(--rec, #dc2626);
+  border-color: var(--rec, #dc2626);
+  color: #fff;
+}
+/* the two labels in one grid cell: the box is as wide as the wider one, whichever shows */
+.ph-swap {
+  display: inline-grid;
+}
+.ph-swap > span {
+  grid-area: 1 / 1;
+  text-align: center;
+}
+.ph-swap > .is-ghost {
+  visibility: hidden;
+}
+.ph-msg {
+  margin: 0;
+  min-height: 2.8em;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--rec, #e5484d);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.ph-msg.is-hint {
+  color: var(--mute);
+}
+.ph-view {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg, #0b0b0b);
+}
+.ph-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: transparent;
+}
+.ph-empty {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: var(--faint);
+  font-size: 13px;
+}
+.ph-wait {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--bg, #0b0b0b);
+}
+html:root[data-theme="light"] .ph-veil {
+  background: rgb(0 0 0 / 0.28);
+}
+html:root[data-theme="light"] .ph-view,
+html:root[data-theme="light"] .ph-wait {
+  background: var(--bg, #faf9f5);
+}

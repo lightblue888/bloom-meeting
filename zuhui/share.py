@@ -9,7 +9,9 @@
 - 谁通过链接进来了：每隔几秒用 LiveKit 的 RoomService.ListParticipants 问一次中继（管理员 token 本地签，
   密钥只在 ~/.zuhui/livekit.env），结果给顶栏的参会人。
 - 中继怎么搭见 relay/README.md：一台有公网地址的服务器，LiveKit + relay/token_server.py + Caddy（HTTPS）。
-  没配 share.base_url 或没有 ~/.zuhui/livekit.env：不开邀请链接，一个人开会照常。
+- 公共中继（默认，PUBLIC_RELAY；设置 → 通用 → 邀请 里可以换成自己的或关掉）：电脑上没有 LiveKit 密钥，第一次用时
+  向中继领一个通行码（~/.zuhui/relay_device.json），推送、问谁进来了、语音桥进房间都用它，要密钥的事中继代办。
+  公共中继只在打开邀请之后才连（armed）：没邀请人，论文、字幕、声音一样都不发出去。
   自签根证书 ~/.zuhui/bloom-ca.crt 在就一并信任，从不关校验。
 """
 from __future__ import annotations
@@ -30,6 +32,67 @@ ENV = STATE / "livekit.env"
 CA = STATE / "bloom-ca.crt"
 SHARE = STATE / "share.json"
 DEFAULT_BASE = ""                 # 没配中继：不开邀请链接
+PUBLIC_RELAY = "https://meet.blo0m.com:8443/"   # 公共中继：大家共用，装好就能邀请（relay_cfg 默认用它）。直连广州，不经东京
+DEVICE = STATE / "relay_device.json"
+
+
+def device(base: str, register: bool = True) -> dict | None:
+    """公共中继给这台电脑的通行码 {"base", "device", "secret", "ws"}；没有就去领一个（register=False 只读）。领不到 None。"""
+    try:
+        d = json.loads(DEVICE.read_text(encoding="utf-8"))
+        if isinstance(d, dict) and d.get("base") == base and d.get("device") and d.get("secret"):
+            return d
+    except (OSError, ValueError):
+        pass
+    if not register or not base:
+        return None
+    import httpx
+    try:
+        with httpx.Client(timeout=httpx.Timeout(10.0, connect=6.0), verify=_trust(), trust_env=False) as c:
+            r = c.post(base.rstrip("/") + "/dev/register", content=b"{}", headers={"Content-Type": "application/json"})
+        if r.status_code != 200:
+            return None
+        j = r.json()
+        d = {"base": base, "device": str(j["device"]), "secret": str(j["secret"]), "ws": str(j.get("ws") or "")}
+    except Exception:
+        return None
+    STATE.mkdir(parents=True, exist_ok=True)
+    tmp = DEVICE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(d), encoding="utf-8")
+    try:
+        import os
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    tmp.replace(DEVICE)
+    return d
+
+
+def host_token(base: str, identity: str, name: str, role: str) -> tuple[str, str]:
+    """公共中继：主持人这边进语音房间的 (token, wss 地址)，中继用自己的密钥代签。"""
+    import httpx
+    d = device(base)
+    if not d:
+        raise RuntimeError("公共中继没领到通行码")
+    with httpx.Client(timeout=httpx.Timeout(10.0, connect=6.0), verify=_trust(), trust_env=False) as c:
+        r = c.post(f"{base.rstrip('/')}/push/{quote(room())}/join", headers={"Authorization": f"Device {d['device']}:{d['secret']}"},
+                   content=json.dumps({"identity": identity, "name": name, "role": role}, ensure_ascii=False).encode("utf-8"))
+    r.raise_for_status()
+    j = r.json()
+    return str(j["token"]), str(j.get("url") or d.get("ws") or "")
+
+
+def _host(u: str) -> str:
+    return (urlsplit(u).hostname or "").lower() if u else ""
+
+
+def has_secret(base: str | None = None) -> bool:
+    """这台电脑有这个中继的 LiveKit 密钥（自己的服务器）。给了 base 就要地址对得上：换成公共中继以后，
+    以前手动放的、别的服务器的 livekit.env 不拿去签。"""
+    e = _env()
+    if not (e.get("LIVEKIT_API_KEY") and e.get("LIVEKIT_API_SECRET")):
+        return False
+    return not base or not e.get("LIVEKIT_URL") or _host(e["LIVEKIT_URL"]) == _host(base)
 
 
 def _env() -> dict:
@@ -130,6 +193,31 @@ def captions(lines: list[dict], host: str, ai: str = "Claude") -> list[dict]:
     return out
 
 
+REC_CACHE_S = 3.0
+_rec_cache: tuple[float, str | None] = (0.0, None)
+
+
+def rec_mode(now: float | None = None) -> str | None:
+    """访客页的录制告知（进会页一句话、会中顶栏一个小标记）：主持人这边正在录屏 "screen"、只录音 "audio"、没在录 None。
+    开会时录屏软件录 Bloom 窗口和麦克风（record 任务在跑）；任务停了（录屏崩了、被关了）就是没在录。
+    推送线程每秒问一次：record 任务的文件要一个个读，结果留 REC_CACHE_S 秒。"""
+    global _rec_cache
+    now = time.time() if now is None else now
+    at, v = _rec_cache
+    if 0 <= now - at < REC_CACHE_S:
+        return v
+    try:
+        from .ears import running_record_job
+        job = running_record_job()
+    except Exception:
+        job = None
+    v = None
+    if job:
+        v = "audio" if str(job.get("mode") or "").lower() in ("audio", "audio_only") else "screen"
+    _rec_cache = (now, v)
+    return v
+
+
 def room() -> str:
     """这一场（或下一场）会的房间号：没有就随机生成一个（见 _fresh_id）。散会后 new_room() 换掉。"""
     with _ROOM_LOCK:
@@ -203,15 +291,56 @@ class Share:
     # ---------- 对外 ----------
     @property
     def configured(self) -> bool:
-        e = _env()
-        return self.enabled and bool(e.get("LIVEKIT_API_KEY") and e.get("LIVEKIT_API_SECRET"))
+        """能邀请：有中继地址，并且有 LiveKit 密钥（自己的中继）或者用通行码（公共中继，用到时再领）。"""
+        return self.enabled and bool(self.base)
+
+    @property
+    def public(self) -> bool:
+        """用通行码（电脑上没有 LiveKit 密钥）：公共中继。"""
+        return self.enabled and bool(self.base) and not has_secret(self.base)
+
+    @property
+    def armed(self) -> bool:
+        """现在该不该连中继：自己的中继一直连；公共中继要打开邀请才连（复制邀请链接 / 允许别人加入）。"""
+        if not self.configured:
+            return False
+        if not self.public:
+            return True
+        try:
+            from .relay_cfg import invite_on
+            return invite_on()
+        except Exception:
+            return False
+
+    def _device(self) -> dict:
+        d = device(self.base)
+        if not d:
+            raise RuntimeError("公共中继没领到通行码")
+        return d
+
+
 
     def invite(self) -> dict:
         if not self.enabled:
             return {"ok": False, "error": "没有配会议中继（config.json 的 share.base_url，见 relay/README.md），邀请链接不可用"}
         r = room()
         return {"ok": True, "room": r, "base": self.base, "url": f"{self.base}room/{quote(r)}",
-                "relay": self.configured, "guests": len(self.guests), "error": self.error}
+                "relay": self.configured, "public": self.public, "armed": self.armed,
+                "guests": len(self.guests), "error": self.error}
+
+    def reconfigure(self, base: str | None) -> None:
+        """设置里粘了连接码 / 移除了中继：换地址，配好了就把后台线程起来（不用重启 Bloom）。"""
+        self.base = (base or "").strip()
+        if self.base and not self.base.endswith("/"):
+            self.base += "/"
+        self.enabled = bool(self.base) and (self.cfg.get("share") or {}).get("enabled", True) is not False
+        self.error = None
+        if self.configured:
+            self.start()
+            if self._feed:
+                self.set_feed(*self._feed)
+            if self._act_handler:
+                self.set_actions(self._act_handler)
 
     def start(self) -> None:
         if not self.configured or (self._thread and self._thread.is_alive()):
@@ -253,7 +382,7 @@ class Share:
         while not self._stop.is_set():
             wait = 1.0
             try:
-                if not self.live or self._act_handler is None:
+                if not self.live or self._act_handler is None or not self.armed:
                     wait = 2.0
                 else:
                     resp = client.get(f"{self.base.rstrip('/')}/push/{quote(room())}/inbox", headers=self._admin())
@@ -288,6 +417,12 @@ class Share:
 
     def _list(self) -> list[dict]:
         import httpx
+        if self.public:                                 # 公共中继：中继代问
+            if self._client is None:
+                self._client = httpx.Client(timeout=6.0, verify=_trust(), trust_env=False)
+            resp = self._client.get(f"{self.base.rstrip('/')}/push/{quote(room())}/participants", headers=self._admin())
+            resp.raise_for_status()
+            return self._guests_of(resp.json().get("participants") or [])
         e = _env()
         r = room()
         tok = _jwt(e["LIVEKIT_API_KEY"], e["LIVEKIT_API_SECRET"], {"roomAdmin": True, "room": r, "roomList": True})
@@ -299,8 +434,12 @@ class Share:
         if resp.status_code == 404 or (resp.status_code >= 400 and "not found" in resp.text.lower()):
             return []                                   # 房间还没人进过：中继上还没有这个房间
         resp.raise_for_status()
+        return self._guests_of(resp.json().get("participants") or [])
+
+    def _guests_of(self, parts: list) -> list[dict]:
+        """LiveKit 的 participants → 访客（主持人这边的两路不算）。"""
         out = []
-        for p in resp.json().get("participants") or []:
+        for p in parts:
             meta = {}
             try:
                 meta = json.loads(p.get("metadata") or "{}")
@@ -339,11 +478,17 @@ class Share:
 
     def _loop(self) -> None:
         while not self._stop.is_set():
-            self._poll_guests()
+            if self.armed:
+                self._poll_guests()
+            elif self.guests:
+                self.guests, self._seen = [], {}
             self._stop.wait(self.POLL_S)
 
     # ---------- 推给访客 ----------
     def _admin(self) -> dict:
+        if self.public:
+            d = self._device()
+            return {"Authorization": f"Device {d['device']}:{d['secret']}"}
         e = _env()
         r = room()
         return {"Authorization": "Bearer " + _jwt(e["LIVEKIT_API_KEY"], e["LIVEKIT_API_SECRET"], {"roomAdmin": True, "room": r})}
@@ -462,6 +607,9 @@ class Share:
         upcoming_room, next_idle = None, 0.0
         while not self._stop.is_set():
             wait = 1.0
+            if not self.armed:                                   # 公共中继没打开邀请：什么都不发
+                self._stop.wait(2.0)
+                continue
             try:
                 state_fn, key_fn, paper_fn = self._feed
                 st = state_fn()
@@ -516,6 +664,8 @@ class Share:
                     # 状态里只带它的版本号（lv），访客 lv 变了才去拉（两小时的会，逐字稿几百 KB，不再每秒重下）
                     if st.get("v", 0) >= 2:
                         heavy = {"transcript": st.pop("transcript", None), "board": st.pop("board", None)}
+                        if "comments" in st:                     # 第 6 批：论文上的批注也是大块，跟逐字稿一起推
+                            heavy["comments"] = st.pop("comments")
                         hb = json.dumps(heavy, ensure_ascii=False, sort_keys=True).encode("utf-8")
                         lv = hashlib.sha1(hb).hexdigest()[:12]
                         if lv != last_lines:

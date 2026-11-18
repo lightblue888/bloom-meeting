@@ -8,13 +8,15 @@ import { Icon } from '@blurt/icons';
 import { api, listen, type AppStatus, type LoginItem, type Settings } from '../api';
 import { i18n, t } from '../i18n';
 import { ENTRIES, GROUPS, MOVED, PANES, pane, paneOf, paneReason, reason, results, SECTIONS, SUGGESTIONS, textIn, type Key, type PaneId, type ResultGroup } from '../settings/catalog';
-import { Group, Page, Popup, requestFlash, Row, S, TextLink, Toggle, lang } from '../settings/kit';
+import { Group, Page, Popup, requestFlash, Row, S, Switch, TextLink, Toggle, lang } from '../settings/kit';
 import '../settings/settings.css';
-import { meetingApi, avatarUrl, PROFILE_EVENT, type Profile, type Provider, type ProviderKind } from '../meetingApi';
+import { meetingApi, avatarUrl, AUTOSAVE_ITEMS, DOCX_MODES, type DocxMode, PROFILE_EVENT, SUMMARY_TEMPLATES, type AutosaveItem, type AutosavePrefs, type Profile, type SummaryPrefs, type SummaryTemplate } from '../meetingApi';
 import { isImeKey } from '../ime';
 import { Flower, HOST_COLOR } from './Flower';
 import { ModelsPane } from './ModelsSettings';
 import { setupApi } from '../setupApi';
+import { RelayGroup } from './RelaySettings';
+import { ProviderGroup } from './ProviderSettings';
 import { StoragePane } from './StorageSettings';
 
 // a tray "nav" to a pane can arrive before this page is mounted: kept until it is
@@ -322,6 +324,10 @@ function GeneralPane({ status, cfg, save, onLang }: {
     <Page id="general">
       <ProfileGroup />
       <ProviderGroup />
+      <SummaryGroup />
+      <PaperGroup />
+      <AutosaveGroup />
+      <RelayGroup />
       <Group id="general.app">
         {login?.supported && (
           <Toggle id="general.login" on={login.enabled} detail={loginErr ? S('settings.general.login_failed') : undefined} warn={loginErr}
@@ -345,6 +351,235 @@ function GeneralPane({ status, cfg, save, onLang }: {
         <span>{S('settings.general.about.version', status.version)}</span>
       </div>
     </Page>
+  );
+}
+
+/** Notes: the format a meeting's 纪要 is written in after it ends (回顾 can write one again in another), and for 自定义
+ *  the group's own requirements (up to custom_max characters, the backend checks too). They live in the Bloom backend,
+ *  so they wait for it like the profile does. The requirements save when the field is left; Esc puts them back. */
+function SummaryGroup() {
+  const [p, setP] = useState<SummaryPrefs | null>(null);
+  const [down, setDown] = useState(false);
+  const [text, setText] = useState('');
+  const [msg, setMsg] = useState<string | null>(null);
+  const editing = useRef(false);
+  const cancelled = useRef(false);
+  useEffect(() => {
+    let alive = true;
+    let timer = 0;
+    const load = () =>
+      meetingApi.summaryPrefs().then(
+        (x) => {
+          if (!alive) return;
+          setP(x);
+          setDown(false);
+          if (!editing.current) setText(x.custom);
+        },
+        () => {
+          if (!alive) return;
+          setDown(true);
+          timer = window.setTimeout(load, 4000);
+        },
+      );
+    void load();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, []);
+  const max = p?.custom_max ?? 2000;
+  const fail = (e: unknown) => (String((e as Error)?.message ?? e) === 'too_long' ? S('summary.err.too_long', max) : S('summary.err.failed'));
+  const pick = async (k: SummaryTemplate) => {
+    setMsg(null);
+    try {
+      setP(await meetingApi.setSummaryPrefs({ template: k }));
+    } catch (e) {
+      setMsg(fail(e));
+    }
+  };
+  const saveText = async () => {
+    editing.current = false;
+    if (cancelled.current) {
+      cancelled.current = false;
+      return;
+    }
+    if (!p) return;
+    if (text.trim() === p.custom) {
+      setMsg(null);
+      return;
+    }
+    try {
+      const x = await meetingApi.setSummaryPrefs({ custom: text });
+      setP(x);
+      setText(x.custom);
+      setMsg(null);
+    } catch (e) {
+      setMsg(fail(e));
+    }
+  };
+  const tpl = p?.template ?? 'default';
+  const custom = tpl === 'custom';
+  return (
+    <Group id="general.summary" footer={down ? S('settings.profile.offline') : undefined}>
+      <Row id="general.summary_template" detail={!custom ? msg : null} warn={!custom && !!msg}>
+        <Popup wide label={S('settings.general.summary_template')} value={tpl} disabled={!p} dividers={[4]}
+          choices={SUMMARY_TEMPLATES.map((k) => [k, S(`meeting.summary.template.${k}`)] as [SummaryTemplate, string])}
+          onChange={(k) => void pick(k)} />
+      </Row>
+      {custom && (
+        <>
+          <Row id="general.summary_custom" detail={msg ?? `${text.length} / ${max}`} warn={!!msg} />
+          <div className="st-hot" data-testid="summary-custom-box">
+            <textarea
+              value={text}
+              rows={6}
+              maxLength={max}
+              disabled={!p}
+              spellCheck={false}
+              placeholder={S('summary.placeholder')}
+              aria-label={S('settings.general.summary_custom')}
+              data-testid="summary-custom"
+              onFocus={() => (editing.current = true)}
+              onChange={(e) => setText(e.target.value)}
+              onBlur={() => void saveText()}
+              onKeyDown={(e) => {
+                if (isImeKey(e)) return;
+                if (e.key === 'Escape') {
+                  cancelled.current = true;
+                  setText(p?.custom ?? '');
+                  setMsg(null);
+                  (e.target as HTMLTextAreaElement).blur();
+                }
+              }}
+            />
+          </div>
+        </>
+      )}
+    </Group>
+  );
+}
+
+const AUTOSAVE_ERRORS = ['empty', 'not_abs', 'too_long', 'not_dir', 'no_write', 'items'];
+
+/** 散会后自动保存 (off by default): after a meeting's post-meeting work the ticked things go into the folder, named
+ *  "2026-11-18 组会 纪要.docx". The folder comes from the system picker; the backend checks it (a full path, not too
+ *  long, there, writable). Its row's second line always holds one thing — the path (cut with …, whole on hover), or in
+ *  the same place why it was refused — so nothing below moves. Turning it on without a folder opens the picker. The
+ *  last ticked item can't be unticked. It lives in the backend like the 纪要 format and waits for it the same way. */
+function AutosaveGroup() {
+  const [p, setP] = useState<AutosavePrefs | null>(null);
+  const [down, setDown] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    let timer = 0;
+    const load = () =>
+      meetingApi.autosave().then(
+        (x) => {
+          if (!alive) return;
+          setP(x);
+          setDown(false);
+        },
+        () => {
+          if (!alive) return;
+          setDown(true);
+          timer = window.setTimeout(load, 4000);
+        },
+      );
+    void load();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, []);
+  const fail = (e: unknown) => {
+    const c = String((e as Error)?.message ?? e);
+    return S('autosave.err', S(`autosave.err.${AUTOSAVE_ERRORS.includes(c) ? c : 'failed'}`, p?.dir_max ?? 180));
+  };
+  const set = async (patch: { on?: boolean; dir?: string; items?: AutosaveItem[] }) => {
+    try {
+      setP(await meetingApi.setAutosave(patch));
+      setMsg(null);
+    } catch (e) {
+      setMsg(fail(e));
+    }
+  };
+  const pick = async (andOn = false) => {
+    const dir = await meetingApi.pickFolder();
+    if (dir) await set(andOn ? { dir, on: true } : { dir });
+  };
+  const items = p?.items ?? [];
+  const flip = (k: AutosaveItem) => {
+    const next = items.includes(k) ? items.filter((x) => x !== k) : AUTOSAVE_ITEMS.filter((x) => x === k || items.includes(x));
+    if (next.length) void set({ items: next });
+  };
+  const dirText = msg ?? (p?.dir || S('autosave.none'));
+  return (
+    <Group id="general.autosave" footer={down ? S('settings.profile.offline') : undefined}>
+      <Row id="general.autosave_on">
+        <Switch on={!!p?.on} disabled={!p} label={S('settings.general.autosave_on')}
+          set={(v) => void (v && !p?.dir ? pick(true) : set({ on: v }))} />
+      </Row>
+      <Row id="general.autosave_dir" warn={!!msg}
+        detail={<span className="st-path" title={msg ? undefined : p?.dir || undefined} data-testid="autosave-dir">{dirText}</span>}>
+        <button onClick={() => void pick()} disabled={!p} data-testid="autosave-pick">{S('autosave.pick')}</button>
+      </Row>
+      <Row id="general.autosave_items" />
+      <div className="st-autosave-items" role="group" aria-label={S('settings.general.autosave_items')} data-testid="autosave-items">
+        {AUTOSAVE_ITEMS.map((k) => {
+          const on = items.includes(k);
+          return (
+            <label key={k} className="st-autosave-item">
+              <input type="checkbox" checked={on} disabled={!p || (on && items.length === 1)} onChange={() => flip(k)} data-testid={`autosave-item-${k}`} />
+              <span>{S(`autosave.item.${k}`)}</span>
+            </label>
+          );
+        })}
+      </div>
+    </Group>
+  );
+}
+
+/** 第 6 批 · 论文: how a Word paper's edits go back after the meeting (zuhui/paper_prefs.py): Word's tracked changes
+ *  (each can be accepted or rejected in Word; the default) or straight into the text. Lives in the backend. */
+function PaperGroup() {
+  const [mode, setMode] = useState<DocxMode | null>(null);
+  const [down, setDown] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    let timer = 0;
+    const load = () =>
+      meetingApi.paperPrefs().then(
+        (x) => alive && (setMode(x.docx_mode), setDown(false)),
+        () => {
+          if (!alive) return;
+          setDown(true);
+          timer = window.setTimeout(load, 4000);
+        },
+      );
+    void load();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, []);
+  const pick = async (m: DocxMode) => {
+    setMsg(null);
+    try {
+      setMode((await meetingApi.setPaperPrefs({ docx_mode: m })).docx_mode);
+    } catch {
+      setMsg(S('settings.general.paper_err'));
+    }
+  };
+  return (
+    <Group id="general.paper" footer={down ? S('settings.profile.offline') : undefined}>
+      <Row id="general.paper_docx" detail={msg} warn={!!msg}>
+        <Popup label={S('settings.general.paper_docx')} value={mode ?? 'track'} disabled={!mode}
+          choices={DOCX_MODES.map((k) => [k, S(`settings.general.paper_docx.${k}`)] as [DocxMode, string])}
+          onChange={(k) => void pick(k)} />
+      </Row>
+    </Group>
   );
 }
 
@@ -587,151 +822,5 @@ export function ProfileGroup({ part = 'all', title }: { part?: 'all' | 'me' | 'a
   );
 }
 
-// API first (the default for a new install), Claude Code's own login last
-const SOURCES: ProviderKind[] = ['deepseek', 'kimi', 'glm', 'qwen', 'anthropic', 'custom', 'claude'];
-const PROVIDER_ERRORS = ['key', 'base_url', 'model'];
-
-/** Model source: Claude Code's own login, or an API key (DeepSeek, Kimi, GLM, Qwen, Anthropic, any Anthropic-compatible
- *  endpoint). Bloom runs every model call through Claude Code; an API source hands it the endpoint, the key and the
- *  provider's models. The key goes to the backend once and is never shown again, only its last four. */
-export function ProviderGroup({ title }: { title?: string } = {}) {
-  const [p, setP] = useState<Provider | null>(null);
-  const [down, setDown] = useState(false);
-  const [kind, setKind] = useState<ProviderKind>('claude');
-  const [base, setBase] = useState('');
-  const [key, setKey] = useState('');
-  const [fast, setFast] = useState('');
-  const [main, setMain] = useState('');
-  const [msg, setMsg] = useState<{ text: string; warn: boolean } | null>(null);
-  const [busy, setBusy] = useState(false);
-  /** the fields for a source: what is saved when it is the saved one, else the provider's published defaults */
-  const fill = (x: Provider, k: ProviderKind) => {
-    const pre = x.presets[k];
-    const same = x.kind === k;
-    setBase(same && x.base_url ? x.base_url : pre?.base_url ?? '');
-    setFast(same && x.fast ? x.fast : pre?.fast ?? '');
-    setMain(same && x.main ? x.main : pre?.main ?? '');
-    setKey('');
-  };
-  useEffect(() => {
-    let alive = true;
-    let timer = 0;
-    const load = () =>
-      meetingApi.provider().then(
-        (x) => {
-          if (!alive) return;
-          setP(x);
-          setDown(false);
-          const k = x.kind === 'unset' ? 'deepseek' : x.kind; // not picked yet: an API source, DeepSeek first
-          setKind(k);
-          fill(x, k);
-        },
-        () => {
-          if (!alive) return;
-          setDown(true);
-          timer = window.setTimeout(load, 4000);
-        },
-      );
-    void load();
-    return () => {
-      alive = false;
-      clearTimeout(timer);
-    };
-  }, []);
-  const name = (k: ProviderKind) =>
-    k === 'claude' ? S('settings.provider.claude') : k === 'custom' ? S('settings.provider.custom') : p?.presets[k]?.label || k;
-  const save = async (k: ProviderKind = kind) => {
-    setBusy(true);
-    setMsg(null);
-    try {
-      const x = await meetingApi.setProvider(k === 'claude' ? { kind: k } : { kind: k, base_url: base, key, fast, main });
-      setP(x);
-      const k2 = x.kind === 'unset' ? 'deepseek' : x.kind;
-      setKind(k2);
-      fill(x, k2);
-      setMsg({ text: S('settings.provider.saved'), warn: false });
-    } catch (e) {
-      const c = String((e as Error)?.message ?? e);
-      setMsg({ text: S(`settings.provider.err.${PROVIDER_ERRORS.includes(c) ? c : 'failed'}`), warn: true });
-    } finally {
-      setBusy(false);
-    }
-  };
-  const choose = (k: ProviderKind) => {
-    setKind(k);
-    setMsg(null);
-    if (p) fill(p, k);
-    // back to Claude Code's own login: nothing to fill in, so it is saved right away
-    if (k === 'claude' && p && p.kind !== 'claude') void save('claude');
-  };
-  const test = async () => {
-    setBusy(true);
-    setMsg({ text: S('settings.provider.testing'), warn: false });
-    try {
-      const r = await meetingApi.testProvider();
-      setMsg(r.ok ? { text: S('settings.provider.ok', ((r.ms ?? 0) / 1000).toFixed(1)), warn: false } : { text: S('settings.provider.fail', r.error ?? ''), warn: true });
-    } catch (e) {
-      setMsg({ text: S('settings.provider.fail', String((e as Error)?.message ?? e)), warn: true });
-    } finally {
-      setBusy(false);
-    }
-  };
-  const api = kind !== 'claude';
-  const endpoint = api && kind !== 'anthropic';
-  const dirty = !!p && (kind !== p.kind || !!key || (endpoint && (base !== p.base_url || fast !== p.fast || main !== p.main)));
-  const keyHint = p && p.kind === kind && p.key_set ? S('settings.provider.key_saved', p.key_tail) : S('settings.provider.key_placeholder');
-  const field = (v: string, set: (s: string) => void, max: number, wide: boolean, testid: string, label: string) => (
-    <input
-      className={`st-name ${wide ? 'st-wide' : ''}`}
-      value={v}
-      maxLength={max}
-      spellCheck={false}
-      disabled={!p || busy}
-      aria-label={label}
-      title={v || undefined}
-      data-testid={testid}
-      onChange={(e) => set(e.target.value.trim())}
-    />
-  );
-  return (
-    <Group id="general.model_source" title={title} footer={down ? S('settings.profile.offline') : undefined}>
-      <Row
-        id="general.source"
-        detail={p?.kind === 'unset' ? S('settings.provider.unset') : !api ? S('settings.provider.claude_detail') : kind === 'custom' ? S('settings.provider.billed_any') : S('settings.provider.billed', name(kind))}
-        warn={p?.kind === 'unset'}
-      >
-        <Popup wide label={S('settings.general.source')} value={kind} choices={SOURCES.map((k) => [k, name(k)] as [ProviderKind, string])} dividers={[4, 6]}
-          onChange={choose} disabled={!p || busy} />
-      </Row>
-      {api && (
-        <Row id="general.api_key">
-          <input
-            className="st-name st-wide"
-            type="password"
-            value={key}
-            placeholder={keyHint}
-            autoComplete="off"
-            spellCheck={false}
-            maxLength={400}
-            disabled={!p || busy}
-            data-testid="provider-key"
-            onChange={(e) => setKey(e.target.value.trim())}
-          />
-        </Row>
-      )}
-      {endpoint && <Row id="general.base_url">{field(base, setBase, 200, true, 'provider-url', S('settings.general.base_url'))}</Row>}
-      {endpoint && <Row id="general.fast_model">{field(fast, setFast, 80, true, 'provider-fast', S('settings.general.fast_model'))}</Row>}
-      {endpoint && <Row id="general.main_model">{field(main, setMain, 80, true, 'provider-main', S('settings.general.main_model'))}</Row>}
-      <Row id="general.provider_check" detail={msg?.text ?? undefined} warn={!!msg?.warn}>
-        {api && (
-          <button className="primary" disabled={!p || busy || !dirty} onClick={() => void save()} data-testid="provider-save">
-            {S('settings.provider.save')}
-          </button>
-        )}
-        <button disabled={!p || busy || dirty} onClick={() => void test()} data-testid="provider-test">
-          {S('settings.provider.test')}
-        </button>
-      </Row>
-    </Group>
-  );
-}
+// Model source (Claude Code's own login, an Anthropic- or OpenAI-format API, Ollama / LM Studio): ProviderSettings.tsx
+export { ProviderGroup };

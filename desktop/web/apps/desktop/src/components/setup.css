@@ -52,17 +52,9 @@
   padding: 0 6px;
   min-width: 0;
 }
-.ob-brand > div {
-  min-width: 0;
-}
 .ob-brand-t {
   font-size: 16px;
   font-weight: 650;
-}
-.ob-brand-s {
-  margin-top: 2px;
-  font-size: 12.5px;
-  color: var(--mute);
 }
 .ob-steps {
   list-style: none;
@@ -163,11 +155,6 @@
   font-size: 24px;
   font-weight: 650;
   text-wrap: balance;
-}
-.ob-sub {
-  margin: 6px 0 0;
-  font-size: 13.5px;
-  color: var(--mute);
 }
 .ob-col .st-group:first-of-type {
   margin-top: 22px;
@@ -276,7 +263,7 @@
 }
 .ob-sum-row {
   display: grid;
-  grid-template-columns: 26px minmax(80px, 11.5em) minmax(0, 1fr) 72px;
+  grid-template-columns: minmax(80px, 11.5em) minmax(0, 1fr) 72px;
   align-items: center;
   gap: 12px;
   min-height: 52px;
@@ -284,32 +271,6 @@
 }
 .ob-sum-row + .ob-sum-row {
   border-top: 1px solid var(--line);
-}
-.ob-sum-ic {
-  display: flex;
-  justify-content: center;
-  color: var(--mute);
-}
-.ob-sum-av,
-.lb-avatar {
-  display: inline-flex;
-  flex: none;
-  overflow: hidden;
-  border-radius: 50%;
-  background: var(--panel-2);
-}
-.ob-sum-av {
-  width: 24px;
-  height: 24px;
-}
-.ob-sum-av img,
-.ob-sum-av svg,
-.lb-avatar img,
-.lb-avatar svg {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
 }
 .ob-sum-t {
   color: var(--ink-2);
@@ -352,7 +313,6 @@
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
-  .ob-brand-s,
   .ob-step-t {
     display: none;
   }
@@ -379,12 +339,13 @@
 .lb-inner {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   overflow-y: auto;
   scrollbar-gutter: stable;
   display: flex;
   flex-direction: column;
-  gap: 20px;
-  padding: 30px max(32px, calc((100% - 1120px) / 2)) 40px;
+  gap: 16px;
+  padding: 28px max(28px, calc((100% - 1200px) / 2)) 28px;
 }
 .lb.is-over .lb-inner {
   opacity: 0.45;
@@ -396,64 +357,69 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
   border: 2px dashed var(--brand);
-  border-radius: var(--r);
+  border-radius: 14px;
   color: var(--ink);
+  font-size: 15px;
   font-weight: 600;
   pointer-events: none;
 }
 
-.lb-head {
+/* 上面一块是下一场会：左边会议名、论文、开始；右边隔一道细线，准备情况和邀请。下面一块是会议列表。
+   只有这两块面板，不再一格一个框 */
+.lb-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(320px, 1fr);
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+.lb-new {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  padding: 22px 28px 24px;
+}
+.lb-new-h {
   display: flex;
   align-items: center;
   gap: 14px;
   min-width: 0;
+  min-height: 24px;
 }
-.lb-avatar {
-  width: 46px;
-  height: 46px;
-}
-.lb-hello {
-  min-width: 0;
-}
-.lb-hello h1 {
+.lb-kicker {
+  flex: none;
   margin: 0;
-  overflow: hidden;
-  font-size: 22px;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.lb-date {
-  margin-top: 2px;
-  font-size: 13px;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
   color: var(--mute);
-}
-
-.lb-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.55fr) minmax(300px, 1fr);
-  gap: 20px;
-  align-items: start;
 }
 .lb-side {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
   min-width: 0;
+  padding: 22px 24px;
+  border-left: 1px solid var(--line);
 }
-.lb-card {
-  min-width: 0;
-  padding: 18px 20px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: calc(var(--r) + 4px);
+.lb-side-h {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 24px;
 }
-.lb-card-h {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
+.app .lb-side-h .link {
+  min-height: 0;
+  font-size: 12.5px;
+}
+.lb-inv {
+  margin-top: auto;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
 }
 .lb-card-hrow {
   display: flex;
@@ -462,14 +428,47 @@
   gap: 12px;
   min-height: 24px;
 }
-.lb-new {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
+/* 开会失败、论文没导进来：写在"新会议"同一行的右边，下面什么都不动 */
 .lb-notice {
+  min-width: 0;
+  overflow: hidden;
   font-size: 12.5px;
   color: var(--err);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 会议名：大字，直接在这里改；平时不像输入框，指上去、点进去才显出边 */
+.app .lb-title {
+  display: block;
+  width: calc(100% + 11px);
+  box-sizing: border-box;
+  height: 46px;
+  margin: -2px 0 0 -11px;
+  padding: 0 10px;
+  overflow: hidden;
+  font: inherit;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: 0.005em;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  box-shadow: none;
+}
+.app .lb-title::placeholder {
+  color: var(--ink-2);
+  opacity: 0.72;
+}
+.app .lb-title:hover {
+  border-color: var(--line);
+}
+.app .lb-title:focus {
+  background: var(--bg);
+  border-color: var(--line-2);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--brand-tint);
 }
 .lb-notice .mt-notice-err {
   display: flex;
@@ -504,31 +503,41 @@
   outline: 2px solid var(--brand-accent);
   outline-offset: -1px;
 }
+/* 论文：上下两道细线夹住的一行，像稿纸上的一行（不再是框里套框）；导入中、没有论文时同样高，换来换去开始会议不动 */
 .lb-paper {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 12px;
-  min-height: 78px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  min-height: 66px;
   box-sizing: border-box;
-  padding: 14px;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-}
-.lb-paper > svg {
-  margin-top: 1px;
-  color: var(--brand-ink);
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
 }
 .lb-paper.is-busy {
-  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-columns: 20px minmax(0, 1fr);
+}
+.lb-paper-acts {
+  display: inline-flex;
   align-items: center;
+  gap: 10px;
+  flex: none;
+}
+.app .lb-paper-acts .link {
+  min-height: 0;
+  font-size: 12.5px;
+}
+.lb-paper.is-busy .mw-spinner {
+  width: 18px;
+  height: 18px;
 }
 .lb-paper-text {
   min-width: 0;
 }
 .lb-paper-name {
   overflow: hidden;
+  font-size: 14.5px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -542,34 +551,15 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.lb-outline {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 10px 0 0;
-  padding: 0;
-  list-style: none;
-}
-.lb-outline li {
-  max-width: 220px;
-  overflow: hidden;
-  padding: 3px 10px;
-  font-size: 12px;
-  color: var(--ink-2);
-  background: var(--panel-2);
-  border-radius: var(--r-pill);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .app .lb-drop {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 4px;
   width: 100%;
-  min-height: 124px;
-  padding: 24px 16px;
+  min-height: 66px;
+  padding: 10px 16px;
   color: var(--mute);
   background: transparent;
   border: 1.5px dashed var(--line-2);
@@ -593,22 +583,27 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 12px 16px;
+  gap: 12px 18px;
+  margin-top: 4px;
 }
+/* 开始会议：实心、方角，不带图标；开始中转圈浮在字左边，按钮不变宽 */
 .app .lb-start {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  justify-content: center;
   flex: none;
+  min-width: 168px;
   height: 44px;
-  padding: 0 22px 0 14px;
+  padding: 0 30px;
   font-size: 15px;
   font-weight: 600;
+  letter-spacing: 0.04em;
   color: var(--on-brand-button);
   background: var(--brand-button);
   border: 0;
-  border-radius: var(--r-pill);
-  box-shadow: none;
+  border-radius: 10px;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.12), 0 8px 20px -10px var(--brand-button);
 }
 .app .lb-start:hover:not(:disabled) {
   background: var(--brand-button);
@@ -617,15 +612,14 @@
 .app .lb-start:disabled {
   color: var(--mute);
   background: var(--panel-2);
+  box-shadow: none;
   cursor: not-allowed;
 }
-.app .lb-start:disabled svg {
-  filter: grayscale(1);
-  opacity: 0.6;
-}
 .lb-start .mw-spinner {
-  width: 22px;
-  height: 22px;
+  position: absolute;
+  left: 12px;
+  width: 16px;
+  height: 16px;
 }
 /* 缺的最多三项（模型来源、转写模型、论文），一项一行：格子按三行留好，缺几项、补上几项、下载中，
    开始会议和下面"最近的会议"都不动 */
@@ -647,9 +641,6 @@
   font-size: 12.5px;
   white-space: nowrap;
   color: var(--attn-ink);
-}
-.lb-need.is-ok {
-  color: var(--ok);
 }
 /* 缺项后面的"去设置""下载"：和这一行一样高，上下两行的链接不叠 */
 .app .lb-need .link {
@@ -684,7 +675,7 @@
   flex: none;
 }
 
-/* 准备情况：一项一行，点、图标、名字、现在用的、改 */
+/* 准备情况：一项一行，点、名字、现在用的、改。不画分隔线，"更换"平时淡，指到这一行才亮 */
 .lb-status {
   display: flex;
   flex-direction: column;
@@ -692,19 +683,24 @@
 }
 .lb-st {
   display: grid;
-  grid-template-columns: 8px 16px 6.8em minmax(0, 1fr) auto;
+  grid-template-columns: 6px 6.4em minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
-  min-height: 40px;
-}
-.lb-st + .lb-st {
-  border-top: 1px solid var(--line);
+  min-height: 34px;
 }
 .lb-st-dot {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--line-2);
+}
+.app .lb-st-a .link {
+  min-height: 0;
+  color: var(--mute);
+}
+.app .lb-st:hover .lb-st-a .link,
+.app .lb-st-a .link:focus-visible {
+  color: var(--brand-ink);
 }
 .lb-st.is-ok .lb-st-dot {
   background: var(--ok);
@@ -721,7 +717,7 @@
 .lb-st-l {
   overflow: hidden;
   font-size: 13px;
-  color: var(--ink-2);
+  color: var(--mute);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -745,10 +741,20 @@
   white-space: nowrap;
 }
 
+/* 公共中继的"允许别人加入"：和"邀请别人"同一行，靠右 */
+.lb-invite-on {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
 .lb-invite {
   display: flex;
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 8px;
   min-width: 0;
 }
 .app .lb-mono {
@@ -768,6 +774,198 @@
   text-align: left;
 }
 
+/* 最近的会议占满剩下的高度（不按内容撑），里面放得下几条放几条：整页不滚 */
+.lb-recent {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 150px;
+  padding: 16px 20px 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+.lb-list-box {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+/* 最近的会议 / 上次遗留：同一张卡片的两页。两个字一样粗，选中的只换颜色、下面一道线（换页时字宽不变，旁边不动） */
+.lb-tabs {
+  display: flex;
+  align-items: center;
+  gap: 30px;
+  min-width: 0;
+}
+.app .lb-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--mute);
+  white-space: nowrap;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.app .lb-tab:hover {
+  color: var(--ink);
+  background: transparent;
+}
+.app .lb-tab[aria-selected='true'] {
+  color: var(--ink);
+}
+.app .lb-tab[aria-selected='true']::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -4px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--brand);
+}
+/* 条数是角标，浮在标签右上角，不占位置：有没有、几位数，标签之间的距离都一样 */
+.lb-tab-n {
+  position: absolute;
+  left: 100%;
+  top: -7px;
+  margin-left: 2px;
+  min-width: 1.6em;
+  padding: 0 4px;
+  box-sizing: border-box;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 15px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: var(--brand-ink);
+  background: var(--panel-2);
+  border-radius: var(--r-pill);
+}
+.lb-tab-n.is-ghost {
+  visibility: hidden;
+}
+.lb-pager {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+.app .lb-pager-b {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  min-height: 0;
+  padding: 0;
+  color: var(--ink-2);
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-sm);
+  box-shadow: none;
+}
+.app .lb-pager-b:hover:not(:disabled) {
+  background: var(--hover);
+}
+.app .lb-pager-b:disabled {
+  color: var(--line-2);
+}
+.lb-pager-n {
+  min-width: 3.4em;
+  font-size: 12.5px;
+  color: var(--mute);
+  text-align: center;
+}
+/* 一条遗留：勾、内容、谁、哪一类、哪一场（点日期打开那场会）；比最近的会议矮一点，小窗口也放得下几条 */
+.lb-carry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 7em 5.6em 5.4em;
+  align-items: center;
+  gap: 14px;
+  min-height: 36px;
+  padding: 0 8px;
+}
+.lb-carry-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  cursor: pointer;
+}
+.lb-carry-main input {
+  flex: none;
+  margin: 0;
+  accent-color: var(--brand);
+}
+.lb-carry-t {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lb-carry.is-done .lb-carry-t {
+  color: var(--mute);
+  text-decoration: line-through;
+}
+.lb-carry-kind {
+  overflow: hidden;
+  font-size: 11.5px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--mute);
+}
+.lb-carry-kind.is-todo {
+  color: var(--brand-ink);
+}
+.lb-carry-kind.is-note {
+  color: var(--attn-ink);
+}
+.app .lb-carry-day {
+  min-height: 0;
+  padding: 2px 0;
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--mute);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.app .lb-carry-day:hover {
+  color: var(--brand-ink);
+  text-decoration: underline;
+  background: transparent;
+}
+.lb-carry-err {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--err);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.18);
+}
 .lb-list {
   margin: 8px 0 0;
   padding: 0;
@@ -776,11 +974,12 @@
 .lb-list li + li {
   border-top: 1px solid var(--line);
 }
+/* 一场会：时间在前（像一页记录），会议名，时长，改稿，最后只标不寻常的（整理中、无纪要） */
 .app .lb-meeting {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 9.5em 4.6em 6.4em 4.6em 14px;
+  grid-template-columns: 9.2em minmax(0, 1fr) 4.6em 6.4em 4.4em;
   align-items: center;
-  gap: 14px;
+  gap: 16px;
   width: 100%;
   min-height: 44px;
   padding: 0 8px;
@@ -812,16 +1011,32 @@
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
+.lb-meeting-d {
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--mute);
+  text-align: left;
+  white-space: nowrap;
+}
 .lb-meeting-tag {
   overflow: hidden;
-  font-size: 11.5px;
-  color: var(--brand-ink);
+  font-size: 12px;
+  color: var(--faint);
   text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.lb-meeting > svg {
-  color: var(--mute);
+.lb-meeting-tag.is-busy {
+  color: var(--brand-ink);
+}
+.lb-invite-off {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.app .lb-invite-off .link {
+  min-height: 0;
+  padding: 0 4px;
 }
 .lb-empty {
   margin-top: 10px;
@@ -830,24 +1045,41 @@
 }
 
 @media (max-width: 1120px) {
-  .lb-grid {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  .lb-top {
+    grid-template-columns: minmax(0, 1.2fr) minmax(300px, 1fr);
+  }
+  .lb-new {
+    padding: 20px 22px 22px;
+  }
+  .lb-side {
+    padding: 20px 20px;
   }
 }
 @media (max-width: 860px) {
-  .lb-grid {
+  .lb-top {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .lb-side {
+    border-top: 1px solid var(--line);
+    border-left: 0;
   }
 }
 @media (max-width: 760px) {
   .lb-inner {
-    padding: 22px 18px 32px;
+    padding: 18px 16px 24px;
   }
   .app .lb-meeting {
-    grid-template-columns: minmax(0, 1fr) auto 14px;
+    grid-template-columns: 6.6em minmax(0, 1fr);
   }
-  .app .lb-meeting .lb-num,
+  .app .lb-meeting .lb-meeting-m,
   .lb-meeting-tag {
+    display: none;
+  }
+  .lb-carry {
+    grid-template-columns: minmax(0, 1fr) 5.4em;
+  }
+  .lb-carry-who,
+  .lb-carry-kind {
     display: none;
   }
 }

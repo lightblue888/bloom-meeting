@@ -2,13 +2,33 @@
 // board — 排队 / 改中 / 已改 in three columns, a card = the task's title, the teacher's words, the student's report.
 // After 散会 it is the Summary, laid out as Tencent Meeting's AI summary: title, speakers, the abstract, 核心结论 in a
 // blue-edged box, each topic's 01 / 02 cards, 后续工作安排.
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { Icon } from '@blurt/icons';
 import { mi18n as i18n, mt as t } from '../i18n';
 import { stepV } from './stepText';
-import { fmtDuration, multiPaper, type Board, type Participant, type Summary, type Task, type TaskStatus } from '../meetingApi';
+import {
+  fmtDuration,
+  itemText,
+  meetingApi,
+  multiPaper,
+  SUMMARY_TEMPLATES,
+  type Board,
+  type Participant,
+  type SumItem,
+  type Summary,
+  type SummaryJob,
+  type SummaryPrefs,
+  type SummaryTemplate,
+  type TalkTime,
+  type Task,
+  type TaskStatus,
+  type Usage,
+} from '../meetingApi';
+import { fmtCosts, fmtTokens, usageDetail } from '../usageText';
 import { Names, nameStyle } from './Highlight';
-import { colorsByName } from './Flower';
+import { colorsByName, nameColor } from './Flower';
+import { useMenu } from './Menu';
+import { ticksToMove, todoKey } from '../todoTicks';
 
 const COLUMNS: { status: TaskStatus[]; key: string; cls: string; note?: boolean }[] = [
   { status: ['queued'], key: 'meeting.board.queued', cls: 'queued' },
@@ -132,15 +152,48 @@ function saidBy(remark: string): { who: string; text: string } {
   const m = remark.match(/^(?:参会的老师|参会者)(.+?)说[:：]\s*/);
   return m ? { who: m[1], text: remark.slice(m[0].length) } : { who: '', text: remark };
 }
-export function TodoList({ board, meetingId }: { board: Board | null; meetingId: string | null }) {
-  const key = `bloom-todos-${meetingId ?? ''}`;
-  const [ticked, setTicked] = useState<string[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem(key) || '[]');
-    } catch {
-      return [];
+
+export function TodoList({ board, meetingId, done }: { board: Board | null; meetingId: string | null; done?: string[] | null }) {
+  const key = todoKey(meetingId);
+  // a tick is saved with the meeting (carry.json, "note:<task id>"): ticked here, it is off the lobby's left-overs too.
+  // What the server says, with the clicks still on their way laid over it
+  const [mine, setMine] = useState<Record<string, boolean>>({});
+  // another meeting opened in the same place: its own ticks only
+  useEffect(() => setMine({}), [meetingId]);
+  const server = useMemo(() => new Set((done ?? []).filter((k) => k.startsWith('note:')).map((k) => k.slice(5))), [done]);
+  const ticked = useMemo(() => {
+    const s = new Set(server);
+    for (const [id, on] of Object.entries(mine)) {
+      if (on) s.add(id);
+      else s.delete(id);
     }
-  });
+    return [...s];
+  }, [server, mine]);
+  // once: the ticks this browser kept before (localStorage) move to carry.json, then the old copy goes
+  useEffect(() => {
+    if (!meetingId || done == null) return;
+    let local: unknown = null;
+    try {
+      local = JSON.parse(localStorage.getItem(key) || 'null');
+    } catch {
+      local = null;
+    }
+    if (local == null) return;
+    const move = ticksToMove(local, done);
+    setMine((m) => ({ ...Object.fromEntries(move.map((id) => [id, true])), ...m }));
+    Promise.all(move.map((id) => meetingApi.tickCarry(`${meetingId}/note:${id}`, true))).then(
+      () => {
+        try {
+          localStorage.removeItem(key);
+        } catch {
+          /* private window */
+        }
+      },
+      () => {},
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meetingId, done == null]);
+  const [failed, setFailed] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const tasks = board?.tasks ?? [];
   const notes = tasks.filter((x) => x.note);
@@ -172,13 +225,16 @@ export function TodoList({ board, meetingId }: { board: Board | null; meetingId:
     return paperOrder.indexOf(pa) - paperOrder.indexOf(pb) || cmpRank(secRank(sa), secRank(sb));
   });
   const toggle = (id: string) => {
-    const next = ticked.includes(id) ? ticked.filter((x) => x !== id) : [...ticked, id];
-    setTicked(next);
-    try {
-      localStorage.setItem(key, JSON.stringify(next));
-    } catch {
-      /* private window: ticks just don't stick */
-    }
+    const on = !ticked.includes(id);
+    setMine((m) => ({ ...m, [id]: on }));
+    if (!meetingId) return;
+    meetingApi.tickCarry(`${meetingId}/note:${id}`, on).then(
+      () => setFailed(null),
+      (e) => {
+        setMine((m) => ({ ...m, [id]: !on }));
+        setFailed(t('lobby.carry.failed', { a: String((e as Error)?.message ?? e) }));
+      },
+    );
   };
   const left = notes.filter((x) => !ticked.includes(x.id)).length;
   const copy = async () => {
@@ -219,6 +275,8 @@ export function TodoList({ board, meetingId }: { board: Board | null; meetingId:
           {copied ? t('meeting.todos.copied') : t('meeting.todos.copy')}
         </button>
       </div>
+      {/* a tick that didn't save: said over the list for a moment (nothing moves) */}
+      {failed && <p className="mt-todos-err" role="alert">{failed}</p>}
       {order.map((k) => (
         <section key={k} className="mt-todos-grp">
           <h3>{label(k)}</h3>
@@ -266,16 +324,114 @@ export function TodoList({ board, meetingId }: { board: Board | null; meetingId:
   );
 }
 
-export function SummaryView({ summary, people }: { summary: Summary; people?: Participant[] }) {
+/** where in the meeting a 纪要 line was said: a small "12:34" after it; a click plays the recording from there and
+ *  shows the transcript line (MeetingLayout's jump). Nothing when the summary doesn't say (older summaries). */
+function At({ x, onJump }: { x: unknown; onJump?: (sec: number) => void }) {
+  const o = x && typeof x === 'object' ? (x as { t?: string | null; sec?: number | null }) : null;
+  if (!o || typeof o.sec !== 'number') return null;
+  const sec = o.sec;
+  const label = o.t || fmtDuration(sec);
+  if (!onJump) return <span className="mt-sum-at is-static">{label}</span>;
+  return (
+    <button type="button" className="mt-sum-at" onClick={() => onJump(sec)} aria-label={t('meeting.summary.jump', { a: label })} data-tip={t('meeting.summary.jump', { a: label })} data-testid="summary-at">
+      {label}
+    </button>
+  );
+}
+
+/** a feedback / ask line: who said it in front ("林晓：…") */
+const byText = (x: SumItem) => {
+  const s = itemText(x);
+  const by = typeof x === 'object' ? x?.by : null;
+  return by ? `${by}：${s}` : s;
+};
+
+const PERSON_KEYS = ['said', 'feedback', 'asks'] as const;
+
+export function SummaryView({ summary, people, talk, usage, onJump }: {
+  summary: Summary;
+  people?: Participant[];
+  /** each person's talk time (from the transcript), longest first */
+  talk?: TalkTime[] | null;
+  /** the meeting's API tokens and estimated cost (none with a Claude Code account) */
+  usage?: Usage | null;
+  /** a line's time clicked: play the recording from there, show the transcript line */
+  onJump?: (sec: number) => void;
+}) {
   const n2 = (i: number) => String(i + 1).padStart(2, '0');
+  const crowd = people ?? [];
   // the people in this 纪要: their names stand out as chips wherever the text mentions them
   // the backend lists the host first and the AI second (whatever it is called)
-  const ai = people?.find((p) => p.id === 'claude' || p.role === 'student')?.name ?? summary.speakers?.[1] ?? 'Claude';
-  const names = [...new Set([...(summary.speakers ?? []), ai])].filter((n) => n && !['老师', '学生', '主持人', '助手'].includes(n));
+  const ai = crowd.find((p) => p.id === 'claude' || p.role === 'student')?.name ?? summary.speakers?.[1] ?? 'AI';
+  const host = crowd.find((p) => p.you)?.name ?? crowd.find((p) => p.role === 'teacher')?.name ?? summary.speakers?.[0] ?? t('meeting.rank.host');
+  const persons = summary.people ?? [];
+  const bys = persons.flatMap((p) => [...(p.feedback ?? []), ...(p.asks ?? [])].map((x) => (typeof x === 'object' ? x?.by ?? '' : '')));
+  const talkName = (x: TalkTime) => (x.who === 'teacher' ? host : x.who === 'student' ? ai : x.name || t('meeting.who.guest'));
+  const rows = talk ?? [];
+  const names = [...new Set([...(summary.speakers ?? []), ai, ...persons.map((p) => p.name), ...bys, ...rows.map(talkName)])].filter(
+    (n) => n && !['老师', '学生', '主持人', '助手'].includes(n),
+  );
   const me = names.find((n) => n !== ai) ?? null;
   // everyone in their own colour (the one their flower has); the first speaker stands in for the host when nobody is listed
-  const colors = colorsByName(people ?? [], names, me);
+  const colors = colorsByName(crowd, names, me);
   const N = (x: string) => <Names text={x} names={names} colors={colors} />;
+  const heads = summary.template === 'progress' ? 'meeting.summary.progress.' : 'meeting.summary.';
+  const peopleBlock = persons.length > 0 && (
+    <section className="mt-sum-block" data-testid="summary-people">
+      <h4>{t('meeting.summary.people')}</h4>
+      <div className="mt-sum-cards mt-sum-people">
+        {persons.map((p, i) => (
+          <article key={i} className="mt-sum-card">
+            <h5>
+              <span className="mt-name" style={nameStyle(colors[p.name])} title={p.name}>
+                <span className="mt-name-t">{p.name}</span>
+              </span>
+            </h5>
+            {PERSON_KEYS.map((k) =>
+              p[k]?.length ? (
+                <div key={k} className="mt-sum-pk">
+                  <h6>{t(`${heads}${k}`)}</h6>
+                  <ul>
+                    {p[k]!.map((x, j) => (
+                      <li key={j}>
+                        {N(k === 'said' ? itemText(x) : byText(x))}
+                        <At x={x} onJump={onJump} />
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null,
+            )}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+  const topics = summary.sections?.map((s, i) => (
+    <section key={i} className="mt-sum-topic">
+      <h4>
+        <span className="mt-sum-num">{n2(i)}</span>
+        <span className="mt-sum-h">{s.title}</span>
+        <At x={s} onJump={onJump} />
+      </h4>
+      <div className="mt-sum-cards">
+        {s.cards?.map((c, j) => (
+          <article key={j} className="mt-sum-card">
+            <h5>{c.title}</h5>
+            <ul>
+              {c.bullets?.map((b, k) => (
+                <li key={k}>
+                  {N(itemText(b))}
+                  <At x={b} onJump={onJump} />
+                </li>
+              ))}
+            </ul>
+          </article>
+        ))}
+      </div>
+    </section>
+  ));
+  const top = Math.max(0.0001, ...rows.map((x) => x.share));
   return (
     <div className="mt-summary">
       <h2 className="mt-sum-title">{summary.title}</h2>
@@ -283,7 +439,7 @@ export function SummaryView({ summary, people }: { summary: Summary; people?: Pa
         <p className="mt-sum-speakers">
           <Icon name="voice" size={13} />
           {summary.speakers.map((s, i) => (
-            <span key={i} className="mt-name" style={nameStyle(colors[s])}>
+            <span key={i} className="mt-name" style={nameStyle(colors[s])} title={s}>
               <span className="mt-name-t">{s}</span>
             </span>
           ))}
@@ -299,28 +455,27 @@ export function SummaryView({ summary, people }: { summary: Summary; people?: Pa
         <section className="mt-sum-block">
           <h4>{t('meeting.summary.conclusions')}</h4>
           <ol className="mt-sum-conclusions">
-            {summary.conclusions.map((c, i) => <li key={i}>{N(c)}</li>)}
+            {summary.conclusions.map((c, i) => (
+              <li key={i}>
+                {N(itemText(c))}
+                <At x={c} onJump={onJump} />
+              </li>
+            ))}
           </ol>
         </section>
       )}
-      {summary.sections?.map((s, i) => (
-        <section key={i} className="mt-sum-topic">
-          <h4>
-            <span className="mt-sum-num">{n2(i)}</span>
-            {s.title}
-          </h4>
-          <div className="mt-sum-cards">
-            {s.cards?.map((c, j) => (
-              <article key={j} className="mt-sum-card">
-                <h5>{c.title}</h5>
-                <ul>
-                  {c.bullets?.map((b, k) => <li key={k}>{N(b)}</li>)}
-                </ul>
-              </article>
-            ))}
-          </div>
-        </section>
-      ))}
+      {/* 进展汇报: each person first; the other formats: the topics first */}
+      {summary.template === 'progress' ? (
+        <>
+          {peopleBlock}
+          {topics}
+        </>
+      ) : (
+        <>
+          {topics}
+          {peopleBlock}
+        </>
+      )}
       {summary.todos?.length > 0 && (
         <section className="mt-sum-block todos">
           <h4>{t('meeting.summary.todos')}</h4>
@@ -328,12 +483,178 @@ export function SummaryView({ summary, people }: { summary: Summary; people?: Pa
             {summary.todos.map((x, i) => (
               <li key={i}>
                 <Icon name="check" size={13} />
-                <span>{N(x)}</span>
+                <span>
+                  {N(itemText(x))}
+                  <At x={x} onJump={onJump} />
+                </span>
               </li>
             ))}
           </ul>
         </section>
       )}
+      {/* what earlier meetings left: done this time first, then what is still open */}
+      {(summary.carried?.length ?? 0) > 0 && (
+        <section className="mt-sum-block" data-testid="summary-carried">
+          <h4>{t('meeting.summary.carried')}</h4>
+          <ul className="mt-sum-carried">
+            {[...summary.carried!].sort((a, b) => Number(b.done) - Number(a.done)).map((c) => (
+              <li key={c.id} className={c.done ? 'is-done' : ''}>
+                <span className={`mt-sum-cflag ${c.done ? 'is-done' : ''}`}>{t(c.done ? 'meeting.summary.carried_done' : 'meeting.summary.carried_open')}</span>
+                <span className="mt-sum-cbody">
+                  <span className="mt-sum-citem">{N(c.item)}</span>
+                  {c.text ? <span className="mt-sum-cnote">{N(c.text)}</span> : null}
+                  <At x={c} onJump={onJump} />
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {rows.length > 0 && (
+        <section className="mt-sum-block" data-testid="summary-talk">
+          <h4>{t('meeting.summary.talk')}</h4>
+          <ul className="mt-sum-talk">
+            {rows.map((x) => {
+              const name = talkName(x);
+              return (
+                <li key={`${x.who}-${x.name ?? ''}`}>
+                  <span className="mt-sum-talk-who" style={{ color: nameColor(colors[name]) }} title={name}>{name}</span>
+                  <span className="mt-sum-talk-bar" aria-hidden="true">
+                    <span style={{ width: `${Math.max(2, (x.share / top) * 100)}%`, background: colors[name] }} />
+                  </span>
+                  <span className="mt-sum-talk-t">{fmtDuration(x.sec)}</span>
+                  <span className="mt-sum-talk-p">{`${Math.round(x.share * 100)}%`}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
+      {/* the meeting's API tokens and estimated cost, one model a row (an API source only) */}
+      {(usage?.models.length ?? 0) > 0 && (
+        <section className="mt-sum-block" data-testid="summary-usage">
+          <h4>{t('meeting.summary.usage')}</h4>
+          <ul className="mt-sum-usage">
+            {usage!.models.map((m) => {
+              const name = m.pretty || m.model;
+              const cost = m.cost != null && m.currency ? fmtCosts({ [m.currency]: m.cost }) : '—';
+              return (
+                <li key={`${m.label}/${m.model}`}>
+                  <span className="mt-sum-usage-m" title={m.label ? `${m.label} · ${name}` : name}>{name}</span>
+                  <span className="mt-sum-usage-t" title={usageDetail(m)}>{fmtTokens(m.tokens)}</span>
+                  <span className="mt-sum-usage-c" title={m.cost == null ? t('meeting.summary.usage_unpriced') : undefined}>{cost}</span>
+                </li>
+              );
+            })}
+            {usage!.models.length > 1 && (
+              <li className="is-total">
+                <span className="mt-sum-usage-m">{t('meeting.summary.usage_total')}</span>
+                <span className="mt-sum-usage-t">{fmtTokens(usage!.tokens)}</span>
+                <span className="mt-sum-usage-c">{fmtCosts(usage!.costs) || '—'}</span>
+              </li>
+            )}
+          </ul>
+        </section>
+      )}
+    </div>
+  );
+}
+
+const REGEN_ERRORS = ['busy', 'custom_empty', 'template', 'not_found'];
+const regenError = (e: unknown) => {
+  const c = String((e as Error)?.message ?? e);
+  return REGEN_ERRORS.includes(c) ? t(`meeting.summary.err.${c}`) : c;
+};
+
+/** failures already said (meeting:start), so reopening the meeting doesn't say it again */
+const toldFailed = new Set<string>();
+
+/** 纪要's tool in the bar above it (回顾): 重新生成 ▾, a menu of the formats (the current one ticked); picking one writes
+ *  the 纪要 again in it — the model runs only then. While it runs the button says so in the same box; a failure is
+ *  said once in a toast (nothing on the page moves). */
+export function SummaryTools({ meetingId, summary, job, busy, onStarted, onToast }: {
+  meetingId: string;
+  summary: Summary | null;
+  job?: SummaryJob | null;
+  /** the meeting is on, or its post-meeting work still runs: nothing to write again yet */
+  busy: boolean;
+  /** the job was accepted: fetch the meeting again (its summary_job) */
+  onStarted: () => void;
+  onToast?: (msg: string) => void;
+}) {
+  const [prefs, setPrefs] = useState<SummaryPrefs | null>(null);
+  useEffect(() => {
+    let alive = true;
+    meetingApi.summaryPrefs().then((p) => alive && setPrefs(p), () => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+  // the format the 纪要 on screen was written in (older ones: the default, the only one then)
+  const cur: SummaryTemplate = summary ? summary.template ?? 'default' : prefs?.template ?? 'default';
+  // asked, and the meeting's next poll hasn't said "running" yet: already shown as running (no flicker back)
+  const [asked, setAsked] = useState(false);
+  useEffect(() => {
+    if (job || !asked) return;
+    const h = setTimeout(() => setAsked(false), 15_000);
+    return () => clearTimeout(h);
+  }, [job, asked]);
+  useEffect(() => {
+    if (job) setAsked(false);
+  }, [job]);
+  useEffect(() => setAsked(false), [summary?.generated]);
+  const running = asked || job?.state === 'running';
+  // the job failed in the background: said once
+  const failKey = job?.state === 'failed' ? `${meetingId}:${job.started ?? ''}` : null;
+  useEffect(() => {
+    if (!failKey || toldFailed.has(failKey) || !job) return;
+    toldFailed.add(failKey);
+    onToast?.(t('meeting.summary.regen_failed', { a: regenError(job.error ?? '') }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [failKey]);
+  const go = async (k: SummaryTemplate) => {
+    setAsked(true);
+    try {
+      await meetingApi.regenSummary(meetingId, k);
+      onStarted();
+    } catch (e) {
+      setAsked(false);
+      onToast?.(t('meeting.summary.regen_failed', { a: regenError(e) }));
+    }
+  };
+  const menu = useMenu();
+  const openMenu = (e: ReactMouseEvent<HTMLButtonElement>) =>
+    menu.open(
+      SUMMARY_TEMPLATES.map((k) => ({
+        label: t(`meeting.summary.template.${k}`),
+        checked: !!summary && k === cur,
+        disabled: k === 'custom' && !!prefs && !prefs.custom.trim(),
+        run: () => void go(k),
+        testId: `summary-template-${k}`,
+      })),
+      { x: 0, y: 0, anchor: e.currentTarget, align: 'start', minWidth: 180 },
+      t('meeting.summary.format'),
+    );
+  const label = summary ? 'meeting.summary.regen' : 'meeting.summary.gen';
+  return (
+    <div className="mt-ptools mt-sum-tools" data-testid="summary-tools">
+      {/* the words stacked in one box as wide as the widest: 重新生成 → 生成中… never changes its size */}
+      <button className="mt-pbtn mt-sum-regen" onClick={openMenu} disabled={running || busy} aria-haspopup="menu" aria-expanded={menu.isOpen}
+        aria-busy={running || undefined} data-testid="summary-regen">
+        <span className="mt-wstack">
+          {(['meeting.summary.regen', 'meeting.summary.gen'] as const).map((k) => (
+            <span key={k} className={!running && k === label ? undefined : 'is-ghost'} aria-hidden={!running && k === label ? undefined : true}>
+              {t(k)}
+              <Icon name="chevron-down" size={12} />
+            </span>
+          ))}
+          <span className={running ? undefined : 'is-ghost'} aria-hidden={running ? undefined : true}>
+            <span className="mw-spinner sm" aria-hidden="true" />
+            {t('meeting.summary.generating')}
+          </span>
+        </span>
+      </button>
+      {menu.node}
     </div>
   );
 }

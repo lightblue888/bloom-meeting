@@ -17,6 +17,12 @@
   4. 对不上的不猜：跳过，连原因一起列出来（skipped）。
 输出：document.xml 改完，其余部件原样拷贝。目标文件被 Word 打开着（写不进去）、或者是用户自己改过的同名文件，
 就另起一个名字「<原名>（会上修订 2）.docx」……，不覆盖。
+
+两种写法（设置 → 通用 → 论文，zuhui/paper_prefs.py）：
+    track（默认）  Word 修订：删的字包进 w:del（w:t 换成 w:delText，格式照原 run），加的字包进 w:ins（格式抄旁边的 run），
+                   新加的段落、删掉的段落连段落标记一起记成修订。作者写 AI 的名字，带日期。在 Word 里能逐条接受、拒绝：
+                   全部接受 = 会上改完的样子，全部拒绝 = 原来的 Word。
+    direct         直接改字，不留修订痕迹（以前的做法）。
 """
 from __future__ import annotations
 
@@ -56,6 +62,79 @@ def q(tag: str) -> str:
 
 class Skip(Exception):
     """这一处在 Word 里定不准：跳过，原因写在 args[0]。"""
+
+
+class _Track:
+    """修订模式：作者、日期、下一个修订编号（从文档里已有的 w:id 往后排，不和书签、批注、旧修订撞号）；数着加了几处、删了几处。"""
+
+    def __init__(self, author: str, date: str, start_id: int):
+        self.author, self.date, self._id = (author or "AI")[:60], date, start_id
+        self.ins = self.dele = 0
+
+    def mark(self, kind: str):
+        """一个 w:ins / w:del 元素（还没挂东西）。"""
+        self._id += 1
+        el = etree.Element(q(kind))
+        el.set(q("id"), str(self._id))
+        el.set(q("author"), self.author)
+        el.set(q("date"), self.date)
+        if kind == "ins":
+            self.ins += 1
+        else:
+            self.dele += 1
+        return el
+
+    def wrap(self, run, kind: str):
+        w = self.mark(kind)
+        w.append(run)
+        return w
+
+
+def _max_id(z: zipfile.ZipFile) -> int:
+    """包里所有 XML 部件上出现过的最大 w:id（修订、书签、批注共用编号的地方都算进去）。"""
+    top = 0
+    pat = re.compile(rb'w:id="(-?\d+)"')
+    for n in z.namelist():
+        if not n.endswith(".xml"):
+            continue
+        try:
+            for m in pat.finditer(z.read(n)):
+                top = max(top, int(m.group(1)))
+        except (KeyError, ValueError):
+            continue
+    return top
+
+
+def _word_date() -> str:
+    """Word 自己写的修订日期就是本机时间加个 Z（不换算成 UTC）：照它写，Word 里显示的时间才对。"""
+    return datetime.now().strftime("%Y-%m-%dT%H:%M:00Z")
+
+
+def _to_deleted(run) -> None:
+    """一个 run 里的字换成"删掉的字"：w:t → w:delText，w:instrText → w:delInstrText（格式 rPr 不动）。"""
+    for ch in run:
+        if ch.tag == q("t"):
+            ch.tag = q("delText")
+            ch.set(XML_SPACE, "preserve")
+        elif ch.tag == q("instrText"):
+            ch.tag = q("delInstrText")
+
+
+def _mark_para(p, kind: str, track: "_Track") -> None:
+    """段落标记记成插入 / 删除（pPr/rPr 里最前面放 w:ins / w:del）。"""
+    ppr = p.find(q("pPr"))
+    if ppr is None:
+        ppr = etree.Element(q("pPr"))
+        p.insert(0, ppr)
+    rpr = ppr.find(q("rPr"))
+    if rpr is None:
+        rpr = etree.Element(q("rPr"))
+        tail = [x for x in ppr if x.tag in (q("sectPr"), q("pPrChange"))]
+        (tail[0].addprevious(rpr) if tail else ppr.append(rpr))
+    for x in list(rpr):
+        if x.tag in (q("ins"), q("del")):
+            rpr.remove(x)
+    rpr.insert(0, track.mark(kind))
 
 
 # ======================================================================
@@ -378,7 +457,8 @@ class _Model:
 # ======================================================================
 # 段内改字：重建 run
 # ======================================================================
-def _mk_run(owner, pcs: list[dict], tmpl, reuse: bool):
+def _mk_run(owner, pcs: list[dict], tmpl, reuse: bool, deleted: bool = False):
+    """deleted：这一截是修订模式里删掉的字（写成 w:delText）。"""
     if reuse:
         r = owner
         for ch in list(r):
@@ -401,7 +481,7 @@ def _mk_run(owner, pcs: list[dict], tmpl, reuse: bool):
 
     def flush():
         if buf:
-            t = etree.SubElement(r, q("t"))
+            t = etree.SubElement(r, q("delText" if deleted else "t"))
             t.text = "".join(buf)
             t.set(XML_SPACE, "preserve")
             buf.clear()
@@ -420,8 +500,9 @@ def _mk_run(owner, pcs: list[dict], tmpl, reuse: bool):
     return r
 
 
-def _apply_para(para: _Para, edits: list[dict]) -> list[dict]:
-    """一段里的几处修改一起做。edits: {"s","e","text","side","tmpl","order","ref"}。返回做不了的那几处（带原因）。"""
+def _apply_para(para: _Para, edits: list[dict], track: "_Track | None" = None) -> list[dict]:
+    """一段里的几处修改一起做。edits: {"s","e","text","side","tmpl","order","ref"}。返回做不了的那几处（带原因）。
+    track：修订模式——要删的字留着、记成删除（w:del），加的字记成插入（w:ins）；不给就直接改字。"""
     pieces = list(para.pieces)
     api = para.atom_pi
     n = len(api)
@@ -451,36 +532,47 @@ def _apply_para(para: _Para, edits: list[dict]) -> list[dict]:
         return bad
     for ps, pe, ed, tmpl in reversed(kept):
         syn = {"tmpl": tmpl}
-        new = [{"run": syn, "kind": "tab" if c == "\t" else "c", "ch": c, "el": None} for c in ed["text"]]
-        pieces[ps:pe] = new
-    # 按 owner 分段，合成的段挂到前一个原 run 后面（段首的挂到后一个原 run 前面）
+        new = [{"run": syn, "kind": "tab" if c == "\t" else "c", "ch": c, "el": None, "mk": "ins" if track else None}
+               for c in ed["text"]]
+        if track:                                          # 删的字留在原 run 里，记成删除；加的字跟在后面
+            old = [dict(pc, mk="del") if pc["kind"] in ("c", "tab", "br") else pc for pc in pieces[ps:pe]]
+            pieces[ps:pe] = old + new
+        else:
+            pieces[ps:pe] = new
+    # 按 owner 分段（修订模式下删的、加的、没动的各成一段），合成的段挂到前一个原 run 后面（段首的挂到后一个原 run 前面）
     segs: list[tuple] = []
     for pc in pieces:
-        if segs and segs[-1][0] is pc["run"]:
+        if segs and segs[-1][0] is pc["run"] and segs[-1][2] == pc.get("mk"):
             segs[-1][1].append(pc)
         else:
-            segs.append((pc["run"], [pc]))
+            segs.append((pc["run"], [pc], pc.get("mk")))
     groups = {id(r): [] for r in para.runs}
     last, pending = None, []
-    for owner, pcs in segs:
+    for seg in segs:
+        owner = seg[0]
         if isinstance(owner, dict):
-            (groups[id(last)].append((owner, pcs)) if last is not None else pending.append((owner, pcs)))
+            (groups[id(last)].append(seg) if last is not None else pending.append(seg))
         else:
             if pending:
                 groups[id(owner)].extend(pending)
                 pending = []
-            groups[id(owner)].append((owner, pcs))
+            groups[id(owner)].append(seg)
             last = owner
+
+    def built(owner, pcs, mk, src, reuse):
+        run = _mk_run(src, pcs, owner["tmpl"] if isinstance(owner, dict) else None, reuse=reuse, deleted=mk == "del")
+        return track.wrap(run, mk) if (track and mk) else run
+
+    made: list = []
     if pending:
         host = pending[0][0]["tmpl"]
         host = host if host is not None and id(host) in groups else (para.runs[0] if para.runs else None)
         if host is None:                                   # 一个 run 都没有的空段：直接在段尾加
-            for owner, pcs in pending:
-                para.el.append(_mk_run(None, pcs, owner["tmpl"], reuse=False))
+            for owner, pcs, mk in pending:
+                para.el.append(built(owner, pcs, mk, None, False))
         else:
             groups[id(host)].extend(pending)
     orig = {id(r): [pc for pc in para.pieces if pc["run"] is r] for r in para.runs}
-    made: list = []
     for r in para.runs:
         grp = groups[id(r)]
         if len(grp) == 1 and grp[0][0] is r and len(grp[0][1]) == len(orig[id(r)]) \
@@ -489,18 +581,19 @@ def _apply_para(para: _Para, edits: list[dict]) -> list[dict]:
         parent = r.getparent()
         at = parent.index(r)
         els, reused = [], False
-        for owner, pcs in grp:
-            if owner is r and not reused:
-                els.append(_mk_run(r, pcs, None, reuse=True))
+        for owner, pcs, mk in grp:
+            if owner is r and not reused and not track:
+                els.append(built(owner, pcs, mk, r, True))
                 reused = True
             elif owner is r:
-                els.append(_mk_run(r, pcs, None, reuse=False))
+                els.append(built(owner, pcs, mk, r, False))
             else:
-                els.append(_mk_run(None, pcs, owner["tmpl"], reuse=False))
-        parent.remove(r)
+                els.append(built(owner, pcs, mk, None, False))
+        if r.getparent() is parent:
+            parent.remove(r)
         for k, el in enumerate(els):
             parent.insert(at + k, el)
-        made += els
+        made += [el for el in els if el.tag == q("r")]
     _merge_runs(made)
     return bad
 
@@ -546,7 +639,8 @@ def _main_run(p) -> object | None:
     return best
 
 
-def _new_para(tmpl_p, text: str):
+def _new_para(tmpl_p, text: str, track: "_Track | None" = None):
+    """新起一段（段落格式抄 tmpl_p，字的格式抄它字最多的那个 run）。修订模式：字和段落标记都记成插入。"""
     p = etree.Element(q("p"))
     ppr = tmpl_p.find(q("pPr")) if tmpl_p is not None else None
     if ppr is not None:
@@ -562,8 +656,29 @@ def _new_para(tmpl_p, text: str):
         p.append(ppr)
     tr = _main_run(tmpl_p) if tmpl_p is not None else None
     pcs = [{"run": None, "kind": "tab" if c == "\t" else "c", "ch": c, "el": None} for c in text]
-    p.append(_mk_run(None, pcs, tr, reuse=False))
+    run = _mk_run(None, pcs, tr, reuse=False)
+    if track:
+        p.append(track.wrap(run, "ins"))
+        _mark_para(p, "ins", track)
+    else:
+        p.append(run)
     return p
+
+
+def _track_remove_para(p, track: "_Track") -> None:
+    """修订模式下"删整段"：段里每个 run 记成删除（字换成 w:delText），段落标记也记成删除；接受修订时整段才真没了。"""
+    for r in _runs_of(p):
+        if not any(ch.tag in (q("t"), q("tab"), q("br"), q("cr"), q("instrText"), q("footnoteReference"),
+                              q("endnoteReference"), q("sym")) for ch in r):
+            continue                                  # 只有格式、书签挂着的空 run：不用记
+        _to_deleted(r)
+        parent = r.getparent()
+        at = parent.index(r)
+        w = track.mark("del")
+        parent.remove(r)
+        w.append(r)
+        parent.insert(at, w)
+    _mark_para(p, "del", track)
 
 
 _BLOCK = (q("p"), q("tbl"), q("sdt"))
@@ -687,18 +802,24 @@ def _excerpt(s: str, n: int = 40) -> str:
 # ======================================================================
 # 主流程
 # ======================================================================
-def apply(docx_bytes: bytes, base_md: str, cur_md: str) -> tuple[bytes | None, dict]:
-    """把 base → cur 的改动写进 docx（直接改文字，不留修订痕迹）。返回 (新 docx 的字节 or None, 报告)。"""
+MODES = ("track", "direct")
+
+
+def apply(docx_bytes: bytes, base_md: str, cur_md: str, mode: str = "direct", author: str = "AI",
+          date: str | None = None) -> tuple[bytes | None, dict]:
+    """把 base → cur 的改动写进 docx。mode="track"：记成 Word 修订（作者 author、日期 date，默认现在）；
+    "direct"：直接改文字，不留修订痕迹。返回 (新 docx 的字节 or None, 报告)；修订模式的报告里 revisions = {ins, del}。"""
     zin = zipfile.ZipFile(_BytesIO(docx_bytes))
     part = _main_part(zin)
     root = etree.fromstring(zin.read(part))
     if root.find(q("body")) is None:
         raise ValueError("Word 正文部件里没有 w:body（不是常见的 Word 文档格式）")
+    track = _Track(author, date or _word_date(), _max_id(zin) + 100) if mode == "track" else None
     bl, cl = md_lines(base_md), md_lines(cur_md)
     model = _Model(root, bl)
     cp = [md_plain(x) for x in cl]
     ck = [line_kind(x) for x in cl]
-    report = {"applied": 0, "skipped": [], "paras_added": 0, "paras_removed": 0,
+    report = {"applied": 0, "skipped": [], "paras_added": 0, "paras_removed": 0, "mode": "track" if track else "direct",
               "lines_total": len(bl), "lines_solid": sum(model.solid)}
     skipped = report["skipped"]
 
@@ -858,7 +979,7 @@ def apply(docx_bytes: bytes, base_md: str, cur_md: str) -> tuple[bytes | None, d
                 ref = anchor
             if kind == "list" and ref.find(q("pPr") + "/" + q("numPr")) is None:
                 text = cp[j]                     # 抄的那段不是列表：编号留在字里
-            inserts.append((anchor, how, _new_para(ref, text), key))
+            inserts.append((anchor, how, _new_para(ref, text, track), key))
             mark(key, True)
         pend = []
 
@@ -872,7 +993,7 @@ def apply(docx_bytes: bytes, base_md: str, cur_md: str) -> tuple[bytes | None, d
 
     # 4) 动手：先改段内的字，再插段、删段（插入都挂在原来的段落元素上，删段放最后）
     for pi, eds in para_edits.items():
-        bad = _apply_para(model.paras[pi], eds)
+        bad = _apply_para(model.paras[pi], eds, track)
         for x in bad:
             skip(x["line"], x["old"], x["text"], x["reason"])
             mark(x["key"], False)
@@ -891,13 +1012,15 @@ def apply(docx_bytes: bytes, base_md: str, cur_md: str) -> tuple[bytes | None, d
         report["paras_added"] += 1
     for el, key in removes:
         if el.getparent() is not None:
-            _remove_para(el)
+            (_track_remove_para(el, track) if track else _remove_para(el))
             report["paras_removed"] += 1
             mark(key, True)
 
     applied = sum(1 for v in line_state.values() if v[0])
     report["applied"] = applied
     report["lines_skipped"] = sum(1 for v in line_state.values() if v[1])
+    if track:
+        report["revisions"] = {"ins": track.ins, "del": track.dele}
     if not applied:
         return None, report
     xml = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
@@ -1061,10 +1184,24 @@ def _write_out(src: Path, data: bytes, state_p: Path) -> tuple[Path, list[str]]:
 
 
 def writeback(md_path, out_dir_state: Path | None = None, base_text: str | None = None,
-              state_dir: Path | None = None) -> dict:
+              state_dir: Path | None = None, mode: str | None = None, author: str | None = None) -> dict:
     """md_path 这篇（从 Word 转来的）会上改完的，写成原 .docx 旁边的「<原名>（会上修订）.docx」。
+    mode：track（Word 修订，默认按设置）/ direct（直接改）；author：修订的作者（默认 AI 的名字）。
     返回 {"ok","out","applied","skipped":[…],"note","base_from",…}；不是从 Word 转来的：{"ok": False, "not_docx": True}。"""
     t0 = time.time()
+    if mode not in MODES:
+        try:
+            from .paper_prefs import load as _prefs
+            mode = _prefs().get("docx_mode")
+        except Exception:
+            mode = None
+        mode = mode if mode in MODES else "track"
+    if not author:
+        try:
+            from .config import assistant_name
+            author = assistant_name()
+        except Exception:
+            author = "AI"
     md_path = Path(md_path)
     meta = conv_meta(md_path)
     if not meta:
@@ -1090,7 +1227,7 @@ def writeback(md_path, out_dir_state: Path | None = None, base_text: str | None 
     except (OSError, ValueError, TypeError):
         pass
     try:
-        data, rep = apply(src.read_bytes(), base_text, cur)
+        data, rep = apply(src.read_bytes(), base_text, cur, mode=mode, author=author)
     except Exception as e:
         return {"ok": False, "error": f"写回出错：{e!r}"[:300], "source": str(src)}
     res = {"ok": True, "source": str(src), "base_from": base_from, "warnings": warn, **rep,
@@ -1120,7 +1257,8 @@ def summary(res: dict, name: str = "") -> str:
     if not res.get("out"):
         return f"写回 Word{who}：{res.get('note') or '没有要写回的'}"
     sk = res.get("skipped") or []
-    s = f"已写回 Word {res.get('applied', 0)} 处，跳过 {len(sk)} 处{who} → {Path(res['out']).name}"
+    how = "（修订模式）" if res.get("mode") == "track" else ""
+    s = f"已写回 Word {res.get('applied', 0)} 处{how}，跳过 {len(sk)} 处{who} → {Path(res['out']).name}"
     if sk:
         s += "；跳过的：" + "；".join(f"「{x['where']}」{x['reason']}" for x in sk[:5]) + ("……" if len(sk) > 5 else "")
     return s
@@ -1156,23 +1294,59 @@ def _same(a: Path, b: Path) -> bool:
         return str(a) == str(b)
 
 
+def tex_summary(res: dict, name: str = "") -> str:
+    who = f"「{name}」" if name else ""
+    if not res.get("ok"):
+        return f"LaTeX 修订版没写成{who}：{res.get('error') or '未知原因'}"
+    if not res.get("out"):
+        return f"LaTeX 修订版{who}：{res.get('note') or '没有要写的'}"
+    s = f"已写 LaTeX 修订版{who}：加 {res.get('added', 0)} 处、删 {res.get('deleted', 0)} 处 → {Path(res['out']).name}"
+    if res.get("unmarked"):
+        s += f"，{res['unmarked']} 处在公式、标题、命令里，照改了没标"
+    return s
+
+
 def run_for_app(app, meeting: dict | None = None, why: str = "手动") -> list[dict]:
-    """这场会（或屏幕上这篇）里从 Word 转来的论文，各写一份「（会上修订）.docx」；每篇在日志里记一行。"""
+    """这场会（或屏幕上这篇）里从 Word 转来的论文，各写一份「（会上修订）.docx」；LaTeX 论文另写一份带修订标记的
+    「（会上修订）.tex」（zuhui/tex_changes.py）。每篇在日志里记一行。"""
     results = []
     with _lock:
         for md, name in _papers_for(app, meeting):
-            if not conv_meta(md):
+            if conv_meta(md):
+                res = writeback(md)
+                res["name"] = name
+                line, state = summary(res, name), "写回 Word"
+            elif md.suffix.lower() == ".tex":
+                from . import tex_changes
+                try:
+                    res = tex_changes.for_paper(md)
+                except Exception as e:
+                    res = {"ok": False, "error": repr(e)[:200]}
+                res.update(name=name, kind="tex")
+                line, state = tex_summary(res, name), "LaTeX 修订"
+            else:
                 continue
-            res = writeback(md)
-            res["name"] = name
-            line = summary(res, name)
             try:
-                app.log("meeting", state="写回 Word", text=f"{line}（{why}）",
+                app.log("meeting", state=state, text=f"{line}（{why}）",
                         skipped=res.get("skipped") or [], out=res.get("out"))
             except Exception:
                 pass
             results.append(res)
     return results
+
+
+def snapshot_after(app, meeting: dict | None) -> None:
+    """散会后（改稿都做完了）每篇论文存一份"散会后"的版本（zuhui/paper_versions.py）。"""
+    try:
+        from . import paper_versions
+        title = re.sub(r"\s*·\s*\d{1,2}月\d{1,2}日\s*\d{1,2}:\d{2}\s*$", "", str((meeting or {}).get("title") or "")).strip()
+        for md, name in _papers_for(app, meeting):
+            paper_versions.snapshot(md, name, "after", (meeting or {}).get("id"), title)
+    except Exception as e:
+        try:
+            app.log("fast_error", error=f"散会后的论文版本没存上：{e!r}"[:300])
+        except Exception:
+            pass
 
 
 def after_meeting(app, meeting: dict | None, wait_s: float = 1200) -> None:
@@ -1187,6 +1361,7 @@ def after_meeting(app, meeting: dict | None, wait_s: float = 1200) -> None:
             except Exception:
                 break
             time.sleep(3)
+        snapshot_after(app, meeting)
         try:
             run_for_app(app, meeting, why="散会")
         except Exception as e:
@@ -1203,10 +1378,11 @@ def on_demand(app) -> dict:
         md = Path(app.paper.path)
     except Exception:
         return {"ok": False, "error": "没有打开的论文"}
-    if not conv_meta(md):
-        return {"ok": False, "error": "这篇不是从 Word 转来的，没有 Word 可写回"}
+    if not conv_meta(md) and md.suffix.lower() != ".tex":
+        return {"ok": False, "error": "这篇不是从 Word 或 LaTeX 来的，没有可写回的"}
     res = run_for_app(app, None, why="手动")          # 不在开会：只有屏幕上这篇
     r = res[0] if res else {"ok": False, "error": "没有写回"}
     return {"ok": bool(r.get("ok")), "result": {k: r.get(k) for k in ("out", "applied", "skipped", "note", "error",
-                                                                       "warnings", "notes", "source")},
-            "text": summary(r, r.get("name") or "")}
+                                                                       "warnings", "notes", "source", "mode", "revisions",
+                                                                       "added", "deleted", "unmarked", "kind")},
+            "text": tex_summary(r, r.get("name") or "") if r.get("kind") == "tex" else summary(r, r.get("name") or "")}

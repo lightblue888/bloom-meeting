@@ -14,7 +14,8 @@ import { api, type AppStatus, type AsrModel, type Settings } from '../api';
 import { i18n } from '../i18n';
 import { Group, Page, Popup, Row, S } from '../settings/kit';
 import { useMenu, type MenuAt, type MenuEntry } from './Menu';
-import { storageApi, type StorageInfo, type UsedModel } from '../storageApi';
+import { storageApi, type Retention, type StorageInfo, type UsedModel } from '../storageApi';
+import { cleanTitle, fmtWhen } from '../meetingApi';
 import './storage.css';
 
 /** "412 MB", "1.6 GB" — one formatter for every row (decimal units, like File Explorer's "size on disk" wording). */
@@ -30,7 +31,9 @@ export function size(bytes: number): string {
 }
 const P = (key: string, n: number) => i18n().plural(`st.settings.storage.n.${key}`, n);
 const AGES = [30, 90, 180];
-const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+/** 第 8 批: how long old meetings keep their transcripts and notes */
+const RET_AGES = [30, 90, 180, 365];
+const norm =(p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 
 type Part = 'recordings' | 'models' | 'records' | 'other';
 const PARTS: { key: Part; label: string }[] = [
@@ -167,6 +170,19 @@ export function StoragePane({ s, save, onToast }: { status: AppStatus; s: Settin
     });
   };
 
+  // 第 8 批: turning on deleting old transcripts and notes lists the meetings it would take now and asks first
+  const ret = info?.records.retention;
+  const [askRet, setAskRet] = useState<number | null>(null);
+  const retPreview = (d: number): Retention['preview'][string] => ret?.preview[String(d)] ?? { count: 0, bytes: 0, meetings: [] };
+  const setRetention = async (d: number, sure = false) => {
+    if (d && retPreview(d).count && !sure) return setAskRet(d);
+    setAskRet(null);
+    await run(async () => {
+      const r = await storageApi.setRetention(d);
+      return r.count ? S('settings.storage.records.done', P('meetings', r.count)) : d ? S('settings.storage.records.set', d) : S('settings.storage.records.off');
+    });
+  };
+
   const recActions = (): MenuEntry[] => {
     if (!rec) return [];
     const by = (k: string) => rec.older[k] ?? { count: 0, bytes: 0 };
@@ -269,6 +285,13 @@ export function StoragePane({ s, save, onToast }: { status: AppStatus; s: Settin
             <Item icon="document" title={S('settings.storage.papers')} bytes={info.records.papers.bytes} onMenu={menu.open}
               detail={info.records.papers.count ? P('papers', info.records.papers.count) : S('settings.storage.none')}
               actions={[{ label: S('settings.storage.show'), run: () => show(info.records.papers.path) }]} />
+            {ret && (
+              <Row id="storage.records_auto" icon="history">
+                <Popup label={S('settings.storage.records.auto')} value={ret.days} dividers={[1]} disabled={busy}
+                  choices={[[0, S('settings.storage.never')], ...RET_AGES.map((d) => [d, S('settings.storage.after', d)] as [number, string])]}
+                  onChange={(d) => void setRetention(d)} />
+              </Row>
+            )}
           </Group>
 
           <Group id="storage.cleanup" accessory={acc(info.caches.bytes + info.logs.bytes)}>
@@ -283,12 +306,62 @@ export function StoragePane({ s, save, onToast }: { status: AppStatus; s: Settin
                   run: () => run(async () => S('settings.storage.cleared', size((await storageApi.clearCaches()).bytes))),
                 },
               ]} />
-            <Item icon="lines" title={S('settings.storage.logs')} detail={S('settings.storage.logs.detail')} bytes={info.logs.bytes} onMenu={menu.open}
+            <Item icon="lines" title={S('settings.storage.logs')} detail="" bytes={info.logs.bytes} onMenu={menu.open}
               actions={[{ label: S('settings.storage.show'), run: () => show(info.logs.path) }]} />
           </Group>
         </>
       )}
       {menu.node}
+      {askRet !== null && (
+        <RetentionAsk days={askRet} p={retPreview(askRet)} busy={busy} onCancel={() => setAskRet(null)} onOk={() => void setRetention(askRet, true)} />
+      )}
     </Page>
+  );
+}
+
+/** 第 8 批: before old transcripts and notes go, the meetings they belong to (a dialog of one size, the list scrolls) */
+function RetentionAsk({ days, p, busy, onCancel, onOk }: {
+  days: number;
+  p: Retention['preview'][string];
+  busy: boolean;
+  onCancel: () => void;
+  onOk: () => void;
+}) {
+  const lang = i18n().lang;
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    box.current?.querySelector<HTMLButtonElement>('.sto-dlg-no')?.focus();
+    const k = (e: KeyboardEvent) => e.key === 'Escape' && onCancel();
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, [onCancel]);
+  const more = p.count - p.meetings.length;
+  return (
+    <div className="sto-dlg-veil" onMouseDown={(e) => e.target === e.currentTarget && onCancel()}>
+      <div className="sto-dlg" role="dialog" aria-modal="true" aria-label={S('settings.storage.records.auto')} ref={box} data-testid="retention-ask">
+        <header className="sto-dlg-head">
+          <h2>{S('settings.storage.records.auto')}</h2>
+          <span className="st-dim">{S('settings.storage.after', days)}</span>
+        </header>
+        <p className="sto-dlg-line">{S('settings.storage.records.ask', P('meetings', p.count))}</p>
+        <ul className="sto-dlg-list" data-testid="retention-list">
+          {p.meetings.map((m) => {
+            const name = cleanTitle(m.title) || m.id;
+            return (
+              <li key={m.id}>
+                <span className="sto-cut" data-tip={name} data-tip-trunc>{name}</span>
+                <span className="sto-dlg-when">{fmtWhen(m.started, lang)}</span>
+              </li>
+            );
+          })}
+          {more > 0 && <li className="sto-dlg-more">{S('settings.storage.records.ask_more', more)}</li>}
+        </ul>
+        <p className="sto-dlg-keep">{S('settings.storage.records.auto.detail')}</p>
+        <footer className="sto-dlg-foot">
+          <button type="button" className="sto-dlg-no" onClick={onCancel}>{S('action.cancel')}</button>
+          <button type="button" className="danger" disabled={busy} onClick={onOk} data-testid="retention-ok">{S('settings.storage.turn_on')}</button>
+        </footer>
+      </div>
+    </div>
   );
 }

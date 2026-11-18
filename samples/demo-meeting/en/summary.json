@@ -1,0 +1,184 @@
+{
+ "title": "Editing the Bloom guide",
+ "abstract": "The meeting went through the guide to Bloom for new students. The section before the meeting became two steps, the meeting section now says to call the AI by name, the invite paragraph says guests install nothing, and the last section lists what Review shows. The FAQ is left for after the meeting.",
+ "conclusions": [
+  {
+   "text": "Two steps before the meeting: drag the paper in, click Start",
+   "t": "00:31",
+   "sec": 31.0
+  },
+  {
+   "text": "The meeting section says the AI only answers when called by name",
+   "t": "02:10",
+   "sec": 130.0
+  },
+  {
+   "text": "Guests join from a browser with the invite link, nothing to install",
+   "t": "05:50",
+   "sec": 350.0
+  },
+  {
+   "text": "The FAQ is written after the meeting",
+   "t": "08:15",
+   "sec": 495.0
+  }
+ ],
+ "sections": [
+  {
+   "title": "Before and during the meeting",
+   "cards": [
+    {
+     "title": "Too long before the meeting",
+     "bullets": [
+      {
+       "text": "Prof. Wang said a first-timer only needs to drag the paper in and click Start",
+       "t": "00:31",
+       "sec": 31.0
+      },
+      {
+       "text": "{ME} had {AI} cut it to two steps, done",
+       "t": "00:48",
+       "sec": 48.0
+      }
+     ],
+     "t": "00:31",
+     "sec": 31.0
+    },
+    {
+     "title": "Calling the AI",
+     "bullets": [
+      {
+       "text": "Chen Yu didn't know the AI had to be called by name",
+       "t": "02:10",
+       "sec": 130.0
+      },
+      {
+       "text": "The meeting section now says so",
+       "t": "02:26",
+       "sec": 146.0
+      }
+     ],
+     "t": "02:10",
+     "sec": 130.0
+    }
+   ],
+   "t": "00:05",
+   "sec": 5.0
+  },
+  {
+   "title": "Inviting and afterwards",
+   "cards": [
+    {
+     "title": "What you get afterwards",
+     "bullets": [
+      {
+       "text": "The last section lists revisions, notes and transcript",
+       "t": "03:58",
+       "sec": 238.0
+      }
+     ],
+     "t": "03:58",
+     "sec": 238.0
+    },
+    {
+     "title": "Do guests install anything",
+     "bullets": [
+      {
+       "text": "{AI} said no: the invite link opens in a browser",
+       "t": "05:50",
+       "sec": 350.0
+      },
+      {
+       "text": "That went into the invite paragraph",
+       "t": "06:41",
+       "sec": 401.0
+      }
+     ],
+     "t": "05:50",
+     "sec": 350.0
+    }
+   ],
+   "t": "03:40",
+   "sec": 220.0
+  }
+ ],
+ "people": [
+  {
+   "name": "{ME}",
+   "said": [
+    {
+     "text": "Wants to send the guide to the new students",
+     "t": "00:05",
+     "sec": 5.0
+    },
+    {
+     "text": "Will write the FAQ after the meeting",
+     "t": "08:30",
+     "sec": 510.0
+    }
+   ],
+   "feedback": [
+    {
+     "text": "The part before the meeting is too long",
+     "t": "00:31",
+     "sec": 31.0,
+     "by": "Prof. Wang"
+    },
+    {
+     "text": "How to call the AI isn't clear",
+     "t": "02:10",
+     "sec": 130.0,
+     "by": "Chen Yu"
+    }
+   ],
+   "asks": [
+    {
+     "text": "Add a FAQ at the end: changing the model, where the data is kept",
+     "t": "08:15",
+     "sec": 495.0,
+     "by": "Prof. Wang"
+    }
+   ]
+  },
+  {
+   "name": "Prof. Wang",
+   "said": [
+    {
+     "text": "The guide should say what you get after the meeting",
+     "t": "03:40",
+     "sec": 220.0
+    }
+   ],
+   "feedback": [],
+   "asks": []
+  },
+  {
+   "name": "Chen Yu",
+   "said": [
+    {
+     "text": "Asked whether guests have to install anything",
+     "t": "05:40",
+     "sec": 340.0
+    }
+   ],
+   "feedback": [],
+   "asks": []
+  }
+ ],
+ "todos": [
+  {
+   "text": "{ME} adds the FAQ next week: changing the model, where the data is kept",
+   "t": "08:30",
+   "sec": 510.0,
+   "who": "{ME}"
+  }
+ ],
+ "speakers": [
+  "{ME}",
+  "Prof. Wang",
+  "Chen Yu"
+ ],
+ "template": "default",
+ "generated": "2026-11-02T10:09:40",
+ "markdown": "# Editing the Bloom guide\n\nSpeakers: {ME}, Prof. Wang, Chen Yu\n\nSummary: The meeting went through the guide to Bloom for new students. The section before the meeting became two steps, the meeting section now says to call the AI by name, the invite paragraph says guests install nothing, and the last section lists what Review shows. The FAQ is left for after the meeting.\n\n## Conclusions\n\n- Two steps before the meeting: drag the paper in, click Start `00:31`\n- The meeting section says the AI only answers when called by name `02:10`\n- Guests join from a browser with the invite link, nothing to install `05:50`\n- The FAQ is written after the meeting `08:15`\n\n## Before and during the meeting `00:05`\n\n### 01 Too long before the meeting\n\n- Prof. Wang said a first-timer only needs to drag the paper in and click Start `00:31`\n- {ME} had {AI} cut it to two steps, done `00:48`\n\n### 02 Calling the AI\n\n- Chen Yu didn't know the AI had to be called by name `02:10`\n- The meeting section now says so `02:26`\n\n## Inviting and afterwards `03:40`\n\n### 01 What you get afterwards\n\n- The last section lists revisions, notes and transcript `03:58`\n\n### 02 Do guests install anything\n\n- {AI} said no: the invite link opens in a browser `05:50`\n- That went into the invite paragraph `06:41`\n\n## People\n\n### {ME}\n\nSaid\n\n- Wants to send the guide to the new students `00:05`\n- Will write the FAQ after the meeting `08:30`\n\nFeedback\n\n- Prof. Wang: The part before the meeting is too long `00:31`\n- Chen Yu: How to call the AI isn't clear `02:10`\n\nTo do\n\n- Prof. Wang: Add a FAQ at the end: changing the model, where the data is kept `08:15`\n\n### Prof. Wang\n\nSaid\n\n- The guide should say what you get after the meeting `03:40`\n\n### Chen Yu\n\nSaid\n\n- Asked whether guests have to install anything `05:40`\n\n## Next steps\n\n- {ME} adds the FAQ next week: changing the model, where the data is kept `08:30`\n"
+}

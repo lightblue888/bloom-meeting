@@ -1,17 +1,17 @@
-// 会议 before a meeting: the lobby. Left, the next meeting — its name, the paper on the desk (its size, when it was
-// changed, its first headings, so it's clearly the right one and the right version), and 开始会议, which stays off
-// until what a meeting needs is there (a model source, the transcription model, a paper) and says what's missing with
-// the fix right beside it. Right, where everything stands (model, transcription, microphone, voice), the invite link,
-// and the recent meetings (a click opens one in 回顾). The meeting page itself (MeetingLayout) comes up once the
+// 会议 before a meeting: the lobby. One panel for the next meeting: on the left its name (large, editable in place),
+// the paper on the desk (its size and when it was changed, so it's clearly the right one and the right version), and
+// 开始会议, which stays off until what a meeting needs is there (a model source, the transcription model, a paper) and
+// says what's missing with the fix right beside it; on the right, past a hairline, where everything stands (the two
+// models, transcription, microphone, voice) and the invite link. Below, the recent meetings (a click opens one in 回顾). Beside them, on a second tab of the same card, what the last
+// meetings on this paper left undone (their to-dos, notes, edits nobody accepted): ticked here, saved with the meeting
+// it came from; the meeting about to start carries the rest. The meeting page itself (MeetingLayout) comes up once the
 // meeting starts; the lobby never shows the last meeting's transcript.
-import { useEffect, useMemo, useState, type DragEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type ReactNode } from 'react';
 import { Icon } from '@blurt/icons';
 import { i18n, t } from '../i18n';
-import { avatarUrl, cleanTitle, fmtDuration, fmtWhen, meetingApi, type Current, type Invite, type MeetingBrief } from '../meetingApi';
+import { cleanTitle, fmtDay, fmtDuration, fmtWhen, meetingApi, type CarryItem, type Current, type Invite, type MeetingBrief } from '../meetingApi';
 import { nav } from '../nav';
-import { setupApi } from '../setupApi';
-import { Flower, HOST_COLOR, nameColor } from './Flower';
-import { BloomMark } from './MeetingLayout';
+import { relayApi, setupApi } from '../setupApi';
 import { useReadiness, type Readiness } from './readiness';
 import './setup.css';
 
@@ -21,7 +21,7 @@ interface DropProps {
   onDrop: (e: DragEvent) => void;
 }
 
-export function MeetingLobby({ cur, paperName, busy, importText, notice, title, onTitle, onStart, onPickPaper, dropProps, over, active }: {
+export function MeetingLobby({ cur, paperName, busy, importText, notice, title, onTitle, onStart, onPickPaper, dropProps, over, active, onHistory }: {
   cur: Current | null;
   /** the paper just imported, before the next poll says so */
   paperName: string | null;
@@ -35,6 +35,8 @@ export function MeetingLobby({ cur, paperName, busy, importText, notice, title, 
   dropProps: DropProps;
   over: boolean;
   active: boolean;
+  /** opens the paper's saved versions (历史版本); null when there's no paper to look back on */
+  onHistory?: (() => void) | null;
 }) {
   const r = useReadiness(active);
   const paper = cur?.paper?.exists ? cur.paper : null;
@@ -61,39 +63,119 @@ export function MeetingLobby({ cur, paperName, busy, importText, notice, title, 
       clearInterval(h);
     };
   }, [active]);
+  // what the last meetings on this paper left undone; a tick stays on screen (struck through) until the lobby is
+  // opened again, so nothing moves under the pointer
+  const [carry, setCarry] = useState<CarryItem[] | null>(null);
+  const [ticked, setTicked] = useState<Set<string>>(() => new Set());
+  const [carryErr, setCarryErr] = useState<string | null>(null);
+  const [tab, setTab] = useState<'recent' | 'carry' | null>(null);
+  const [page, setPage] = useState(0);
+  const paperKey = paper?.path ?? '';
+  useEffect(() => {
+    if (!active) return;
+    let alive = true;
+    meetingApi.carry().then(
+      (r) => {
+        if (!alive) return;
+        const items = Array.isArray(r?.items) ? r.items : [];
+        setCarry(items);
+        setTicked(new Set());
+        setPage(0);
+        // the first time: the left-over items first when there are any
+        setTab((x) => x ?? (items.length ? 'carry' : 'recent'));
+      },
+      () => alive && setCarry((c) => c ?? []),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [active, paperKey]);
+  const errTimer = useRef<number | undefined>(undefined);
+  const tick = async (it: CarryItem) => {
+    const on = !ticked.has(it.id);
+    const flip = (want: boolean) =>
+      setTicked((s) => {
+        const n = new Set(s);
+        if (want) n.add(it.id);
+        else n.delete(it.id);
+        return n;
+      });
+    flip(on);
+    try {
+      await meetingApi.tickCarry(it.id, on);
+    } catch (e) {
+      flip(!on);
+      const c = String((e as Error)?.message ?? e);
+      setCarryErr(t('lobby.carry.failed', { a: c === 'not_found' ? t('lobby.carry.err.not_found') : c }));
+      window.clearTimeout(errTimer.current);
+      errTimer.current = window.setTimeout(() => setCarryErr(null), 4000);
+    }
+  };
+  useEffect(() => () => window.clearTimeout(errTimer.current), []);
+  const view: 'recent' | 'carry' = tab ?? 'recent';
+  const openN = (carry ?? []).filter((x) => !ticked.has(x.id)).length;
+
+  // as many rows as fit in the window's height (the page itself never scrolls at its usual size): recent meetings
+  // at most 8, left-over items as many as fit, the rest on the next page
+  const listBox = useRef<HTMLDivElement>(null);
+  const [boxH, setBoxH] = useState(LIST_TOP + 5 * ROW_H);
+  const fit = Math.max(1, Math.min(8, Math.floor((boxH - LIST_TOP) / ROW_H)));
+  const rows = Math.max(1, Math.floor((boxH - LIST_TOP) / CARRY_ROW_H));
+  const measure = useCallback(() => {
+    const el = listBox.current;
+    if (el) setBoxH(el.clientHeight);
+  }, []);
+  const pages = Math.max(1, Math.ceil((carry?.length ?? 0) / rows));
+  const pg = Math.min(page, pages - 1);
+  // measured after every render that can change the space, and whenever the window or the card changes size
+  useLayoutEffect(measure, [measure, recent, busy, notice, view]);
+  useEffect(() => {
+    const el = listBox.current;
+    window.addEventListener('resize', measure);
+    const ro = el ? new ResizeObserver(measure) : null;
+    if (el) ro?.observe(el);
+    return () => {
+      window.removeEventListener('resize', measure);
+      ro?.disconnect();
+    };
+  }, [measure]);
   const [invite, setInvite] = useState<Invite | null>(null);
+  const inviteLoad = useRef<() => Promise<unknown>>(() => Promise.resolve());
   useEffect(() => {
     if (!active) return;
     let alive = true;
     const load = () => meetingApi.invite().then((x) => alive && setInvite(x), () => alive && setInvite({ ok: false }));
     void load();
+    inviteLoad.current = load;
     const h = window.setInterval(load, 30_000);
     return () => {
       alive = false;
       clearInterval(h);
     };
   }, [active]);
+  const reloadInvite = useCallback(() => void inviteLoad.current(), []);
 
   return (
     <div className={`lb ${over ? 'is-over' : ''}`} {...dropProps} data-testid="lobby">
       <div className="lb-inner">
-        <Greeting r={r} />
-        <div className="lb-grid">
-          <section className="lb-card lb-new" aria-labelledby="lb-new-h">
-            <h2 id="lb-new-h" className="lb-card-h">{t('lobby.new')}</h2>
-            {notice && <div className="lb-notice">{notice}</div>}
-            <label className="lb-field">
-              <span className="lb-label">{t('lobby.title')}</span>
-              <input
-                className="lb-input"
-                value={title}
-                maxLength={60}
-                spellCheck={false}
-                placeholder={cleanTitle(name) || t('lobby.title_ph')}
-                onChange={(e) => onTitle(e.target.value)}
-                data-testid="lobby-title"
-              />
-            </label>
+        <div className="lb-top">
+          <section className="lb-new" aria-labelledby="lb-new-h">
+            <div className="lb-new-h">
+              <h2 id="lb-new-h" className="lb-kicker">{t('lobby.new')}</h2>
+              {/* a notice (a start that failed, a paper that didn't import) sits on the heading's line: nothing below moves */}
+              {notice && <div className="lb-notice">{notice}</div>}
+            </div>
+            <input
+              className="lb-title"
+              value={title}
+              maxLength={60}
+              spellCheck={false}
+              placeholder={cleanTitle(name) || t('lobby.title_ph')}
+              title={title || cleanTitle(name) || undefined}
+              aria-label={t('lobby.title')}
+              onChange={(e) => onTitle(e.target.value)}
+              data-testid="lobby-title"
+            />
             <div className="lb-field">
               <span className="lb-label">{t('lobby.paper')}</span>
               {busy === 'paper' ? (
@@ -106,7 +188,6 @@ export function MeetingLobby({ cur, paperName, busy, importText, notice, title, 
                 </div>
               ) : hasPaper ? (
                 <div className="lb-paper" data-testid="lobby-paper">
-                  <Icon name="document" size={22} />
                   <div className="lb-paper-text">
                     <div className="lb-paper-name" title={name}>{name}</div>
                     <div className="lb-paper-meta">
@@ -117,19 +198,14 @@ export function MeetingLobby({ cur, paperName, busy, importText, notice, title, 
                         .filter(Boolean)
                         .join(' · ')}
                     </div>
-                    {!!paper?.outline?.length && (
-                      <ol className="lb-outline">
-                        {paper.outline.slice(0, 6).map((h, i) => (
-                          <li key={i} title={h}>{h}</li>
-                        ))}
-                      </ol>
-                    )}
                   </div>
-                  <button className="lb-paper-change" onClick={onPickPaper} data-testid="lobby-change-paper">{t('lobby.change')}</button>
+                  <span className="lb-paper-acts">
+                    {onHistory && <button className="link" onClick={onHistory} data-testid="lobby-paper-history">{t('meeting.paper.history')}</button>}
+                    <button className="lb-paper-change" onClick={onPickPaper} data-testid="lobby-change-paper">{t('lobby.change')}</button>
+                  </span>
                 </div>
               ) : (
                 <button className="lb-drop" onClick={onPickPaper} data-testid="lobby-pick-paper">
-                  <Icon name="document" size={28} />
                   <span className="lb-drop-t">{t('lobby.drop')}</span>
                   <span className="lb-drop-s">{t('lobby.formats')}</span>
                 </button>
@@ -137,91 +213,118 @@ export function MeetingLobby({ cur, paperName, busy, importText, notice, title, 
             </div>
             <div className="lb-start-row">
               <button className="lb-start" disabled={!canStart} onClick={onStart} data-testid="lobby-start">
-                {busy === 'start' ? <span className="mw-spinner" aria-hidden="true" /> : <BloomMark size={22} />}
+                {/* the spinner floats over the label's left: the button keeps its width while it starts */}
+                {busy === 'start' && <span className="mw-spinner" aria-hidden="true" />}
                 <span>{t('lobby.start')}</span>
               </button>
               <div className="lb-needs" aria-live="polite">
                 {needs.map((n) => (
                   <Need key={n} n={n} r={r} onPickPaper={onPickPaper} />
                 ))}
-                {!needs.length && (
-                  <span className="lb-need is-ok">
-                    <Icon name="check" size={13} />
-                    <span>{t('lobby.all_set')}</span>
-                  </span>
-                )}
               </div>
             </div>
           </section>
 
           <div className="lb-side">
-            <section className="lb-card" aria-labelledby="lb-ready-h">
-              <div className="lb-card-hrow">
-                <h2 id="lb-ready-h" className="lb-card-h">{t('lobby.ready')}</h2>
+            <section aria-labelledby="lb-ready-h">
+              <div className="lb-side-h">
+                <h2 id="lb-ready-h" className="lb-kicker">{t('lobby.ready')}</h2>
                 <button className="link" onClick={() => nav({ to: 'settings' })}>{t('lobby.settings')}</button>
               </div>
               <Status r={r} />
             </section>
-            <section className="lb-card" aria-labelledby="lb-inv-h">
-              <h2 id="lb-inv-h" className="lb-card-h">{t('lobby.invite')}</h2>
-              <InviteLine invite={invite} />
+            <section className="lb-inv" aria-labelledby="lb-inv-h">
+              <InviteLine invite={invite} onChange={reloadInvite} />
             </section>
           </div>
         </div>
 
-        <section className="lb-card lb-recent" aria-labelledby="lb-recent-h">
+        <section className="lb-recent" aria-labelledby={view === 'carry' ? 'lb-carry-h' : 'lb-recent-h'}>
           <div className="lb-card-hrow">
-            <h2 id="lb-recent-h" className="lb-card-h">{t('lobby.recent')}</h2>
-            {!!recent?.length && <button className="link" onClick={() => nav({ to: 'history' })}>{t('lobby.all')}</button>}
+            <div className="lb-tabs" role="tablist">
+              <button role="tab" id="lb-recent-h" className="lb-tab" aria-selected={view === 'recent'} onClick={() => setTab('recent')} data-testid="lobby-tab-recent">
+                {t('lobby.recent')}
+              </button>
+              <button role="tab" id="lb-carry-h" className="lb-tab" aria-selected={view === 'carry'} onClick={() => setTab('carry')} data-testid="lobby-tab-carry">
+                {t('lobby.carry')}
+                {/* the count keeps its room when it is 0: ticking the last one doesn't move the tab's edge */}
+                <span className={`lb-tab-n ${openN ? '' : 'is-ghost'}`} aria-hidden={!openN || undefined}>{i18n().formatNumber(openN)}</span>
+              </button>
+            </div>
+            {view === 'recent'
+              ? !!recent?.length && <button className="link" onClick={() => nav({ to: 'history' })}>{t('lobby.all')}</button>
+              : pages > 1 && (
+                  <span className="lb-pager">
+                    <button className="lb-pager-b" disabled={pg === 0} onClick={() => setPage(pg - 1)} aria-label={t('lobby.carry.prev')} data-testid="lobby-carry-prev">
+                      <Icon name="chevron-left" size={14} />
+                    </button>
+                    <span className="lb-pager-n lb-num">{`${pg + 1}/${pages}`}</span>
+                    <button className="lb-pager-b" disabled={pg >= pages - 1} onClick={() => setPage(pg + 1)} aria-label={t('lobby.carry.next')} data-testid="lobby-carry-next">
+                      <Icon name="chevron-right" size={14} />
+                    </button>
+                  </span>
+                )}
           </div>
-          {recent === null ? (
+          <div className="lb-list-box" ref={listBox}>
+          {view === 'carry' ? (
+            carry === null ? (
+              <div className="lb-empty">…</div>
+            ) : !carry.length ? (
+              <div className="lb-empty">{t('lobby.carry_none')}</div>
+            ) : (
+              <ul className="lb-list" data-testid="lobby-carry">
+                {carry.slice(pg * rows, pg * rows + rows).map((it) => {
+                  const on = ticked.has(it.id);
+                  return (
+                    <li key={it.id}>
+                      <div className={`lb-carry ${on ? 'is-done' : ''}`}>
+                        <label className="lb-carry-main">
+                          <input type="checkbox" checked={on} onChange={() => void tick(it)} data-testid="lobby-carry-tick" />
+                          <span className="lb-carry-t" title={it.text}>{it.text}</span>
+                        </label>
+                        <span className="lb-meeting-m lb-carry-who" title={it.who ?? undefined}>{it.who ?? ''}</span>
+                        <span className={`lb-carry-kind is-${it.kind}`}>{t(`lobby.carry.kind.${it.kind}`)}</span>
+                        <button className="lb-carry-day" title={cleanTitle(it.title) || undefined}
+                          onClick={() => nav({ to: 'history', meeting: it.mid, at: it.sec ?? null })} data-testid="lobby-carry-open">
+                          {fmtDay(it.started, lang)}
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )
+          ) : recent === null ? (
             <div className="lb-empty">…</div>
           ) : !recent.length ? (
             <div className="lb-empty">{t('lobby.none')}</div>
           ) : (
             <ul className="lb-list">
-              {recent.slice(0, 5).map((m) => (
+              {recent.slice(0, fit).map((m) => (
                 <li key={m.id}>
                   <button className="lb-meeting" onClick={() => nav({ to: 'history', meeting: m.id })} data-testid="lobby-recent">
+                    <span className="lb-meeting-d lb-num">{fmtWhen(m.started, lang)}</span>
                     <span className="lb-meeting-t" title={cleanTitle(m.title)}>{cleanTitle(m.title) || t('lobby.untitled')}</span>
-                    <span className="lb-meeting-m">{fmtWhen(m.started, lang)}</span>
                     <span className="lb-meeting-m lb-num">{m.duration_s ? fmtDuration(m.duration_s) : ''}</span>
                     <span className="lb-meeting-m lb-num">{m.n_tasks ? t('lobby.edits', { a: m.n_done, b: m.n_tasks }) : ''}</span>
-                    <span className="lb-meeting-tag">{m.processing ? t('lobby.processing') : m.has_summary ? t('lobby.summary') : ''}</span>
-                    <Icon name="chevron-right" size={14} />
+                    {/* only what's unusual: still being written up, or no minutes */}
+                    <span className={`lb-meeting-tag ${m.processing ? 'is-busy' : ''}`}>{m.processing ? t('lobby.processing') : m.has_summary ? '' : t('lobby.no_summary')}</span>
                   </button>
                 </li>
               ))}
             </ul>
           )}
+          {/* a tick that didn't save: said over the list's corner for a few seconds (nothing moves) */}
+          {carryErr && view === 'carry' && <div className="lb-carry-err" role="alert">{carryErr}</div>}
+          </div>
         </section>
       </div>
       {over && (
         <div className="lb-veil" aria-hidden="true">
-          <Icon name="document" size={28} />
           {t(hasPaper ? 'meeting.paper.drop_new' : 'lobby.drop_here')}
         </div>
       )}
     </div>
-  );
-}
-
-function Greeting({ r }: { r: Readiness }) {
-  const p = r.profile;
-  const h = new Date().getHours();
-  const part = h < 5 ? 'evening' : h < 11 ? 'morning' : h < 13 ? 'noon' : h < 18 ? 'afternoon' : 'evening';
-  const date = useMemo(() => new Date().toLocaleDateString(i18n().locale, { month: 'long', day: 'numeric', weekday: 'long' }), []);
-  return (
-    <header className="lb-head">
-      <span className="lb-avatar">{p?.avatar ? <img src={avatarUrl(p.avatar)} alt="" draggable={false} /> : <Flower color={p?.color || HOST_COLOR} />}</span>
-      <div className="lb-hello">
-        <h1>
-          {t(`lobby.hello.${part}`)}
-          {p?.name && <>{t('lobby.hello_sep')}<span className="lb-name" style={{ color: nameColor(p.color) }}>{p.name}</span></>}
-        </h1>
-        <div className="lb-date">{date}</div>
-      </div>
-    </header>
   );
 }
 
@@ -251,6 +354,13 @@ function Need({ n, r, onPickPaper }: { n: 'provider' | 'asr' | 'paper'; r: Readi
   );
 }
 
+/** a recent meeting's row (setup.css .lb-meeting min-height + its border) */
+const ROW_H = 45;
+/** a left-over item's row (setup.css .lb-carry min-height + its border): lower, so a small window still shows a few */
+const CARRY_ROW_H = 37;
+/** the list's top margin (setup.css .lb-list) */
+const LIST_TOP = 8;
+
 function Status({ r }: { r: Readiness }) {
   const [say, setSay] = useState<string | null>(null);
   const test = async () => {
@@ -263,10 +373,9 @@ function Status({ r }: { r: Readiness }) {
     }
   };
   const pv = r.provider;
-  const row = (icon: 'cpu' | 'waveform' | 'mic' | 'character-bubble', label: string, value: ReactNode, state: 'ok' | 'warn' | 'block' | 'wait', act?: ReactNode) => (
+  const row = (label: string, value: ReactNode, state: 'ok' | 'warn' | 'block' | 'wait', act?: ReactNode) => (
     <div className={`lb-st is-${state}`}>
       <span className="lb-st-dot" aria-hidden="true" />
-      <Icon name={icon} size={15} />
       <span className="lb-st-l">{label}</span>
       <span className="lb-st-v">{value}</span>
       <span className="lb-st-a">{act}</span>
@@ -275,18 +384,22 @@ function Status({ r }: { r: Readiness }) {
   const voice = r.voiceEngine === undefined ? '…' : r.voiceEngine === null ? t('ob.voice_off') : t(`ob.voice.${r.voiceEngine}`);
   return (
     <div className="lb-status" data-testid="lobby-status">
-      {row('cpu', t('lobby.st.model'),
-        <span className="lb-trunc" title={pv?.main || ''}>{!pv ? '…' : pv.kind === 'unset' ? t('ob.unset') : pv.label}</span>,
+      {/* two models: the quick one answers in the meeting, the stronger one edits the paper (Settings → Model source) */}
+      {row(t('lobby.st.fast'),
+        <span className="lb-trunc" title={r.modelFast ?? undefined}>{!pv ? '…' : pv.kind === 'unset' ? t('ob.unset') : r.modelFast ?? (pv.label || '…')}</span>,
         !pv ? 'wait' : pv.kind === 'unset' ? 'block' : 'ok',
         <button className="link" onClick={() => nav({ to: 'settings', link: 'general/source' })}>{t('lobby.change')}</button>)}
-      {row('waveform', t('lobby.st.asr'),
+      {row(t('lobby.st.main'),
+        <span className="lb-trunc" title={r.model ?? undefined}>{!pv ? '…' : pv.kind === 'unset' ? t('ob.unset') : r.model ?? (pv.label || '…')}</span>,
+        !pv ? 'wait' : pv.kind === 'unset' ? 'block' : 'ok')}
+      {row(t('lobby.st.asr'),
         <span className="lb-trunc">{r.asr === 'ok' ? r.asrName : r.asr === 'downloading' ? t('ob.downloading') : r.asr === 'missing' ? t('ob.not_downloaded') : '…'}</span>,
         r.asr === 'ok' ? 'ok' : r.asr === 'unknown' ? 'wait' : 'block',
         <button className="link" onClick={() => nav({ to: 'settings', link: 'speech' })}>{t('lobby.change')}</button>)}
-      {row('mic', t('lobby.st.mic'),
+      {row(t('lobby.st.mic'),
         <span className="lb-trunc" title={r.mic?.mic || ''}>{r.mic?.mic || (!r.mic || r.mic.probing ? '…' : t('ob.mic_none'))}</span>,
         r.mic?.mic ? 'ok' : !r.mic || r.mic.probing ? 'wait' : 'warn')}
-      {row('character-bubble', t('lobby.st.voice'),
+      {row(t('lobby.st.voice'),
         <span className="lb-trunc">{say ?? voice}</span>,
         r.voiceEngine === undefined ? 'wait' : 'ok',
         r.voiceEngine ? <button className="link" onClick={() => void test()}>{t('lobby.voice_test')}</button> : <button className="link" onClick={() => nav({ to: 'settings', link: 'speech' })}>{t('lobby.change')}</button>)}
@@ -294,10 +407,38 @@ function Status({ r }: { r: Readiness }) {
   );
 }
 
-function InviteLine({ invite }: { invite: Invite | null }) {
+function InviteLine({ invite, onChange }: { invite: Invite | null; onChange: () => void }) {
   const [copied, setCopied] = useState(false);
-  if (!invite) return <div className="lb-empty">…</div>;
-  if (!invite.ok || !invite.url || invite.relay === false) return <div className="lb-empty">{t('lobby.invite_off')}</div>;
+  const [busy, setBusy] = useState(false);
+  const head = (right?: ReactNode) => (
+    <div className="lb-side-h">
+      <h2 id="lb-inv-h" className="lb-kicker">{t('lobby.invite')}</h2>
+      {right}
+    </div>
+  );
+  if (!invite) return <>{head()}<div className="lb-empty">…</div></>;
+  if (!invite.ok || !invite.url || invite.relay === false) {
+    return (
+      <>
+        {head()}
+        <div className="lb-empty lb-invite-off">
+          <span>{t('lobby.invite_off')}</span>
+          <button className="link" onClick={() => nav({ to: 'settings', link: 'general/relay_mode' })} data-testid="lobby-relay-setup">{t('lobby.fix.provider')}</button>
+        </div>
+      </>
+    );
+  }
+  const arm = async (on: boolean) => {
+    setBusy(true);
+    try {
+      await relayApi.setInvite(on);
+      onChange();
+    } catch {
+      /* the next poll says where it stands */
+    } finally {
+      setBusy(false);
+    }
+  };
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(invite.url!);
@@ -306,14 +447,26 @@ function InviteLine({ invite }: { invite: Invite | null }) {
     } catch {
       /* the field is selectable: copy by hand */
     }
+    if (invite.public && !invite.armed) void arm(true);   // 发了链接就是要别人进来
   };
   return (
-    <div className="lb-invite">
-      <input className="lb-input lb-mono" readOnly value={invite.url} onFocus={(e) => e.currentTarget.select()} aria-label={t('lobby.invite')} />
-      <button onClick={() => void copy()} data-testid="lobby-copy-invite">
-        <Icon name={copied ? 'check' : 'copy'} size={14} />
-        <span className="lb-copy-t">{t(copied ? 'lobby.copied' : 'lobby.copy')}</span>
-      </button>
-    </div>
+    <>
+      {head(invite.public && (
+        <label className="lb-invite-on">
+          <span>{t('lobby.allow_join')}</span>
+          <button type="button" role="switch" aria-checked={!!invite.armed} aria-label={t('lobby.allow_join')} disabled={busy}
+            className={`st-switch ${invite.armed ? 'on' : ''}`} onClick={() => void arm(!invite.armed)} data-testid="lobby-allow-join">
+            <span />
+          </button>
+        </label>
+      ))}
+      <div className="lb-invite">
+        <input className="lb-input lb-mono" readOnly value={invite.url} onFocus={(e) => e.currentTarget.select()} aria-label={t('lobby.invite')} />
+        <button onClick={() => void copy()} data-testid="lobby-copy-invite">
+          <Icon name={copied ? 'check' : 'copy'} size={14} />
+          <span className="lb-copy-t">{t(copied ? 'lobby.copied' : 'lobby.copy')}</span>
+        </button>
+      </div>
+    </>
   );
 }

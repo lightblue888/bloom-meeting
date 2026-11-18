@@ -1,0 +1,22 @@
+{
+ "id": "sample",
+ "sample": true,
+ "sample_version": 1,
+ "title": "Bloom 使用说明",
+ "title_auto": true,
+ "started": "2026-11-02T10:00:00",
+ "ended": "2026-11-02T10:09:40",
+ "state": "ended",
+ "duration_s": 580,
+ "session": null,
+ "lang": "zh",
+ "papers": [
+  {
+   "id": "",
+   "name": "Bloom 使用说明",
+   "path": "paper.md",
+   "added": "2026-11-02T10:00:00"
+  }
+ ],
+ "active_paper": null
+}

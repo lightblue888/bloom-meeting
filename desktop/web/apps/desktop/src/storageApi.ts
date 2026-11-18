@@ -39,9 +39,16 @@ export interface StorageInfo {
     auto_preview: Record<string, Tally>;
   };
   models: { bytes: number; folder: string; used: UsedModel[]; unused: { path: string; name: string; bytes: number }[] };
-  records: { bytes: number; meetings: Tally & { path: string }; papers: Tally & { path: string } };
+  records: { bytes: number; meetings: Tally & { path: string }; papers: Tally & { path: string }; retention?: Retention };
   caches: { bytes: number; clearable: number; path: string };
   logs: { bytes: number; path: string };
+}
+
+/** 第 8 批: deleting old meetings' transcripts and notes automatically (0: never); `preview` = what turning it on
+ *  for that many days would take right away ("30", "90", "180", "365"), the meetings listed for the confirmation */
+export interface Retention {
+  days: number;
+  preview: Record<string, Tally & { meetings: { id: string; title: string; started: string | null }[] }>;
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
@@ -66,6 +73,8 @@ export const storageApi = {
   trashRecordings: (days: number | null, which: 'meetings' | 'others') => post<Tally>('recordings', { days, which }),
   /** automatic deletion after `days` (0: never); what is already older goes at once */
   setAuto: (days: number) => post<Tally & { auto_days: number }>('auto', { days }),
+  /** old meetings' transcripts and notes after `days` (0: never); what is already older goes at once */
+  setRetention: (days: number) => post<Tally & { days: number }>('retention', { days }),
   trashModels: (paths: string[]) => post<Tally>('models', { paths }),
   clearCaches: () => post<{ bytes: number }>('caches', {}),
   /** a folder opens in File Explorer; a file or model folder is selected in its parent */

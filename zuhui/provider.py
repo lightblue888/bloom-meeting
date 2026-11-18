@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """模型来源（桌面端 设置 → 通用 → 模型来源）。三种：
-- api（默认要选的）：DeepSeek、Kimi、智谱 GLM、通义千问、Anthropic API，或任何"Anthropic 兼容接口"，填 API key。
+- api（默认要选的）：DeepSeek、Kimi、智谱 GLM、通义千问、Anthropic API，或任何"Anthropic 兼容接口"，填 API key；
+  也可以是 OpenAI 格式的接口：自己填地址的"OpenAI 兼容接口"、本机的 Ollama 和 LM Studio（不要 key）。
   Bloom 直接调接口（llm_api.py），不需要装 Claude Code。
 - claude：用这台电脑上 Claude Code 登录的账号（Claude 套餐等）。Bloom 起 Claude Code 干活（改稿时能用它的工具、能联网查）。
 - unset：新装、还没选。界面上默认选 DeepSeek，主页面顶上提示去填；这时用不了模型。
@@ -28,11 +29,40 @@ PRESETS = {
     "anthropic": {"label": "Anthropic API", "ai": "Claude", "base_url": "https://api.anthropic.com",
                   "fast": "claude-haiku-5-5", "main": "claude-opus-5-5"},
     "custom": {"label": "", "ai": "", "base_url": "", "fast": "", "main": ""},
+    # OpenAI 格式（POST <地址>/chat/completions，地址一般以 /v1 结尾）：自己填地址的、本机的 Ollama 和 LM Studio。
+    # 型号不预填：各人装的模型不一样，设置页从 <地址>/models 拉列表来选。key：本机两个不要，自己填的可要可不要
+    "openai": {"label": "", "ai": "", "base_url": "", "fast": "", "main": "", "format": "openai", "key": "optional"},
+    "ollama": {"label": "Ollama", "ai": "", "base_url": "http://127.0.0.1:11434/v1", "fast": "", "main": "",
+               "format": "openai", "key": "none", "local": True},
+    "lmstudio": {"label": "LM Studio", "ai": "", "base_url": "http://127.0.0.1:1234/v1", "fast": "", "main": "",
+                 "format": "openai", "key": "none", "local": True},
 }
 KINDS = ("claude",) + tuple(PRESETS)
 _CACHE = {"mtime": None, "data": {"kind": "unset"}}
-_MODEL_RE = re.compile(r"^[A-Za-z0-9._:/\-\[\]]{1,80}$")
-_URL_RE = re.compile(r"^https?://[A-Za-z0-9.\-]+(?::\d{1,5})?(?:/[A-Za-z0-9._~\-/]*)?$")
+_MODEL_RE = re.compile(r"^[A-Za-z0-9._:/\-\[\]]{1,120}$")
+MODEL_MAX = 120
+_URL_RE = re.compile(r"^https?://(?:[A-Za-z0-9.\-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?(?:/[A-Za-z0-9._~\-/]*)?$")
+# 自己填地址时按域名认是哪家（界面上的名字、估算费用时认价格表用的是 usage / prices.py 自己的 hosts）
+_HOST_NAMES = {"api.openai.com": "OpenAI", "api.deepseek.com": "DeepSeek", "api.moonshot.cn": "Kimi", "api.moonshot.ai": "Kimi",
+               "open.bigmodel.cn": "智谱 GLM", "dashscope.aliyuncs.com": "通义千问", "openrouter.ai": "OpenRouter",
+               "api.siliconflow.cn": "SiliconFlow", "api.anthropic.com": "Anthropic"}
+
+
+def api_format(d: dict | None) -> str:
+    """这份来源的接口格式：anthropic（POST /v1/messages）或 openai（POST /chat/completions）。"""
+    return PRESETS.get(str((d or {}).get("kind") or ""), {}).get("format", "anthropic")
+
+
+def key_rule(kind: str) -> str:
+    """required（要填 key）/ optional（可以不填）/ none（不用 key，本机的）。"""
+    return PRESETS.get(kind, {}).get("key", "required")
+
+
+def is_local(url: str) -> bool:
+    """接口地址是不是这台电脑自己（localhost、127.x、::1）：本机的不走代理，也不算钱。"""
+    m = re.match(r"^\w+://(\[[^\]]+\]|[^/:?#]+)", str(url or ""))
+    host = (m.group(1) if m else "").strip("[]").lower()
+    return host in ("localhost", "::1", "0.0.0.0") or host.startswith("127.") or host.endswith(".localhost")
 
 
 def load() -> dict:
@@ -53,9 +83,12 @@ def load() -> dict:
 def active(d: dict | None = None) -> dict | None:
     """在用别家 / Anthropic 的 API key 时返回那份设置，否则 None（用 Claude Code 自己登录的账号）。"""
     d = load() if d is None else d
-    if d.get("kind") in ("claude", "unset") or not str(d.get("key") or "").strip():
+    kind = d.get("kind")
+    if kind in ("claude", "unset") or kind not in PRESETS:
         return None
-    if d.get("kind") != "anthropic" and not (d.get("base_url") and d.get("fast") and d.get("main")):
+    if key_rule(kind) == "required" and not str(d.get("key") or "").strip():
+        return None
+    if kind != "anthropic" and not (d.get("base_url") and d.get("fast") and d.get("main")):
         return None
     return d
 
@@ -75,8 +108,9 @@ def label(d: dict | None = None) -> str:
         return ""
     name = PRESETS.get(d["kind"], {}).get("label") or ""
     if not name:
-        m = re.match(r"https?://([^/:]+)", str(d.get("base_url") or ""))
-        name = m.group(1) if m else "API"
+        m = re.match(r"https?://(\[[^\]]+\]|[^/:]+)", str(d.get("base_url") or ""))
+        host = (m.group(1) if m else "").lower()
+        name = _HOST_NAMES.get(host) or next((v for h, v in _HOST_NAMES.items() if host.endswith("." + h)), "") or host or "API"
     return name
 
 
@@ -92,8 +126,14 @@ def facts(d: dict | None = None) -> str:
     if not d:
         return ""
     from .llm_api import model
-    return (f"\n\n【模型来源】这台电脑用的是 {label(d)} 的 API（按用量计费，不是 Claude 套餐）：会上对话用 {model('fast', d)}，"
-            f"改稿、查论文用 {model('main', d)}。改稿和查论文不联网。上面写到的 Claude Haiku / Opus / Sonnet、Claude 套餐、"
+    from . import littools
+    local = is_local(str(d.get("base_url") or ""))
+    src = (f"本机跑的 {label(d)}（不花钱，不是 Claude 套餐）" if local
+           else f" {label(d)} 的 API（按用量计费，不是 Claude 套餐）")
+    net = ("查论文时能查文献（在 OpenAlex、arXiv 查论文，在 Crossref 核对引用，查到的是标题、作者、年份、出处、链接和摘要），"
+           "打不开网页和论文全文，别的不联网" if littools.enabled() else "改稿和查论文不联网")
+    return (f"\n\n【模型来源】这台电脑用的是{src}：会上对话用 {model('fast', d)}，"
+            f"改稿、查论文用 {model('main', d)}。{net}。上面写到的 Claude Haiku / Opus / Sonnet、Claude 套餐、"
             f"联网查资料，一律以这句为准。")
 
 
@@ -101,10 +141,12 @@ def public(d: dict | None = None) -> dict:
     """给设置页看的：密钥只给最后四位。"""
     d = load() if d is None else d
     key = str(d.get("key") or "")
+    from . import littools
     return {"kind": d.get("kind", "unset"), "base_url": d.get("base_url") or "", "fast": d.get("fast") or "",
             "main": d.get("main") or "", "key_set": bool(key), "key_tail": key[-4:] if len(key) >= 8 else "",
-            "active": active(d) is not None, "label": label(d),
-            "presets": {k: {"label": v["label"], "base_url": v["base_url"], "fast": v["fast"], "main": v["main"]}
+            "active": active(d) is not None, "label": label(d), "lit": littools.enabled(),
+            "presets": {k: {"label": v["label"], "base_url": v["base_url"], "fast": v["fast"], "main": v["main"],
+                            "format": v.get("format", "anthropic"), "key": key_rule(k), "local": bool(v.get("local"))}
                         for k, v in PRESETS.items()}}
 
 
@@ -117,20 +159,38 @@ def clean(body: dict) -> dict:
     if kind == "claude":
         return {"kind": "claude"}
     old = load()
-    key = str(body.get("key") or "").strip() or (str(old.get("key") or "") if old.get("kind") == kind else "")
-    if not key or len(key) > 400 or any(c.isspace() for c in key):
+    rule = key_rule(kind)
+    key = "" if rule == "none" else (
+        str(body.get("key") or "").strip() or (str(old.get("key") or "") if old.get("kind") == kind else ""))
+    if (rule == "required" and not key) or len(key) > 400 or any(c.isspace() for c in key):
         raise ValueError("key")
     if kind == "anthropic":
         return {"kind": kind, "key": key}
     pre = PRESETS[kind]
-    base = str(body.get("base_url") or pre["base_url"]).strip().rstrip("/")
-    if not _URL_RE.match(base) or base.endswith("/v1"):           # 各家都说别带 /v1（claude 自己会加 /v1/messages）
-        raise ValueError("base_url")
+    base = clean_base(kind, body.get("base_url") or pre["base_url"])
     fast = str(body.get("fast") or pre["fast"]).strip()
     main = str(body.get("main") or pre["main"]).strip()
     if not (_MODEL_RE.match(fast) and _MODEL_RE.match(main)):
         raise ValueError("model")
-    return {"kind": kind, "base_url": base, "key": key, "fast": fast, "main": main}
+    out = {"kind": kind, "base_url": base, "key": key, "fast": fast, "main": main}
+    if rule != "required" and not key:
+        out.pop("key")
+    return out
+
+
+def clean_base(kind: str, url) -> str:
+    """接口地址：去掉首尾空格和末尾的 /，不合格抛 ValueError("base_url")。
+    Anthropic 格式的各家都说别带 /v1（会自己加 /v1/messages）；OpenAI 格式的照填（一般带 /v1），
+    粘了整个 …/chat/completions 的去掉这一截。"""
+    base = str(url or "").strip().rstrip("/")
+    if PRESETS.get(kind, {}).get("format") == "openai":
+        base = re.sub(r"/chat/completions$", "", base).rstrip("/")
+        if not _URL_RE.match(base):
+            raise ValueError("base_url")
+        return base
+    if not _URL_RE.match(base) or base.endswith("/v1"):
+        raise ValueError("base_url")
+    return base
 
 
 def save(d: dict) -> None:

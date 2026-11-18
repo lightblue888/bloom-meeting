@@ -1,0 +1,203 @@
+/* 第 7 批: the transcript column's tools (TranscriptEdit.tsx) — 回顾's 撤销 / 替换 / 编辑, a line or a name edited in
+   place. The tools are laid over the head's right end: the head keeps its height. */
+.mt-right-head {
+  position: relative;
+}
+.mt-trtools {
+  position: absolute;
+  right: 12px;
+  top: 9px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.app .mt-trbtn {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  min-height: 0;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  background: var(--ctl-bg);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  box-shadow: none;
+}
+.app .mt-trbtn:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--ink);
+}
+.app .mt-trbtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.app .mt-trbtn.is-on {
+  border-color: color-mix(in srgb, var(--brand-ink, #60a5fa) 55%, transparent);
+  background: color-mix(in srgb, var(--brand-ink, #60a5fa) 14%, var(--ctl-bg));
+  color: var(--ink);
+}
+.app .mt-trbtn.is-primary {
+  background: var(--brand-button);
+  border-color: transparent;
+  color: var(--on-brand-button);
+}
+.app .mt-trbtn.is-primary:hover:not(:disabled) {
+  background: var(--brand-button);
+  filter: brightness(1.06);
+  color: var(--on-brand-button);
+}
+/* 替换: floats under the head, over the lines */
+.mt-trpop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  width: 288px;
+  max-width: calc(100vw - 32px);
+  padding: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  border-radius: 9px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: mtPop 0.12s ease;
+}
+.mt-trpop-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--mute);
+}
+.mt-trpop-row > span {
+  flex: none;
+  width: 6.8em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app .mt-trpop-row input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  min-height: 0;
+  padding: 0 8px;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--ctl-bg);
+  border: 1px solid var(--ctl-border);
+  border-radius: 6px;
+}
+.mt-trpop-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 64px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.mt-trpop-check input {
+  margin: 0;
+}
+/* the count, or what went wrong: two lines' room kept, so nothing under it moves */
+.mt-trpop-msg {
+  margin: 0;
+  padding-left: 64px;
+  min-height: calc(12px * 1.5 * 2);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--mute);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.mt-trpop-msg.is-err {
+  color: var(--rec);
+}
+.mt-trpop-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/* 编辑 on: a line takes a click to edit it (the same box as a line you can play: no line changes its size) */
+.mt-line-text.is-editable {
+  cursor: text;
+  margin-left: -8px;
+  margin-right: -8px;
+  padding-left: 8px;
+  padding-right: 8px;
+  border-radius: 6px;
+}
+.mt-line-text.is-editable:hover {
+  background: var(--hover);
+}
+.mt-bubble .mt-line-text.mt-line-edit {
+  display: block;
+  box-sizing: border-box;
+  width: calc(100% + 16px);
+  margin-left: -8px;
+  margin-right: -8px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  outline: 1px solid var(--line-2);
+  outline-offset: 0;
+  background: var(--ctl-bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.65;
+  resize: none;
+  overflow: hidden;
+  min-height: 0;
+  box-shadow: none;
+}
+.mt-bubble .mt-line-text.mt-line-edit.is-pick {
+  padding: 2px 8px;
+}
+.mt-bubble .mt-line-text.mt-line-edit:focus {
+  outline: 2px solid var(--focus);
+}
+.app .mt-who-btn {
+  min-height: 0;
+  height: auto;
+  padding: 0 4px;
+  margin: 0 -4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  box-shadow: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: text;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app .mt-who-btn:hover {
+  background: var(--hover);
+}
+.app .mt-name-edit {
+  width: 168px;
+  height: 22px;
+  min-height: 0;
+  padding: 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--ctl-bg);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  box-shadow: none;
+}

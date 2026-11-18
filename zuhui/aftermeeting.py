@@ -4,7 +4,7 @@
   结束会议 save  ：等刚才那句话停下、存修订对比快照、等录屏收尾（录屏文件和 meta.json 的时长写好）
   转写 transcript：整场录音里你说的话重转一遍（zuhui/retranscribe.py），转完顺手学这场会听错的词（lexicon.learn_meeting）
   整理 polish    ：干净版 + 删改清单（zuhui/polish.py）
-  纪要 summary   ：按干净版写（meetings.summarize）
+  纪要 summary   ：按干净版写（meetings.summarize，格式按设置 → 通用 → 纪要里选的，见 zuhui/summary_prefs.py）
   （之后：累计你说话的时长，够 5 小时触发一次转写模型训练，zuhui/asr_train.py，界面不显示）
 
 进度写 ~/.zuhui/postmeeting.json（悬浮岛和回顾页在读）。原有字段不变：meeting / session / started / title /
@@ -287,14 +287,31 @@ def _pipeline(app, post: PostMeeting, m: dict, session: str | None, t0: float, l
     try:
         got = app.meetings.get(mid)
         lines = got["transcript"] if got else []
-        s = summarize(cfg, got["meeting"] if got else m, lines, app.board.tasks())
+        from . import past
+        s = summarize(cfg, got["meeting"] if got else m, lines, app.board.tasks(), carried=past.carry_in(app.meetings, mid),
+                      bookmarks=(got or {}).get("bookmarks"))
         app.meetings.set_summary(mid, s)
+        try:                                     # 纪要说这次落实了的上次遗留：在原来那场会里勾掉
+            past.settle(app.meetings, mid, s)
+        except Exception as e:
+            log("fast_error", error=f"遗留项勾选失败：{e!r}")
         log("meeting", state="纪要", text=s.get("abstract", "")[:120])
         post.set("summary", "done")
         record("summary", time.time() - t3, len(lines))
     except Exception as e:
         log("fast_error", error=f"纪要生成失败：{e!r}")
         post.set("summary", "failed", error=f"纪要生成失败：{e}")
+
+    # 3b. 散会后自动保存（设置里开了才存，zuhui/autosave.py）：结果写 autosave_last.json，失败界面提示
+    try:
+        from . import autosave
+        viewer = getattr(app, "viewer", None)
+        r = autosave.after_meeting(app.meetings, mid, lang=getattr(viewer, "ui_lang", None) or "zh", cfg=cfg)
+        if r is not None:
+            log("meeting", state="自动保存", text=("存了 " + "、".join(Path(f).name for f in r["files"])) if r["ok"]
+                else f"失败：{r.get('error')} {r.get('detail') or ''}".strip())
+    except Exception as e:
+        log("fast_error", error=f"自动保存失败：{e!r}")
 
     # 4. 你说话的时长：够 5 小时就在后台训练一次转写模型（低优先级，界面不显示）
     try:

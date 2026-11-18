@@ -53,6 +53,8 @@ class WritebackTest(unittest.TestCase):
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="wb-case-"))
+        from zuhui import paper_prefs     # 这里测的是"直接改"（修订模式见 tests/test_b6_track.py）
+        paper_prefs.save({"docx_mode": "direct"})
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)

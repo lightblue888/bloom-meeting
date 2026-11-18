@@ -13,21 +13,29 @@ import { installMocks, Recorder } from './mock-backend';
 export const OUT = resolve(import.meta.dirname, '../out');
 const INPAGE = resolve(import.meta.dirname, 'inpage.js');
 
-export const SIZES = [
-  { w: 1024, h: 640 },
-  { w: 1280, h: 800 },
-  { w: 1600, h: 900 },
-  { w: 1920, h: 1080 },
-];
+/** UI_AUDIT_MOBILE=1: a phone pass instead (390×844, touch, a phone browser's user agent) — for the guest page,
+ *  which people open from the invite link on their phones: npx playwright test -c ui-audit/playwright.config.ts --grep guest */
+export const MOBILE = process.env.UI_AUDIT_MOBILE === '1';
+const PHONE = { w: 390, h: 844 };
+export const SIZES = MOBILE
+  ? [PHONE]
+  : [
+      { w: 1024, h: 640 },
+      { w: 1280, h: 800 },
+      { w: 1600, h: 900 },
+      { w: 1920, h: 1080 },
+    ];
 export const THEMES = ['dark', 'light'] as const;
 export type Theme = (typeof THEMES)[number];
 /** axe runs once per theme at this size (contrast doesn't change with the window) */
-export const AXE_SIZE = '1280x800';
+export const AXE_SIZE = MOBILE ? '390x844' : '1280x800';
 /** the transitions are replayed at these sizes, dark theme */
-export const SHIFT_SIZES = [
-  { w: 1024, h: 640 },
-  { w: 1600, h: 900 },
-];
+export const SHIFT_SIZES = MOBILE
+  ? [PHONE]
+  : [
+      { w: 1024, h: 640 },
+      { w: 1600, h: 900 },
+    ];
 const sizeName = (s: { w: number; h: number }) => `${s.w}x${s.h}`;
 
 export interface Finding {
@@ -64,6 +72,13 @@ export async function open(browser: Browser, origin: string, screen: Screen, lan
   const context = await browser.newContext({
     viewport: { width: size.w, height: size.h },
     deviceScaleFactor: 1,
+    ...(MOBILE
+      ? {
+          isMobile: true,
+          hasTouch: true,
+          userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36',
+        }
+      : {}),
     locale: lang === 'zh' ? 'zh-CN' : 'en-US',
     timezoneId: TZ,
     colorScheme: theme,
@@ -72,6 +87,8 @@ export async function open(browser: Browser, origin: string, screen: Screen, lan
   const rec = new Recorder();
   await installMocks(context, origin, () => world, rec);
   await context.addInitScript({ path: INPAGE });
+  // phone pass: the guest page opens on the tab this pass looks at (it remembers the last tab in bloom.mtab)
+  if (MOBILE) await context.addInitScript((tab) => { try { localStorage.setItem('bloom.mtab', tab); } catch { /* fine */ } }, process.env.UI_AUDIT_MTAB === 'paper' ? 'paper' : 'talk');
   await context.addInitScript((t) => {
     (window as unknown as { __uiAuditTauri: unknown }).__uiAuditTauri = t;
   }, world.tauri);
@@ -126,7 +143,19 @@ export async function open(browser: Browser, origin: string, screen: Screen, lan
     },
   };
   if (screen.go) await screen.go(ctx);
-  await page.locator(screen.ready).first().waitFor({ state: 'visible', timeout: 20_000 });
+  let ready = screen.ready;
+  if (MOBILE) {
+    // the guest page on a phone shows the paper or the transcript, one at a time (a tab bar at the bottom):
+    // UI_AUDIT_MTAB=paper|talk picks which one this pass looks at (default talk, where the typing is). The AI's status
+    // box isn't on phones at all, so a screen that waits for it waits for the page instead.
+    const tab = process.env.UI_AUDIT_MTAB === 'paper' ? 'paper' : 'talk';
+    const bar = page.getByTestId(`guest-tab-${tab}`);
+    await page.locator('.g-app.is-in, [data-testid="guest-join"], .g-center').first().waitFor({ timeout: 20_000 }).catch(() => {});
+    if (await bar.isVisible().catch(() => false)) await bar.click();
+    if (/claude-now|composer|transcript|ask-input/.test(ready) && tab === 'paper') ready = '[data-testid="meeting"]';
+    else if (/claude-now/.test(ready)) ready = '[data-testid="transcript"]';
+  }
+  await page.locator(ready).first().waitFor({ state: 'visible', timeout: 20_000 });
   await settle(500);
   return { context, page, rec, world, ctx };
 }

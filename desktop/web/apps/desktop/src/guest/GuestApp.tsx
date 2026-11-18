@@ -7,8 +7,9 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { applyPlatform, applyTheme } from '@blurt/ui';
 import { setLang } from '../i18n';
-import { setGuestTransport, type Board, type Brain, type Line, type Meeting, type MeetingPaper, type Models, type Participant, type PartialLine, type Ready } from '../meetingApi';
+import { setGuestTransport, type AnchorSel, type Board, type Bookmark, type PaperComment, type Brain, type Line, type Meeting, type MeetingPaper, type Models, type Participant, type PartialLine, type Ready } from '../meetingApi';
 import { BloomMark, MeetingLayout } from '../components/MeetingLayout';
+import type { LiveTools } from '../components/MeetingTools';
 import { nameColor } from '../components/Flower';
 import { GuestVoice, type VoiceSnapshot } from './voice';
 import { Follow, type HostFocus } from './follow';
@@ -41,7 +42,19 @@ interface RelayState {
   avatar_default?: string;
   /** the version of the transcript + board, pushed apart from this (they are big and change every few seconds) */
   lv?: string;
+  /** 第 3 批: the moments marked, a co-host's selected passage */
+  bookmarks?: Bookmark[];
+  /** 第 6 批: the comments typed on the paper (everyone in the meeting writes, replies, resolves; co-hosts delete) */
+  comments?: PaperComment[];
+  anchor?: AnchorSel | null;
+  /** 第 8 批: the host's Bloom is recording the screen (and the microphone), only the sound, or nothing */
+  rec?: 'screen' | 'audio' | null;
 }
+
+/** the recording notice in one sentence (the join card; the bar's marker shows it on hover) */
+const recLine = (rec: RelayState['rec']) =>
+  rec === 'audio' ? L('会议正在录音，发言会转成文字', 'This meeting’s audio is being recorded and transcribed')
+    : L('会议正在录屏，发言会转成文字', 'This meeting is being recorded and transcribed');
 
 const ROOM = (() => {
   const m = location.pathname.match(/\/room\/([A-Za-z0-9_-]{6,64})/);
@@ -65,7 +78,7 @@ function useRelay() {
     let sv = -1;
     let timer = 0;
     let lv = '';
-    let heavy: { transcript?: Line[]; board?: Board } = {};
+    let heavy: { transcript?: Line[]; board?: Board; comments?: PaperComment[] } = {};
     const tick = async () => {
       try {
         const r = await fetch(`/view/${enc(ROOM)}/state?sv=${sv}`, { cache: 'no-store', signal: AbortSignal.timeout(6000) });
@@ -79,7 +92,8 @@ function useRelay() {
           if (st?.lv && st.lv !== lv) {
             try {
               const h = await (await fetch(`/view/${enc(ROOM)}/lines`, { cache: 'no-store', signal: AbortSignal.timeout(10000) })).json();
-              heavy = { transcript: h.transcript ?? [], board: h.board ?? undefined };
+              // 第 6 批: the comments on the paper come with them (a host older than that sends none: keep the state's)
+              heavy = { transcript: h.transcript ?? [], board: h.board ?? undefined, ...(Array.isArray(h.comments) ? { comments: h.comments } : {}) };
               lv = st.lv;
             } catch { /* next tick tries again (lv stays the old one) */ }
           }
@@ -242,6 +256,9 @@ export function GuestApp() {
     }
   }, [waitResult]);
 
+  const actRef = useRef(act);
+  actRef.current = act;
+
   // the paper page inside the frame (same origin) asks these: may this guest confirm / undo, and do it
   useEffect(() => {
     const w = window as unknown as { bloomCo?: () => boolean; bloomAct?: (p: string, b: unknown) => Promise<unknown> };
@@ -257,7 +274,7 @@ export function GuestApp() {
   const addPaper = useCallback(() => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.pdf,.docx,.md,.markdown,.txt,.tex';
+    input.accept = '.pdf,.docx,.pptx,.md,.markdown,.txt,.tex';
     input.onchange = async () => {
       const f = input.files?.[0];
       if (!f) return;
@@ -300,6 +317,8 @@ export function GuestApp() {
         send();
         return metaStore.subscribe(send);
       },
+      // 标记 and (a co-host's) typed questions and selected passages: queued on the relay, done by the host's Bloom
+      act: (path: string, body: unknown) => actRef.current(path, body),
     });
     return () => setGuestTransport(null);
   }, []);
@@ -379,10 +398,43 @@ export function GuestApp() {
   }, [relay.lost]);
   const offline = !!relay.lost && Date.now() - relay.lost > 4000;
 
+  // 第 3 批: the box (标记; a co-host also types to the AI), a co-host's selected passage
+  const tools = useMemo<LiveTools>(
+    () => ({
+      role: amCo ? 'cohost' : 'guest',
+      me,
+      live: !ended,
+      anchor: st?.anchor ?? null,
+      onError: toast,
+    }),
+    [amCo, me, ended, st?.anchor, toast],
+  );
+
+  // 第 6 批: comments on the paper — anyone in the meeting writes, replies and resolves; a co-host also deletes (the
+  // host's Bloom checks again); after the meeting they stay to read
+  const guestComments = useMemo(
+    () => ({ items: st?.comments ?? [], canAdd: !ended, canDelete: !ended && amCo }),
+    [st?.comments, ended, amCo],
+  );
   const v2 = (st?.v ?? 0) >= 2;
+  // phones: the paper and the transcript take turns on the whole screen (a tab bar at the bottom, guest.css); a dot on
+  // 逐字稿 says something was said while you were on the paper
+  // the tab you were on comes back after a reload or a reconnect (bloom.mtab, this browser only)
+  const [mtab, setMtabState] = useState<'paper' | 'talk'>(() => (store('bloom.mtab') === 'talk' ? 'talk' : 'paper'));
+  const setMtab = (v: 'paper' | 'talk') => {
+    setMtabState(v);
+    store('bloom.mtab', v);
+  };
+  const nLines = st?.transcript?.length ?? 0;
+  const [seenLines, setSeenLines] = useState(0);
+  useEffect(() => {
+    if (mtab === 'talk') setSeenLines(nLines);
+  }, [mtab, nLines]);
+  const unseen = mtab === 'paper' && nLines > seenLines;
   return (
-    <div className={`app g-app ${joined ? 'is-in' : ''}`}>
+    <div className={`app g-app ${joined ? 'is-in' : ''}`} data-mtab={mtab}>
       {joined && (phase === 'live' || ended) && v2 ? (
+        <>
         <MeetingLayout
           meeting={meeting}
           papers={st?.papers ?? null}
@@ -399,21 +451,33 @@ export function GuestApp() {
           paperVersion={ended ? frozenPv.current : relay.pv}
           onFrame={(el) => follow.setFrame(el)}
           live={!ended}
+          tools={tools}
+          bookmarks={st?.bookmarks ?? null}
+          comments={guestComments}
           status={ended ? null : status}
-          actions={ended ? (
-            <button className="mt-btn g-leave" onClick={leave} data-testid="guest-leave">{L('离开', 'Leave')}</button>
-          ) : <GuestActions s={vs} following={fs.following} hasHost={fs.host} co={amCo} onLeave={leave} />}
+          // after the meeting the same row stays (the recording mark's room just goes blank): the people don't slide over
+          actions={<GuestActions co={amCo} onLeave={leave} />}
           notice={ended ? (
             <div className="g-conn">
-              <span>{L('会议已结束。这是散会那一刻的论文、修订和逐字稿，关掉页面就没了；要留一份请找主持人。',
-                'The meeting has ended. This is the paper, its revisions and the transcript as of the end; they are gone once you close the page — ask the host for a copy.')}</span>
+              <span>{L('会议已结束，关掉页面后就看不到了', 'The meeting has ended. Close the page and it’s gone.')}</span>
             </div>
-          ) : offline ? (
-            <div className="g-conn is-busy">
-              <span>{L('和会议的连接断了，正在重连…（论文和逐字稿停在断开的那一刻）', 'Lost the connection to the meeting, reconnecting… (the paper and transcript are as of then)')}</span>
-            </div>
-          ) : vs.conn || vs.audioBlocked ? <ConnBar s={vs} voice={voice} /> : undefined}
+          ) : (
+            <GuestNotes s={vs} offline={offline} voice={voice} following={fs.following} hasHost={fs.host} />
+          )}
         />
+        <nav className="g-mtabs" role="tablist" aria-label={L('切换', 'Switch')}>
+          <button role="tab" aria-selected={mtab === 'paper'} className={mtab === 'paper' ? 'is-sel' : ''} onClick={() => setMtab('paper')} data-testid="guest-tab-paper">
+            {L('论文', 'Paper')}
+          </button>
+          <button role="tab" aria-selected={mtab === 'talk'} className={mtab === 'talk' ? 'is-sel' : ''} onClick={() => setMtab('talk')} data-testid="guest-tab-talk">
+            <span className="g-mtab-t">
+              {L('逐字稿', 'Transcript')}
+              {/* floats at the word's corner: showing or not, the tab doesn't change */}
+              {unseen && <i className="g-mtab-dot" aria-label={L('有新的发言', 'New lines')} />}
+            </span>
+          </button>
+        </nav>
+        </>
       ) : joined && phase === 'live' ? (
         <div className="g-center">
           <div className="g-card">
@@ -436,29 +500,17 @@ export function GuestApp() {
 
 const NO_LINES: Line[] = [];
 
-// ---------------------------------------------------------------- the bar's buttons: microphone, back to the host, leave
-const GuestActions = memo(function GuestActions({ s, following, hasHost, co, onLeave }: {
-  s: VoiceSnapshot;
-  following: boolean;
-  hasHost: boolean;
-  co: boolean;
-  onLeave: () => void;
-}) {
+// ---------------------------------------------------------------- the bar's buttons: co-host, leave
+// (what comes and goes — back to the host, no voice, reconnecting — floats over the paper in GuestNotes, so the bar's
+// title, people and buttons never move)
+const GuestActions = memo(function GuestActions({ co, onLeave }: { co: boolean; onLeave: () => void }) {
   return (
     <div className="g-acts">
+      {/* recording: the bar's own state line already says 录制中 (and the join card says what is recorded), so no
+          second mark here */}
       {co && (
         <span className="g-co" title={L('共同主持人：可以确认、撤回修订，直接修改段落', 'Co-host: you can confirm or undo revisions and edit paragraphs')}>
           {L('共同主持人', 'Co-host')}
-        </span>
-      )}
-      {!following && hasHost && (
-        <button className="mt-btn g-back" onClick={() => follow.setFollow(true)} data-testid="guest-back">
-          {L('回到主持人位置', 'Back to the host')}
-        </button>
-      )}
-      {!s.connected && s.joined && !s.conn && (
-        <span className="g-novoice" title={L('语音没连上：能看、能做事，听不到也说不了', 'Voice not connected: you can read and act, not talk or listen')}>
-          {L('语音未连上', 'No voice')}
         </span>
       )}
       <button className="mt-btn g-leave" onClick={onLeave} data-testid="guest-leave">
@@ -468,12 +520,41 @@ const GuestActions = memo(function GuestActions({ s, following, hasHost, co, onL
   );
 });
 
+/** floats at the foot of the paper (MeetingLayout's notice): the connection, the voice, back to the host's place */
+function GuestNotes({ s, offline, voice, following, hasHost }: {
+  s: VoiceSnapshot;
+  offline: boolean;
+  voice: GuestVoice;
+  following: boolean;
+  hasHost: boolean;
+}) {
+  const conn = offline ? (
+    <div className="g-conn is-busy"><span>{L('连接断了，正在重连…', 'Connection lost, reconnecting…')}</span></div>
+  ) : s.conn || s.audioBlocked ? <ConnBar s={s} voice={voice} /> : null;
+  const noVoice = !offline && !s.connected && s.joined && !s.conn ? (
+    <div className="g-conn is-busy"><span>{L('语音未连上', 'No voice')}</span></div>
+  ) : null;
+  const back = !following && hasHost ? (
+    <button className="mt-btn g-back" onClick={() => follow.setFollow(true)} data-testid="guest-back">
+      {L('回到主持人位置', 'Back to the host')}
+    </button>
+  ) : null;
+  if (!conn && !noVoice && !back) return null;
+  return (
+    <div className="g-notes">
+      {conn}
+      {noVoice}
+      {back}
+    </div>
+  );
+}
+
 function ConnBar({ s, voice }: { s: VoiceSnapshot; voice: GuestVoice }) {
   if (s.audioBlocked)
     return (
       <div className="g-conn">
         <span>{L('浏览器挡住了声音', 'The browser blocked the sound')}</span>
-        <button className="g-link" onClick={() => voice.startAudio()}>{L('点一下开启声音', 'Turn the sound on')}</button>
+        <button className="g-link" onClick={() => voice.startAudio()}>{L('开启声音', 'Turn on sound')}</button>
       </div>
     );
   if (s.conn)
@@ -514,6 +595,13 @@ function JoinScreen({ phase, st, onJoin }: { phase: Phase; st: RelayState | null
         <h1 className="g-topic">{topic}</h1>
         {sub && <p className="g-sub">{sub}</p>}
         {phase === 'live' && <WhoIsIn st={st} />}
+        {/* the recording notice: its line is there whenever the meeting is on, so the card never changes height */}
+        {phase === 'live' && (
+          <p className={`g-rec-note ${st?.rec ? '' : 'is-off'}`} aria-hidden={st?.rec ? undefined : true} data-testid="guest-rec-note">
+            <i className="g-rec-dot" aria-hidden="true" />
+            <span>{recLine(st?.rec ?? 'screen')}</span>
+          </p>
+        )}
         {inApp && phase === 'live' && (
           <p className="g-warn">{L('在 App 里打开容易断线，建议点右上角「···」用浏览器打开。', 'Opened inside an app: voice drops more easily. Open it in a browser if you can.')}</p>
         )}

@@ -622,6 +622,49 @@
   margin-top: 4px;
   color: var(--ok);
 }
+/* 上次遗留：前面一个定宽的"落实了 / 没落实"，后面是那条和这次怎么落实的 */
+.mt-sum-carried {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mt-sum-carried li {
+  display: grid;
+  grid-template-columns: 4.6em minmax(0, 1fr);
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.mt-sum-cflag {
+  justify-self: start;
+  padding: 0 7px;
+  font-size: 11.5px;
+  line-height: 19px;
+  white-space: nowrap;
+  color: var(--attn-ink);
+  background: var(--panel-2);
+  border-radius: var(--r-pill);
+}
+.mt-sum-cflag.is-done {
+  color: var(--ok);
+}
+.mt-sum-cbody {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.mt-sum-citem {
+  color: var(--ink);
+}
+.mt-sum-cnote {
+  display: block;
+  font-size: 12.5px;
+  color: var(--mute);
+}
 
 /* ------------------------------------------------------------ backend not running */
 .mt-down {
@@ -708,6 +751,14 @@
   color: var(--mute);
   font-weight: 400;
   font-variant-numeric: tabular-nums;
+}
+/* 第 8 批：示例会议那一行的"示例"（不加高这一行） */
+.mt-hrow-sample {
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--ink-2);
+  background: var(--chip);
 }
 .app .mt-hrow > svg {
   color: var(--faint);
@@ -1038,7 +1089,7 @@ html:root[data-theme="dark"] {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: transform 0.5s cubic-bezier(0.34, 1.3, 0.64, 1), background 0.15s;
+  transition: transform 0.4s cubic-bezier(0.2, 0, 0, 1), background 0.15s;
 }
 .app .mt-bloom:hover:not(:disabled) {
   background: var(--brand-tint);
@@ -1386,7 +1437,7 @@ body.mw-resizing .mt-diff {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  animation: mtPop 0.14s cubic-bezier(0.3, 1.2, 0.4, 1);
+  animation: mtPop 0.14s cubic-bezier(0.2, 0, 0, 1);
 }
 @keyframes mtPop {
   from { opacity: 0; transform: translateY(-4px) scale(0.98); }
@@ -1488,7 +1539,7 @@ body.mw-resizing .mt-diff {
   border-radius: 10px;
   box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
   padding: 14px 14px 12px;
-  animation: mtPop 0.14s cubic-bezier(0.3, 1.2, 0.4, 1);
+  animation: mtPop 0.14s cubic-bezier(0.2, 0, 0, 1);
 }
 .mt-invite-head {
   font-weight: 600;
@@ -1564,14 +1615,28 @@ body.mw-resizing .mt-diff {
   color: var(--ink);
 }
 .mt-hp-acts {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
   flex: none;
 }
-.mt-hp-acts .mt-hdel-ask {
-  position: static;
-  transform: none;
+/* 删除：点一下变成红色的"确认删除"，再点才删。两种字叠在同一格里，按长的那个占宽，旁边的按钮不动 */
+.mt-swap {
+  display: inline-grid;
+}
+.mt-swap > span {
+  grid-area: 1 / 1;
+  text-align: center;
+}
+.mt-swap > .is-off {
+  visibility: hidden;
+}
+.app .mt-hdel.is-confirm {
+  color: #fff;
+  background: var(--rec);
+  border-color: var(--rec);
+  filter: none;
 }
 .mt-hp-h {
   margin: 18px 0 8px;
@@ -1892,6 +1957,75 @@ mark.mt-hl {
   cursor: progress;
   background: transparent;
   color: var(--mute);
+}
+/* 第 5 批：保存菜单分组（纪要、逐字稿、会议包、录屏），组名一行小字；忙着的那一项转圈在它自己的右角，字不动 */
+.mt-share-group + .mt-share-group {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+.mt-share-head {
+  padding: 4px 10px 2px;
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--faint);
+  white-space: nowrap;
+}
+.app .mt-share-pop .mt-share-it {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding-right: 30px;
+  white-space: nowrap;
+}
+.mt-share-it .mt-share-l {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mt-share-it .mw-spinner {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  margin-top: -6px;
+}
+.app .mt-share-pop .mt-share-it:disabled {
+  cursor: default;
+  background: transparent;
+  color: var(--mute);
+}
+.app .mt-share-pop .mt-share-it[aria-busy='true'] {
+  cursor: progress;
+  color: var(--ink-2);
+}
+.mt-share-packrow {
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+}
+.mt-share-packrow .mt-share-it {
+  flex: 1;
+  min-width: 0;
+}
+.mt-share-opt {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--mute);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.mt-share-opt:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.mt-share-opt input {
+  margin: 0;
+  accent-color: var(--brand-ink);
 }
 
 /* 第 15、16 条：参会人卡片。自己的：麦克风、扬声器、转写；Claude 的：四行完整（不截断），点前两行换模型 */
@@ -2340,7 +2474,6 @@ mark.mt-hl {
   padding: 8px 12px;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-left: 3px solid var(--who, var(--line-2));
   border-radius: 10px;
 }
 .mt-bubble .mt-line-text {
@@ -3110,4 +3243,549 @@ html:root[data-theme="light"] .mt-todo-tag.is-edit {
 }
 html:root[data-theme="light"] .mt-sum-num {
   color: #1d4ed8;
+}
+
+/* ------------------------------------------------------------ 纪要（第 1 批）：每个人、发言时长、时间、格式和重新生成 */
+/* 一条内容说到的时间：句末一个小块，点一下跳到逐字稿和录屏那一刻 */
+.app button.mt-sum-at,
+.mt-sum-at.is-static {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  min-height: 0;
+  margin: 0 0 0 6px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 9px;
+  box-shadow: none;
+  background: color-mix(in srgb, var(--info) 13%, transparent);
+  color: var(--info);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  vertical-align: 0.1em;
+  white-space: nowrap;
+}
+.app button.mt-sum-at {
+  cursor: pointer;
+}
+.app button.mt-sum-at:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--info) 24%, transparent);
+}
+.app button.mt-sum-at:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.mt-sum-topic h4 .mt-sum-at {
+  margin-left: 0;
+}
+.mt-sum-h {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* 每个人：一人一张卡片，三栏（讲了什么 / 收到的意见 / 要做的事）各一个小标题 */
+.mt-sum-people {
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+}
+.mt-sum-people .mt-name {
+  margin: 0;
+  font-size: 12.5px;
+}
+.mt-sum-pk + .mt-sum-pk {
+  margin-top: 8px;
+}
+.mt-sum-pk h6 {
+  margin: 0 0 3px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--mute);
+}
+.mt-sum-pk ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+/* 发言时长：名字（定宽，省略号）、一根比例条、时长、占比，四列对齐 */
+.mt-sum-talk {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: minmax(0, 10em) minmax(60px, 1fr) 4.2em 3.2em;
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 6px;
+  max-width: 560px;
+  font-size: 12.5px;
+}
+.mt-sum-talk li {
+  display: contents;
+}
+.mt-sum-talk-who {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.mt-sum-talk-bar {
+  display: block;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--chip);
+  overflow: hidden;
+}
+.mt-sum-talk-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+}
+.mt-sum-talk-t,
+.mt-sum-talk-p {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+}
+.mt-sum-talk-p {
+  color: var(--mute);
+}
+/* 模型用量：型号（定宽，省略号）、token、估算费用，三列对齐；合计那行上面一条细线 */
+.mt-sum-usage {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: minmax(0, 14em) minmax(6em, auto) minmax(5em, auto);
+  justify-content: start;
+  align-items: center;
+  row-gap: 6px;
+  max-width: 560px;
+  font-size: 12.5px;
+}
+.mt-sum-usage li {
+  display: contents;
+}
+/* 列间距用左内边距（不用 column-gap）：合计那行上面的细线才连成一条 */
+.mt-sum-usage-t,
+.mt-sum-usage-c {
+  padding-left: 16px;
+}
+.mt-sum-usage-m {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.mt-sum-usage-t,
+.mt-sum-usage-c {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.mt-sum-usage-c {
+  color: var(--mute);
+}
+.mt-sum-usage li.is-total > span {
+  padding-top: 6px;
+  border-top: 1px solid var(--line, rgb(127 127 127 / 0.25));
+}
+/* 纪要那一页上面那排：格式、重新生成、出错时一行字（定宽的格子，换字不挤动旁边） */
+.mt-sum-tools {
+  gap: 8px;
+}
+/* 生成中：按钮不能点，但字要看得清（不是"灰掉不能用"的样子） */
+.app .mt-pbtn.mt-sum-regen[aria-busy="true"]:disabled {
+  opacity: 1;
+  color: var(--mute);
+}
+.mt-wstack {
+  display: inline-grid;
+}
+.mt-wstack > span {
+  grid-area: 1 / 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.mt-wstack > .is-ghost {
+  visibility: hidden;
+}
+/* 逐字稿里被纪要点到的那一句：亮一下（只变底色和外圈，不占地方） */
+.mt-line-text.is-flash {
+  animation: mt-flash 1.9s ease-out;
+}
+.mt-line-text.is-flash.is-flash2 {
+  animation-name: mt-flash2;
+}
+@keyframes mt-flash {
+  0%, 35% {
+    background: color-mix(in srgb, var(--info) 26%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--info) 26%, transparent);
+  }
+  100% {
+    background: transparent;
+    box-shadow: 0 0 0 3px transparent;
+  }
+}
+@keyframes mt-flash2 {
+  0%, 35% {
+    background: color-mix(in srgb, var(--info) 26%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--info) 26%, transparent);
+  }
+  100% {
+    background: transparent;
+    box-shadow: 0 0 0 3px transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mt-line-text.is-flash {
+    animation-duration: 0.01s;
+    background: color-mix(in srgb, var(--info) 18%, transparent);
+  }
+}
+/* 发言人一行：人多时换行，不把纪要撑出横向滚动 */
+.mt-sum-speakers {
+  flex-wrap: wrap;
+  row-gap: 4px;
+  max-width: 100%;
+}
+/* 浅色主题：时间小块的字再深一点（底色是同色调的浅蓝） */
+html:root[data-theme="light"] .mt-sum-at {
+  color: #1d4ed8;
+}
+
+/* ============================================================ 回顾：跨会议（按论文筛、提问、阶段汇总） */
+/* 顶栏右边一组：按论文筛、搜索、提问、阶段汇总；窄窗口时搜索框先变窄 */
+.mt-htools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
+}
+.mt-htools .mt-search-head {
+  flex: 0 1 260px;
+  width: auto;
+  min-width: 140px;
+}
+.app .mt-hpaper,
+.app .mt-hmode {
+  flex: none;
+  font-weight: 500;
+}
+/* 定宽：选了哪篇论文，按钮都不变宽（名字长的省略号，悬停看全名） */
+.app .mt-hpaper {
+  flex: 0 1 auto;
+  width: 12.5em;
+  min-width: 0;
+}
+.mt-hpaper-t {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app .mt-hpaper.is-on,
+.app .mt-hmode.is-on {
+  color: var(--brand-ink);
+  border-color: color-mix(in srgb, var(--brand-ink) 55%, transparent);
+  background: color-mix(in srgb, var(--brand-ink) 10%, var(--panel));
+}
+/* 列表每行开头一个定宽的格子：平时是状态点，挑阶段汇总的会时换成勾选框（换的时候标题不动） */
+.mt-hslot {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+}
+.mt-hpick {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 14px;
+  height: 14px;
+  color: var(--on-brand-button);
+  border: 1.5px solid color-mix(in srgb, var(--mute) 75%, transparent);
+  border-radius: 3px;
+}
+.mt-hpick.is-on {
+  background: var(--brand-button);
+  border-color: var(--brand-button);
+}
+/* 提问 */
+.mt-ask-scope {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mt-ask-box {
+  margin-top: 14px;
+  padding: 8px 10px 8px 12px;
+  background: var(--ctl-bg);
+  border: 1px solid var(--ctl-border);
+  border-radius: var(--r-sm);
+}
+.mt-ask-box:focus-within {
+  border-color: var(--line-2);
+  box-shadow: inset 0 -2px 0 var(--focus);
+}
+.app .mt-ask-box textarea {
+  display: block;
+  width: 100%;
+  min-height: calc(3 * 1.6em);
+  box-sizing: border-box;
+  padding: 0;
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--ink);
+  background: none;
+  border: 0;
+  outline: none;
+  resize: none;
+  box-shadow: none;
+}
+.mt-ask-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+}
+.mt-ask-n {
+  min-width: 4.6em;
+  font-size: 12px;
+  color: var(--mute);
+  font-variant-numeric: tabular-nums;
+}
+.mt-ask-out {
+  margin-top: 16px;
+}
+.mt-ask-a {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.8;
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.mt-ask-err {
+  color: var(--err);
+  overflow-wrap: anywhere;
+}
+.app .mt-ask-cite {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  min-height: 0;
+  margin: 0 2px;
+  padding: 0 5px;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: 1px;
+  color: var(--brand-ink);
+  background: color-mix(in srgb, var(--brand-ink) 14%, transparent);
+  border: 0;
+  border-radius: 9px;
+  box-shadow: none;
+}
+.app .mt-ask-cite:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--brand-ink) 26%, transparent);
+}
+.mt-ask-src {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.app .mt-ask-srow {
+  display: grid;
+  grid-template-columns: 20px minmax(0, max-content) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  font-weight: 400;
+  text-align: left;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  box-shadow: none;
+}
+.app .mt-ask-srow:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--line-2);
+}
+.mt-ask-sn {
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+  color: var(--brand-ink);
+}
+.mt-ask-swhere {
+  max-width: 18em;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--mute);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.mt-ask-stext {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 阶段汇总 */
+.mt-dg-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.app .mt-dg-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 12px;
+  font-weight: 400;
+  text-align: left;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  box-shadow: none;
+}
+.app .mt-dg-row:hover:not(:disabled) {
+  background: var(--hover);
+}
+.app .mt-dg-row.is-sel {
+  background: var(--hover);
+  border-color: color-mix(in srgb, var(--bloom, #3b82f6) 70%, var(--line-2));
+}
+.app .mt-dg-row:disabled {
+  opacity: 1;
+  cursor: default;
+}
+.mt-dg-row-t {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mt-dg-row-t.is-running {
+  font-weight: 400;
+  color: var(--mute);
+}
+.mt-dg-row-t.is-failed {
+  display: block;
+  font-weight: 400;
+  color: var(--err);
+}
+.mt-dg-row-m {
+  flex: none;
+  font-size: 12px;
+  color: var(--mute);
+  font-variant-numeric: tabular-nums;
+}
+.mt-dg-doc {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.mt-dg-doc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.mt-dg-doc-t {
+  margin: 0;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.app .mt-dg-copy {
+  flex: none;
+}
+.mt-dg-range {
+  margin: 4px 0 10px;
+  font-size: 12px;
+  color: var(--mute);
+  font-variant-numeric: tabular-nums;
+}
+.mt-dg-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+.mt-dg-days {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-left: 8px;
+  vertical-align: 1px;
+}
+.app .mt-dg-day {
+  height: 18px;
+  min-height: 0;
+  padding: 0 7px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--mute);
+  background: var(--panel-2);
+  border: 0;
+  border-radius: 9px;
+  box-shadow: none;
+}
+.app .mt-dg-day:hover:not(:disabled) {
+  color: var(--brand-ink);
+  background: var(--hover);
+}
+@media (max-width: 820px) {
+  .mt-hsplit.is-ask .mt-hlist {
+    display: none;
+  }
+  .mt-hsplit .mt-hpane {
+    display: block;
+  }
+  .mt-hsplit.is-digest {
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1.4fr);
+  }
 }

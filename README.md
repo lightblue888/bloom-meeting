@@ -18,7 +18,7 @@ irm https://raw.githubusercontent.com/lightblue888/bloom-meeting/main/install.ps
 
 ## 第一次打开
 
-到 **设置 → 通用 → 模型来源**，选一家服务商（DeepSeek、Kimi、智谱 GLM、通义千问、Anthropic），粘贴 API key，点保存。费用按用量从你在那家的账户扣。
+到 **设置 → 通用 → 模型来源**，选一家服务商（DeepSeek、Kimi、智谱 GLM、通义千问、Anthropic），粘贴 API key，点保存。费用按用量从你在那家的账户扣，每场会用了多少在回顾的纪要最后能看到，本月累计在设置里。也可以填任何 OpenAI 或 Anthropic 兼容的接口，或者用本机的 Ollama、LM Studio（不要 key）。
 
 ## 开会
 
@@ -33,7 +33,15 @@ irm https://raw.githubusercontent.com/lightblue888/bloom-meeting/main/install.ps
 
 ## 邀请别人进会
 
-别人用浏览器打开邀请链接就能进会。这需要一台有公网地址的服务器跑会议中继，见 [relay/README.md](relay/README.md)。不配中继也能一个人用。
+会议页上点「邀请」复制链接发给别人，对方用浏览器打开就能进会，不用装东西。默认走公共中继，什么都不用配。
+
+想用自己的服务器：在一台 Linux 服务器（Ubuntu / Debian）上运行
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lightblue888/bloom-meeting/main/relay/setup.sh | sudo bash
+```
+
+最后会打印一行连接码，在 设置 → 通用 → 邀请 里选「自己的服务器」，粘进去。详细见 [relay/README.md](relay/README.md)。
 
 ## 在 AI 助手里用
 
@@ -56,9 +64,9 @@ irm https://raw.githubusercontent.com/lightblue888/bloom-meeting/main/skills/ins
 
 录屏、逐字稿和论文都存在你自己的电脑上，API key 也只存在本机。
 
-开会时，说的话和论文内容会发给你选的模型服务商处理。AI 的声音默认用微软在线语音，它要念的句子会发给微软合成；不想这样，在 设置 → 语音 里换成 Windows 自带的语音，或者选不出声。
+开会时，说的话和论文内容会发给你选的模型服务商处理，用 Ollama、LM Studio 这类本机模型时不出这台电脑。查文献时检索词会发给 OpenAlex、arXiv、Crossref，不想这样，在 设置 → 通用 → 模型来源 里关掉「查文献」。AI 的声音默认用微软在线语音，它要念的句子会发给微软合成；不想这样，在 设置 → 语音 里换成 Windows 自带的语音，或者选不出声。
 
-开了邀请链接时，会议内容经你自己的中继转发，中继不把论文和逐字稿写到磁盘上。
+邀请默认走公共中继（Bloom 作者维护的一台服务器）。只有打开了邀请（复制邀请链接，或打开「允许别人加入」）才会连它，这时论文快照、字幕和声音经它转给进会的人，只放在内存里，散会就删。不想经过公共中继，在 设置 → 通用 → 邀请 里换成自己的服务器或者关闭。
 
 更多设置和从源码构建见 [docs/advanced.md](docs/advanced.md)。
 

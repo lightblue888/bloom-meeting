@@ -44,10 +44,7 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
       <aside className="ob-side">
         <div className="ob-brand">
           <BloomMark size={34} />
-          <div>
-            <div className="ob-brand-t">{t('ob.title')}</div>
-            <div className="ob-brand-s">{t('ob.subtitle')}</div>
-          </div>
+          <div className="ob-brand-t">{t('ob.title')}</div>
         </div>
         <ol className="ob-steps">
           {STEPS.map((s, i) => {
@@ -72,12 +69,11 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
         <div className="ob-body" ref={body}>
           <div className="ob-col">
             <h1 className="ob-h">{t(`ob.h.${step}`)}</h1>
-            <p className="ob-sub">{t(`ob.sub.${step}`)}</p>
             {(step === 'me' || step === 'model') && <Preview r={r} />}
             {step === 'me' && <ProfileGroup part="me" title="" />}
             {step === 'model' && (
               <>
-                <ProviderGroup title="" />
+                <ProviderGroup title="" usage={false} />
                 <ProfileGroup part="ai" title={t('ob.ai_name')} />
               </>
             )}
@@ -92,9 +88,11 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
             {step === 'done' && (
               <>
                 <Summary r={r} go={(s) => setAt(STEPS.findIndex((x) => x.id === s))} />
-                <p className={`ob-sum-note ${r.blockers.length ? 'is-block' : ''}`}>
-                  {r.blockers.length ? t('ob.blocked', { a: r.blockers.map((b) => t(`ob.sum.${b === 'provider' ? 'model' : 'asr'}`)).join(t('ob.and')) }) : t('ob.ready')}
-                </p>
+                {!!r.blockers.length && (
+                  <p className="ob-sum-note is-block">
+                    {t('ob.blocked', { a: r.blockers.map((b) => t(`ob.sum.${b === 'provider' ? 'model' : 'asr'}`)).join(t('ob.and')) })}
+                  </p>
+                )}
               </>
             )}
           </div>
@@ -153,10 +151,8 @@ function MicLine({ r }: { r: Readiness }) {
       <h2 className="st-head"><span>{t('ob.mic')}</span></h2>
       <div className="st-rows">
         <div className="st-row">
-          <span className="st-icon"><Icon name="mic" size={16} /></span>
           <div className="st-text">
             <div className="st-row-title"><span className="ob-trunc">{name || (r.mic?.probing || !r.mic ? t('ob.checking') : t('ob.mic_none'))}</span></div>
-            <div className={`st-detail ${!name && r.mic && !r.mic.probing ? 'warn' : ''}`}>{t('ob.mic_detail')}</div>
           </div>
         </div>
       </div>
@@ -167,9 +163,8 @@ function MicLine({ r }: { r: Readiness }) {
 /** the last step: each piece and where it stands; the two a meeting needs say so when they're missing */
 function Summary({ r, go }: { r: Readiness; go: (s: Step) => void }) {
   const p = r.profile;
-  const row = (icon: ReactNode, title: string, value: ReactNode, ok: boolean | null, fix?: Step, need?: boolean) => (
+  const row = (title: string, value: ReactNode, ok: boolean | null, fix?: Step, need?: boolean) => (
     <div className={`ob-sum-row ${ok === false ? (need ? 'is-block' : 'is-warn') : ''}`}>
-      <span className="ob-sum-ic">{icon}</span>
       <span className="ob-sum-t">{title}</span>
       <span className="ob-sum-v">{value}</span>
       <span className="ob-sum-s">
@@ -178,33 +173,17 @@ function Summary({ r, go }: { r: Readiness; go: (s: Step) => void }) {
     </div>
   );
   const voice = r.voiceEngine === undefined ? t('ob.checking') : r.voiceEngine === null ? t('ob.voice_off') : t(`ob.voice.${r.voiceEngine}`);
+  const model = !r.provider ? '…' : r.provider.kind === 'unset' ? t('ob.unset') : r.model ?? (r.provider.label || '…');
+  const asr = r.asr === 'ok' ? r.asrName : r.asr === 'downloading' ? t('ob.downloading') : r.asr === 'missing' ? t('ob.not_downloaded') : '…';
   return (
     <div className="ob-sum" data-testid="ob-summary">
-      {row(
-        <span className="ob-sum-av">{p?.avatar ? <img src={avatarUrl(p.avatar)} alt="" /> : <Flower color={p?.color || HOST_COLOR} />}</span>,
-        t('ob.sum.name'),
-        <span className="ob-trunc" style={{ color: nameColor(p?.color) }}>{p?.name ?? '…'}</span>,
-        p ? true : null,
-        'me',
-      )}
-      {row(
-        <Icon name="cpu" size={16} />,
-        t('ob.sum.model'),
-        <span className="ob-trunc">{!r.provider ? '…' : r.provider.kind === 'unset' ? t('ob.unset') : r.provider.label}</span>,
-        r.provider ? r.provider.kind !== 'unset' : null,
-        'model',
-        true,
-      )}
-      {row(
-        <Icon name="waveform" size={16} />,
-        t('ob.sum.asr'),
-        <span className="ob-trunc">{r.asr === 'ok' ? r.asrName : r.asr === 'downloading' ? t('ob.downloading') : r.asr === 'missing' ? t('ob.not_downloaded') : '…'}</span>,
-        r.asr === 'ok' ? true : r.asr === 'unknown' ? null : false,
-        'listen',
-        true,
-      )}
-      {row(<Icon name="mic" size={16} />, t('ob.mic'), <span className="ob-trunc">{r.mic?.mic || (r.mic?.probing || !r.mic ? '…' : t('ob.mic_none'))}</span>, r.mic?.mic ? true : r.mic && !r.mic.probing ? false : null, 'listen')}
-      {row(<Icon name="character-bubble" size={16} />, t('ob.sum.voice'), <span className="ob-trunc">{voice}</span>, r.voiceEngine === undefined ? null : true, 'voice')}
+      {row(t('ob.sum.name'), <span className="ob-trunc" style={{ color: nameColor(p?.color) }}>{p?.name ?? '…'}</span>, p ? true : null, 'me')}
+      {row(t('ob.sum.model'), <span className="ob-trunc" title={[r.modelFast, r.model].filter(Boolean).join(' / ')}>{model}</span>,
+        r.provider ? r.provider.kind !== 'unset' : null, 'model', true)}
+      {row(t('ob.sum.asr'), <span className="ob-trunc">{asr}</span>, r.asr === 'ok' ? true : r.asr === 'unknown' ? null : false, 'listen', true)}
+      {row(t('ob.mic'), <span className="ob-trunc">{r.mic?.mic || (r.mic?.probing || !r.mic ? '…' : t('ob.mic_none'))}</span>,
+        r.mic?.mic ? true : r.mic && !r.mic.probing ? false : null, 'listen')}
+      {row(t('ob.sum.voice'), <span className="ob-trunc">{voice}</span>, r.voiceEngine === undefined ? null : true, 'voice')}
     </div>
   );
 }

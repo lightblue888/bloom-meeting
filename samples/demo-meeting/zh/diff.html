@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>组会修订对比</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<style>
+/* 修订视图：左栏带修订标记的正文，右栏批注，手机上批注落到每段下方；章节标题横贯两栏。
+   导航：左侧改动目录、顶栏上一处/下一处、按条目筛选、未改动段落折叠、右侧缩略刻度 */
+:root {
+  --paper: #f7f7f4; --sheet: #ffffff; --ink: #20232a; --muted: #5d6270; --rule: #dcdde2;
+  --ins: #1d5fbf; --ins-bg: #e5eefb; --del: #b3261e; --del-bg: #fbe9e7;
+  --move: #1e7a46; --move-bg: #e4f3ea; --note-bg: #fbf8ee; --note-rule: #e6dcb8; --band: #eeefe9;
+  --serif: "Noto Serif SC", "Songti SC", "SimSun", serif;
+  --sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --paper: #15171b; --sheet: #1d2026; --ink: #e6e7ea; --muted: #a2a7b3; --rule: #343842;
+  --ins: #7fb0ff; --ins-bg: #1c2a40; --del: #ff8f86; --del-bg: #3a1f1d;
+  --move: #73d19b; --move-bg: #183024; --note-bg: #262419; --note-rule: #4a4430; --band: #23262d; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --paper: #15171b; --sheet: #1d2026; --ink: #e6e7ea; --muted: #a2a7b3; --rule: #343842;
+  --ins: #7fb0ff; --ins-bg: #1c2a40; --del: #ff8f86; --del-bg: #3a1f1d;
+  --move: #73d19b; --move-bg: #183024; --note-bg: #262419; --note-rule: #4a4430; --band: #23262d; color-scheme: dark }
+
+body { background: var(--paper); color: var(--ink); font-family: var(--sans); font-size: 15px; line-height: 1.6; margin: 0;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 24px 48px; }
+.wrap { max-width: 1440px; margin: 0 auto; display: grid; gap: 20px; }
+header { display: grid; gap: 12px; }
+h1 { font-family: var(--serif); font-weight: 600; font-size: 1.6rem; margin: 0; text-wrap: balance; }
+.meta { color: var(--muted); margin: 0; font-size: 0.9rem; max-width: 60em; }
+.meta a, .summary a, .rest a { color: var(--ins); }
+.bar { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; padding: 10px 14px; background: var(--sheet);
+  border: 1px solid var(--rule); border-radius: 6px; position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--paper); }
+.stats { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 0.88rem; font-variant-numeric: tabular-nums; }
+.stats b { font-weight: 700; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 0.85rem; color: var(--muted); }
+.views { margin-left: auto; display: inline-flex; border: 1px solid var(--rule); border-radius: 5px; overflow: hidden; }
+.views button { font: inherit; font-size: 0.85rem; padding: 4px 12px; border: 0; background: transparent; color: var(--ink); cursor: pointer; }
+.views button + button { border-left: 1px solid var(--rule); }
+.views button[aria-pressed="true"] { background: var(--ink); color: var(--sheet); }
+.views button:focus-visible { outline: 2px solid var(--ins); outline-offset: -2px; }
+
+.doc { display: grid; gap: 0; background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
+.doc + .doc { margin-top: 20px; }
+.sect { font-family: var(--serif); font-weight: 600; padding: 12px 22px; background: var(--band); border-top: 1px solid var(--rule); }
+.sect:first-child { border-top: 0; }
+.sect.lv1 { font-size: 1.3rem; background: var(--sheet); border-bottom: 2px solid var(--ink); }
+.sect.lv2 { font-size: 1.15rem; }
+.sect.lv3 { font-size: 0.98rem; font-weight: 500; background: transparent; padding-block: 10px 0; color: var(--muted); }
+.sect .notes.inline { margin-top: 8px; max-width: 560px; font-family: var(--sans); font-weight: 400; color: var(--ink); }
+.row { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 24px; padding: 18px 22px; border-top: 1px solid var(--rule); }
+.sect.lv3 + .row { border-top: 0; }
+.text { min-width: 0; }
+.rowhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.label { font-size: 0.78rem; letter-spacing: 0.06em; color: var(--muted); font-weight: 500; }
+.tag { font-size: 0.72rem; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--rule); color: var(--muted); font-variant-numeric: tabular-nums; }
+.tag-edit { border-color: var(--ins); color: var(--ins); }
+.tag-del { border-color: var(--del); color: var(--del); }
+.tag-move { border-color: var(--move); color: var(--move); }
+.para { font-family: var(--serif); font-size: 1.02rem; line-height: 1.95; margin: 0; max-width: 42em; overflow-wrap: anywhere; }
+.para.small { font-size: 0.92rem; }
+.mono { font-family: ui-monospace, Consolas, monospace; font-size: 0.82rem; white-space: pre-wrap; }
+.fixed, .same { color: var(--muted); }
+ins { color: var(--ins); background: var(--ins-bg); text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 3px; }
+del { color: var(--del); background: var(--del-bg); text-decoration: line-through; text-decoration-thickness: 1.5px; }
+body[data-view="new"] del { display: none; }
+body[data-view="new"] ins { color: inherit; background: none; text-decoration: none; }
+body[data-view="old"] ins { display: none; }
+body[data-view="old"] del { color: inherit; background: none; text-decoration: none; }
+
+.notes { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.notes li { display: grid; grid-template-columns: minmax(22px, auto) minmax(0, 1fr); gap: 8px; background: var(--note-bg); border: 1px solid var(--note-rule);
+  border-radius: 5px; padding: 8px 10px; font-size: 0.84rem; line-height: 1.55; }
+.notes .num { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--muted); }
+.notes b { font-weight: 700; }
+.notes p { margin: 2px 0 0; color: var(--muted); }
+
+.tablewrap { overflow-x: auto; }
+.tablewrap.same .dtable { color: var(--muted); }
+.dtable { border-collapse: collapse; font-size: 0.82rem; width: 100%; min-width: 620px; font-family: var(--serif); }
+.dtable th, .dtable td { text-align: left; padding: 5px 7px; border-top: 1px solid var(--rule); vertical-align: top; }
+.dtable th { color: var(--muted); font-family: var(--sans); font-weight: 500; border-top: 0; }
+.summary, .rest { background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 16px 22px; display: grid; gap: 10px; }
+.summary h2, .rest h2 { font-family: var(--serif); font-weight: 600; font-size: 1.05rem; margin: 0; }
+.summary p, .rest p { margin: 0; color: var(--muted); font-size: 0.9rem; }
+.summary small { color: var(--muted); }
+.rest ul { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; color: var(--muted); font-size: 0.9rem; }
+.rest li b { color: var(--ink); }
+.chk { border-collapse: collapse; font-size: 0.85rem; width: 100%; min-width: 560px; }
+.chk th, .chk td { text-align: left; padding: 6px 8px; border-top: 1px solid var(--rule); vertical-align: top; }
+.chk th { color: var(--muted); font-weight: 500; border-top: 0; }
+.chap td:nth-child(n+2), .chap th:nth-child(n+2) { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chap tr.tot td { font-weight: 700; }
+
+/* 导航 */
+.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 20px; align-items: start; }
+.side { position: sticky; top: calc(env(safe-area-inset-top, 0px) + var(--barh, 64px) + 10px); max-height: calc(100vh - var(--barh, 64px) - 30px);
+  overflow: auto; background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 10px 8px 14px; font-size: 0.84rem; }
+.side h2 { font-family: var(--serif); font-size: 0.95rem; font-weight: 600; margin: 2px 6px 8px; }
+.side .empty { color: var(--muted); margin: 6px; }
+.nvd { font-weight: 700; margin: 14px 6px 2px; padding-bottom: 3px; border-bottom: 1px solid var(--rule); }
+.nv2 { font-family: var(--serif); font-weight: 600; margin: 12px 6px 4px; color: var(--ink); }
+.nv3 { color: var(--muted); font-size: 0.78rem; margin: 6px 6px 2px; }
+.nvi { display: grid; grid-template-columns: 2.2em minmax(0, 1fr) auto; gap: 6px; align-items: baseline; padding: 3px 6px; border-radius: 4px;
+  color: var(--ink); text-decoration: none; border-left: 3px solid transparent; }
+.nvi:hover { background: var(--band); }
+.nvi.on { background: var(--ins-bg); border-left-color: var(--ins); }
+.nvi.k-new, .nvi.k-move { border-left-color: var(--move); }
+.nvi.k-del { border-left-color: var(--del); }
+.nvi.on.k-new, .nvi.on.k-move, .nvi.on.k-del { border-left-color: var(--ins); }
+.nvi[hidden] { display: none; }
+.nvn { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 0.75rem; text-align: right; }
+.nvl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nvt { display: flex; gap: 3px; }
+.nvt i { font-style: normal; font-size: 0.7rem; padding: 0 4px; border-radius: 3px; background: var(--note-bg); border: 1px solid var(--note-rule); color: var(--muted); }
+.navctl { display: inline-flex; align-items: center; gap: 6px; }
+.navctl button, .tool { font: inherit; font-size: 0.85rem; padding: 4px 10px; border: 1px solid var(--rule); border-radius: 5px; background: var(--sheet); color: var(--ink); cursor: pointer; }
+.navctl button:hover, .tool:hover { background: var(--band); }
+.navctl button:focus-visible, .tool:focus-visible, select:focus-visible, .nvi:focus-visible { outline: 2px solid var(--ins); outline-offset: 1px; }
+.pos { font-variant-numeric: tabular-nums; font-size: 0.85rem; min-width: 5.5em; text-align: center; color: var(--muted); }
+.pos b { color: var(--ink); }
+.filter select { font: inherit; font-size: 0.85rem; padding: 3px 6px; border: 1px solid var(--rule); border-radius: 5px; background: var(--sheet); color: var(--ink); max-width: 15em; }
+.kbd { font-size: 0.75rem; color: var(--muted); font-family: var(--sans); font-weight: 400; }
+.kbd kbd { font-family: inherit; border: 1px solid var(--rule); border-bottom-width: 2px; border-radius: 3px; padding: 0 4px; background: var(--sheet); }
+.chg { scroll-margin-top: calc(var(--barh, 64px) + 16px); }
+.row.current { box-shadow: inset 4px 0 0 var(--ins); background: color-mix(in srgb, var(--ins-bg) 35%, var(--sheet)); }
+.sect.current { box-shadow: inset 4px 0 0 var(--ins); }
+.chg.out { display: none; }
+body.filtering .fold { display: none; }
+.fold { border-top: 1px solid var(--rule); }
+.fold > summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; gap: 12px; padding: 8px 22px; color: var(--muted);
+  font-size: 0.85rem; background: repeating-linear-gradient(135deg, transparent 0 6px, var(--band) 6px 7px); }
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary:hover { color: var(--ink); }
+.fold[open] > summary .fold-hint { visibility: hidden; }
+.fold-hint { color: var(--ins); }
+.rail { position: fixed; right: max(4px, env(safe-area-inset-right, 0px)); top: calc(env(safe-area-inset-top, 0px) + var(--barh, 64px) + 10px); bottom: 12px; width: 12px;
+  border-radius: 6px; background: var(--band); z-index: 4; }
+.rail a { position: absolute; left: 2px; right: 2px; height: 3px; border-radius: 2px; background: var(--ins); opacity: .8; cursor: pointer; }
+.rail a.k-new, .rail a.k-move { background: var(--move); }
+.rail a.k-del { background: var(--del); }
+.rail a.out { display: none; }
+.rail .view { position: absolute; left: 0; right: 0; border: 1px solid var(--muted); border-radius: 4px; pointer-events: none; opacity: .5; }
+.sidebtn { display: none; }
+@media (max-width: 1100px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .side { position: fixed; z-index: 20; left: max(8px, env(safe-area-inset-left, 0px)); top: calc(env(safe-area-inset-top, 0px) + var(--barh, 64px) + 6px);
+    bottom: 8px; width: min(320px, 86vw); max-height: none; box-shadow: 0 8px 30px rgba(0,0,0,.25); }
+  .side:not(.open) { display: none; }
+  .sidebtn { display: inline-block; }
+}
+@media (max-width: 760px) {
+  .row { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 16px; }
+  .sect { padding-inline: 16px; }
+  .views { margin-left: 0; }
+  .para { font-size: 1rem; }
+  .rail, .kbd, .bar .stats, .bar .legend { display: none; }
+  .bar { gap: 6px 8px; padding: 8px 10px; }
+  .filter select { max-width: 9.5em; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>组会修订对比</h1>
+    <p class="meta">原文是开会时的快照（10:00），现稿是 AI 改到散会的样子。右边的勾是改过的地方，点开能看到说了什么。</p>
+  </header>
+
+  <section class="summary">
+<h2>改动量</h2>
+<div class='tablewrap'><table class='chk chap'><thead><tr><th>章</th><th>原（字）</th><th>现</th><th>增</th><th>删</th><th>改动处</th></tr></thead><tbody><tr><td>（开头）</td><td>55</td><td>55</td><td>0</td><td>0</td><td>0</td></tr><tr><td>开会前</td><td>125</td><td>15</td><td>12</td><td>122</td><td>2</td></tr><tr><td>开会时</td><td>68</td><td>87</td><td>19</td><td>0</td><td>1</td></tr><tr><td>邀请别人</td><td>21</td><td>41</td><td>20</td><td>0</td><td>1</td></tr><tr><td>散会后</td><td>21</td><td>74</td><td>53</td><td>0</td><td>2</td></tr><tr class='tot'><td>合计</td><td>290</td><td>272</td><td>104</td><td>122</td><td>6</td></tr></tbody></table></div>
+<p>增 104、删 122 字，约占原文的 77.9%。中文按字计、不计空白，英文按词计；含表格和公式源码。</p>
+
+  </section>
+
+  <div class="bar" role="toolbar" aria-label="对比视图">
+    <button type="button" class="tool sidebtn" id="sidebtn" aria-expanded="false" aria-controls="side">目录</button>
+    <div class="navctl">
+      <button type="button" id="prev" aria-label="上一处改动">‹ 上一处</button>
+      <span class="pos" id="pos" aria-live="polite"><b>–</b> / 6</span>
+      <button type="button" id="next" aria-label="下一处改动">下一处 ›</button>
+    </div>
+    <label class='filter'>按条目 <select id='flt' autocomplete='off'><option value=''>全部改动</option><option value='1'>1　开会前一节压成两步</option><option value='2'>2　写清楚怎么叫 AI</option><option value='3'>3　散会后列出能看的三样</option><option value='4'>4　邀请一段补上不用装软件</option></select></label>
+    <button type='button' class='tool' id='unfold'>展开未改动</button>
+    <span class="kbd"><kbd>J</kbd> <kbd>K</kbd> 跳转</span>
+    <div class='stats'><span><b>6</b> 处改动</span><span><b>5</b> 处插入</span><span><b>1</b> 处删除</span><span><b>4</b> 条批注</span></div>
+    <div class="legend"><span><ins>插入</ins></span><span><del>删除</del></span></div>
+    <div class="views">
+      <button type="button" data-v="mark" aria-pressed="true">修订标记</button>
+      <button type="button" data-v="new" aria-pressed="false">修订后</button>
+      <button type="button" data-v="old" aria-pressed="false">原文</button>
+    </div>
+  </div>
+
+  <div class="layout">
+    <nav class="side" id="side" aria-label="改动目录">
+      <h2>改动目录 <span class="kbd">共 6 处</span></h2>
+<div class='nv2'>开会前</div>
+<a class='nvi k-del' href='#c1' data-target='c1'><span class='nvn'>1</span><span class='nvl'>删去的段落</span><span class='nvt'><i>1</i></span></a>
+<a class='nvi k-new' href='#c2' data-target='c2'><span class='nvn'>2</span><span class='nvl'>第 1 段</span><span class='nvt'><i>1</i></span></a>
+<div class='nv2'>开会时</div>
+<a class='nvi k-edit' href='#c3' data-target='c3'><span class='nvn'>3</span><span class='nvl'>第 1 段</span><span class='nvt'><i>2</i></span></a>
+<div class='nv2'>邀请别人</div>
+<a class='nvi k-edit' href='#c4' data-target='c4'><span class='nvn'>4</span><span class='nvl'>第 1 段</span><span class='nvt'><i>4</i></span></a>
+<div class='nv2'>散会后</div>
+<a class='nvi k-edit' href='#c5' data-target='c5'><span class='nvn'>5</span><span class='nvl'>第 1 段</span><span class='nvt'><i>3</i></span></a>
+<a class='nvi k-new' href='#c6' data-target='c6'><span class='nvn'>6</span><span class='nvl'>列表</span><span class='nvt'><i>3</i></span></a>
+    </nav>
+    <div class="docs">
+<main class='doc' aria-label='Bloom 使用说明'>
+<div class='sect lv1'>Bloom 使用说明</div>
+<details class='fold'><summary><span>1 段未改动</span><span class='fold-hint'>展开</span></summary><section class='row'><div class='text'><div class='rowhead'><span class='label'>第 1 段</span><span class='tag'>未改动</span></div><p class='para same'>Bloom 是开组会用的 AI 助手。它听大家讨论，被叫到时回答，主持人说定的改法它会改进论文里。</p></div><ol class='notes'></ol></section></details>
+<div class='sect lv2'>开会前</div>
+<section class='row chg' id='c1' data-no='1' data-kind='del' data-notes='1'><div class='text'><div class='rowhead'><span class='label'>删去的段落</span><span class='tag tag-del'>删除段落</span></div><p class='para'><del>打开 Bloom 以后，先到设置里选模型来源，填好 API key。然后回到大厅，把论文文件拖进窗口，支持 PDF、Word、Markdown 和 LaTeX。论文导入要一会儿，导入好以后大厅会显示论文的字数和修改时间。确认麦克风和声音都正常以后，再点开会。</del></p></div><ol class='notes'><li><span class='num'>1</span><div><b>开会前一节压成两步</b><p>&lt;b&gt;{ME}&lt;/b&gt; AI，把开会前这一节压短一点，只留拖论文和点开会两步。&lt;br&gt;&lt;b&gt;AI&lt;/b&gt; 开会前一节改成两步：拖进论文，点开会。</p></div></li></ol></section>
+<section class='row chg' id='c2' data-no='2' data-kind='new' data-notes='1'><div class='text'><div class='rowhead'><span class='label'>第 1 段</span><span class='tag tag-edit'>新增段落</span></div><p class='para'><ins>把论文拖进窗口，点开会。</ins></p></div><ol class='notes'><li><span class='num'>1</span><div><b>开会前一节压成两步</b><p>&lt;b&gt;{ME}&lt;/b&gt; AI，把开会前这一节压短一点，只留拖论文和点开会两步。&lt;br&gt;&lt;b&gt;AI&lt;/b&gt; 开会前一节改成两步：拖进论文，点开会。</p></div></li></ol></section>
+<div class='sect lv2'>开会时</div>
+<section class='row chg' id='c3' data-no='3' data-kind='edit' data-notes='2'><div class='text'><div class='rowhead'><span class='label'>第 1 段</span><span class='tag tag-edit'>1 处插入 · 0 处删除</span></div><p class='para'>讨论的时候正常说话就行，Bloom 会把每个人说的话转成文字<ins>。叫 AI 的名字它才回答，不叫它就不出声</ins>。主持人说定一处改法，AI 会记进修改清单，改好以后论文上会出现修订标记。</p></div><ol class='notes'><li><span class='num'>2</span><div><b>写清楚怎么叫 AI</b><p>&lt;b&gt;{ME}&lt;/b&gt; 对，AI，开会时那一节第一句后面加一句：叫 AI 的名字它才回答，不叫它就不出声。&lt;br&gt;&lt;b&gt;AI&lt;/b&gt; 开会时一节第一句后面加了：叫 AI 的名字它才回答，不叫它就不出声。</p></div></li></ol></section>
+<div class='sect lv2'>邀请别人</div>
+<section class='row chg' id='c4' data-no='4' data-kind='edit' data-notes='4'><div class='text'><div class='rowhead'><span class='label'>第 1 段</span><span class='tag tag-edit'>1 处插入 · 0 处删除</span></div><p class='para'>会议页上点邀请，复制链接发给别人。<ins>对方用浏览器打开链接就能进，不用装软件。</ins></p></div><ol class='notes'><li><span class='num'>4</span><div><b>邀请一段补上不用装软件</b><p>&lt;b&gt;{ME}&lt;/b&gt; AI，邀请那段加一句：对方用浏览器打开链接就能进，不用装软件。&lt;br&gt;&lt;b&gt;AI&lt;/b&gt; 邀请一段加了：对方用浏览器打开链接就能进，不用装软件。</p></div></li></ol></section>
+<div class='sect lv2'>散会后</div>
+<section class='row chg' id='c5' data-no='5' data-kind='edit' data-notes='3'><div class='text'><div class='rowhead'><span class='label'>第 1 段</span><span class='tag tag-edit'>1 处插入 · 0 处删除</span></div><p class='para'>点散会以后，Bloom 会整理这场会。<ins>回顾里能看到三样东西：</ins></p></div><ol class='notes'><li><span class='num'>3</span><div><b>散会后列出能看的三样</b><p>&lt;b&gt;{ME}&lt;/b&gt; AI，散会后那一节列一下能看到的三样东西：修订对比、纪要、逐字稿。&lt;br&gt;&lt;b&gt;AI&lt;/b&gt; 散会后一节列了修订对比、纪要、逐字稿各是什么。</p></div></li></ol></section>
+<section class='row chg' id='c6' data-no='6' data-kind='new' data-notes='3'><div class='text'><div class='rowhead'><span class='label'>列表</span><span class='tag tag-edit'>新增段落</span></div><p class='para'><ins>• 修订对比：论文改了哪些地方<br>• 纪要：讨论了什么、定了什么<br>• 逐字稿：每个人说的每一句话</ins></p></div><ol class='notes'><li><span class='num'>3</span><div><b>散会后列出能看的三样</b><p>&lt;b&gt;{ME}&lt;/b&gt; AI，散会后那一节列一下能看到的三样东西：修订对比、纪要、逐字稿。&lt;br&gt;&lt;b&gt;AI&lt;/b&gt; 散会后一节列了修订对比、纪要、逐字稿各是什么。</p></div></li></ol></section>
+</main>
+    </div>
+  </div>
+
+</div>
+<div class="rail" id="rail" aria-hidden="true"></div>
+
+<script>
+var HD = {"key": "htmldiff-view-组会修订对比", "unfold": "展开未改动", "fold": "收起未改动", "rail": "第 {n} 处"};
+// 导航：上一处/下一处（J/K）、目录跳转与高亮、按条目筛选、展开未改动、右侧缩略刻度、三种视图。
+// 依赖页面里先定义的 HD = {key, unfold, fold, rail}
+(function () {
+  var root = document.documentElement, bar = document.querySelector('.bar');
+  function setBarH() { root.style.setProperty('--barh', bar.getBoundingClientRect().height + 'px'); }
+  setBarH();
+  if (window.ResizeObserver) new ResizeObserver(setBarH).observe(bar);
+
+  // 视图：修订标记 / 修订后 / 原文
+  var vbtn = document.querySelectorAll('.views button');
+  function setView(v) {
+    document.body.setAttribute('data-view', v);
+    vbtn.forEach(function (b) { b.setAttribute('aria-pressed', String(b.getAttribute('data-v') === v)); });
+    try { localStorage.setItem(HD.key, v); } catch (e) {}
+    layoutRail();
+  }
+  vbtn.forEach(function (b) { b.addEventListener('click', function () { setView(b.getAttribute('data-v')); }); });
+
+  var rows = Array.prototype.slice.call(document.querySelectorAll('.chg'));
+  var links = {};
+  document.querySelectorAll('.nvi').forEach(function (a) { links[a.dataset.target] = a; });
+  var pos = document.getElementById('pos'), side = document.getElementById('side'), sb = document.getElementById('sidebtn');
+  var cur = -1;
+
+  function visible() { return rows.filter(function (r) { return !r.classList.contains('out'); }); }
+  function mark(r) {
+    rows.forEach(function (x) { x.classList.toggle('current', x === r); });
+    Object.keys(links).forEach(function (k) { links[k].classList.toggle('on', !!r && k === r.id); });
+    var vis = visible(), i = vis.indexOf(r);
+    pos.innerHTML = '<b>' + (i >= 0 ? i + 1 : '–') + '</b> / ' + vis.length;
+    if (r && links[r.id]) {
+      var l = links[r.id], lt = l.offsetTop, st = side.scrollTop;
+      if (lt < st + 30 || lt > st + side.clientHeight - 30) side.scrollTop = lt - side.clientHeight / 3;
+    }
+  }
+  // 平滑滚动期间不让滚动跟踪改写当前位置，连点「下一处」才不会少跳
+  var lockUntil = 0;
+  function go(r) {
+    if (!r) return;
+    lockUntil = Date.now() + 800;
+    r.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+    cur = rows.indexOf(r); mark(r);
+    side.classList.remove('open'); sb.setAttribute('aria-expanded', 'false');
+  }
+  function step(d) {
+    var vis = visible(); if (!vis.length) return;
+    var i = cur >= 0 ? vis.indexOf(rows[cur]) : -1;
+    var j = i < 0 ? (d > 0 ? 0 : vis.length - 1) : Math.min(vis.length - 1, Math.max(0, i + d));
+    go(vis[j]);
+  }
+  document.getElementById('next').addEventListener('click', function () { step(1); });
+  document.getElementById('prev').addEventListener('click', function () { step(-1); });
+  document.addEventListener('keydown', function (e) {
+    if (e.target.closest('select, input, textarea, [contenteditable]') || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === 'j' || e.key === 'J' || e.key === 'n') { e.preventDefault(); step(1); }
+    if (e.key === 'k' || e.key === 'K' || e.key === 'p') { e.preventDefault(); step(-1); }
+  });
+  document.querySelectorAll('.nvi').forEach(function (a) {
+    a.addEventListener('click', function (e) { e.preventDefault(); go(document.getElementById(a.dataset.target)); });
+  });
+
+  // 滚动时跟踪当前位置
+  var ticking = false;
+  function track() {
+    ticking = false;
+    drawView();
+    if (Date.now() < lockUntil) return;
+    var top = (parseFloat(getComputedStyle(root).getPropertyValue('--barh')) || 64) + 40, best = null;
+    visible().forEach(function (r) { if (r.getBoundingClientRect().top <= top) best = r; });
+    var k = best ? rows.indexOf(best) : -1;
+    if (k !== cur) { cur = k; mark(best); }
+  }
+  window.addEventListener('scroll', function () { if (!ticking) { ticking = true; requestAnimationFrame(track); } }, { passive: true });
+
+  // 按条目筛选
+  var flt = document.getElementById('flt');
+  if (flt) flt.addEventListener('change', function () {
+    var v = flt.value;
+    document.body.classList.toggle('filtering', !!v);
+    rows.forEach(function (r) {
+      var hit = !v || (' ' + r.dataset.notes + ' ').indexOf(' ' + v + ' ') >= 0;
+      r.classList.toggle('out', !hit);
+      if (links[r.id]) links[r.id].hidden = !hit;
+    });
+    layoutRail(); track();
+    var vis = visible(); if (v && vis.length) go(vis[0]);
+  });
+
+  // 展开或收起全部未改动段落
+  var folds = document.querySelectorAll('.fold'), unfold = document.getElementById('unfold'), allOpen = false;
+  if (unfold) unfold.addEventListener('click', function () {
+    allOpen = !allOpen;
+    folds.forEach(function (f) { f.open = allOpen; });
+    unfold.textContent = allOpen ? HD.fold : HD.unfold;
+    layoutRail();
+  });
+  folds.forEach(function (f) { f.addEventListener('toggle', layoutRail); });
+
+  // 目录抽屉（窄屏）
+  sb.addEventListener('click', function () { var o = side.classList.toggle('open'); sb.setAttribute('aria-expanded', String(o)); });
+
+  // 右侧缩略刻度
+  var rail = document.getElementById('rail'), viewBox = document.createElement('div');
+  viewBox.className = 'view';
+  function layoutRail() {
+    rail.innerHTML = ''; rail.appendChild(viewBox);
+    var h = document.documentElement.scrollHeight, rh = rail.clientHeight;
+    rows.forEach(function (r) {
+      var a = document.createElement('a');
+      a.className = 'k-' + r.dataset.kind + (r.classList.contains('out') ? ' out' : '');
+      a.style.top = Math.min(rh - 3, (r.getBoundingClientRect().top + window.scrollY) / h * rh) + 'px';
+      a.title = HD.rail.replace('{n}', r.dataset.no);
+      a.addEventListener('click', function () { go(r); });
+      rail.appendChild(a);
+    });
+    drawView();
+  }
+  function drawView() {
+    var h = document.documentElement.scrollHeight, rh = rail.clientHeight;
+    viewBox.style.top = (window.scrollY / h * rh) + 'px';
+    viewBox.style.height = Math.max(8, window.innerHeight / h * rh) + 'px';
+  }
+  window.addEventListener('resize', function () { setBarH(); layoutRail(); });
+
+  var saved = 'mark';
+  try { saved = localStorage.getItem(HD.key) || 'mark'; } catch (e) {}
+  setView(saved);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(layoutRail);
+  track();
+})();
+
+</script>
+</body>
+</html>

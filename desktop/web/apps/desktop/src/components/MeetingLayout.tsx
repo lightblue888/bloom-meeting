@@ -8,6 +8,7 @@
 // after the meeting and in 回顾 the switch comes back with the tools on the same row.
 // The top bar: title, state, clock, who is in the meeting, the action buttons. No prompt chips, no input field.
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
+import { relayApi } from '../setupApi';
 import { useDismiss } from './useDismiss';
 import { tidy, useMenu } from './Menu';
 import { isImeKey } from '../ime';
@@ -17,7 +18,9 @@ import { stepK, stepV } from './stepText';
 import {
   avatarUrl,
   cleanTitle,
+  liveError,
   meetingApi,
+  type Bookmark,
   type Devices,
   type Invite,
   fmtDuration,
@@ -29,6 +32,7 @@ import {
   type Meeting,
   type MeetingPaper,
   type MeetingState,
+  type PaperComments,
   type ModelChoice,
   type ModelPart,
   type Models,
@@ -36,12 +40,17 @@ import {
   type Participant,
   type Ready,
   type Summary,
+  type SummaryJob,
+  type TalkTime,
+  type Usage,
   type VideoInfo,
   watchMic,
 } from '../meetingApi';
-import { SummaryView, TaskBoard, TodoList } from './MeetingSummary';
+import { SummaryTools, SummaryView, TaskBoard, TodoList } from './MeetingSummary';
+import { Composer, QuietNote, ToolsFloat, type LiveTools } from './MeetingTools';
 import { Highlight } from './Highlight';
 import { CLAUDE_COLOR, colorsById, colorsByName, Flower, HOST_COLOR, nameColor, ownPhoto } from './Flower';
+import { EditTools, LineEditor, NameEditor, type TranscriptEditing } from './TranscriptEdit';
 
 export type Tab = 'diff' | 'notes' | 'todos' | 'video';
 // the transcript is where you see what Claude does (each reply's kind, the background work): wide by default
@@ -86,6 +95,12 @@ export function MeetingLayout({
   board,
   brain,
   summary,
+  talk,
+  usage,
+  summaryJob,
+  postBusy,
+  onSummaryStarted,
+  onToast,
   diffSrc,
   video,
   live,
@@ -97,7 +112,30 @@ export function MeetingLayout({
   active = true,
   paperVersion,
   onFrame,
+  jump,
+  tools,
+  bookmarks,
+  carryDone,
+  transcriptEdit,
+  comments,
+  onHistory,
 }: {
+  /** 第 6 批: the comments typed on the paper; the paper's page draws them (a bubble beside the paragraph, a card over
+   *  the text) and, when `canAdd`, lets the viewer write, reply and resolve; `canDelete`: the host and co-hosts */
+  comments?: PaperComments | null;
+  /** 第 6 批: the paper menu's 历史版本 (the host's page): the paper on screen's saved versions */
+  onHistory?: (() => void) | null;
+  /** 回顾: the host fixes the transcript by hand (编辑 / 替换 / 撤销 in its head) */
+  transcriptEdit?: TranscriptEditing | null;
+  /** the meeting page and the guest page (live or just ended): the box to type to the AI, 标记, the answer only the
+   *  one who asked sees, a selected passage. 回顾 and Dev have none */
+  tools?: LiveTools | null;
+  /** the moments marked in the meeting: drawn in the transcript at their time; a click goes there */
+  bookmarks?: Bookmark[] | null;
+  /** 回顾 → 修改清单: what is ticked (the meeting's carry.json, the lobby's left-overs share it) */
+  carryDone?: string[] | null;
+  /** 回顾: go to this moment (seconds into the meeting) as a click on a 纪要 time does; a new `k` goes again */
+  jump?: { sec: number; k: number } | null;
   /** the guest page (example.com): the paper's version on the relay. A newer one loads behind and swaps in, like the
    *  host's own page does when it says it has a new version (the guest's copy can't ask a backend) */
   paperVersion?: number;
@@ -139,6 +177,19 @@ export function MeetingLayout({
   /** live only: what Claude is doing right now (the strip on top of the transcript) */
   brain?: Brain | null;
   summary: Summary | null;
+  /** 回顾: each person's talk time (worked out from the transcript), shown under the 纪要 */
+  talk?: TalkTime[] | null;
+  /** 回顾: the meeting's API tokens and estimated cost, shown last under the 纪要 */
+  usage?: Usage | null;
+  /** 回顾: the 纪要 being written again in another format (or that just failed) */
+  summaryJob?: SummaryJob | null;
+  /** 回顾: the post-meeting work still runs (the 纪要 can't be written again yet) */
+  postBusy?: boolean;
+  /** 回顾: a past meeting of the library (not Dev's runs): the 纪要's format and 重新生成 in the bar; called once a
+   *  new one has been asked for (fetch the meeting again) */
+  onSummaryStarted?: (() => void) | null;
+  /** 回顾: a short message at the foot of the window (重新生成 failed) */
+  onToast?: (msg: string) => void;
   /** the iframe's page: the live diff, or a past meeting's snapshot; '' = none yet */
   diffSrc: string;
   /** 回顾: the meeting's screen recording; a click on a line plays it from there */
@@ -199,6 +250,54 @@ export function MeetingLayout({
     });
   }, [paperVersion, diffSrc]);
   const post = useCallback((m: object) => frame.current?.contentWindow?.postMessage(m, '*'), []);
+
+  // ---------------------------------------------------------------- 第 6 批: the comments typed on the paper
+  // the paper's page doesn't fetch them: they go in by postMessage when they change and when a page (a new version in
+  // the other slot, a reload) says it is ready ({zhCmReady}); the page sends new ones itself (/api/comment)
+  const cmMsg = useMemo(() => {
+    if (!comments) return null;
+    const colors: Record<string, string> = {};
+    const byName = colorsByName(people ?? NOBODY);
+    for (const k of Object.keys(byName)) colors[k] = byName[k];
+    return { zhComments: { items: comments.items, can: { add: comments.canAdd, del: comments.canDelete }, colors, paper: activePaper ?? null } };
+  }, [comments, people, activePaper]);
+  const cmRef = useRef(cmMsg);
+  cmRef.current = cmMsg;
+  const cmSent = useRef('');
+  useEffect(() => {
+    const k = cmMsg ? JSON.stringify(cmMsg) : '';
+    if (!cmMsg || k === cmSent.current) return;
+    cmSent.current = k;
+    post(cmMsg);
+  }, [cmMsg, post]);
+  useEffect(() => {
+    const on = (e: MessageEvent) => {
+      if (!(e.data as { zhCmReady?: number } | null)?.zhCmReady || !cmRef.current) return;
+      if (e.source !== slotA.current?.contentWindow && e.source !== slotB.current?.contentWindow) return;
+      (e.source as Window).postMessage(cmRef.current, '*');
+    };
+    window.addEventListener('message', on);
+    return () => window.removeEventListener('message', on);
+  }, []);
+
+  // ---------------------------------------------------------------- 先选中再说: a passage selected in the paper
+  // (the host's and a co-host's, while the meeting is on) goes to the backend; their next words to the AI are about it
+  const toolsRef = useRef(tools);
+  toolsRef.current = tools;
+  useEffect(() => {
+    const on = (e: MessageEvent) => {
+      const sel = (e.data as { zhSel?: { text?: string; section?: string | null } } | null)?.zhSel;
+      const tl = toolsRef.current;
+      if (!sel?.text || !tl || !tl.live || tl.role === 'guest') return;
+      if (!frame.current || e.source !== frame.current.contentWindow) return;
+      meetingApi.anchor({ text: sel.text, section: sel.section ?? null }).then(
+        () => tl.onChanged?.(),
+        (err) => tl.onError(t('meeting.live.anchor_failed', { a: liveError(err) })),
+      );
+    };
+    window.addEventListener('message', on);
+    return () => window.removeEventListener('message', on);
+  }, []);
 
   // ---------------------------------------------------------------- the paper's tools (the iframe's state)
   const [paper, setPaper] = useState<PaperState | null>(null);
@@ -366,6 +465,30 @@ export function MeetingLayout({
     setVtime(Math.max(0, l.vt));
     void v.play().catch(() => {});
   }, []);
+  // a time in the 纪要 clicked: the transcript line said then (the same second, else the nearest) comes into view and
+  // lights up; with a recording, it plays from that line (as a click on the line does)
+  const [focusLine, setFocusLine] = useState<{ sec: number; k: number } | null>(null);
+  const jumpTo = useCallback(
+    (sec: number) => {
+      let best: Line | null = null;
+      let seen: Line | null = null;
+      for (const l of transcript) {
+        if (l.who === 'system' || !l.text.trim()) continue;
+        if (!best || Math.abs(l.sec - sec) < Math.abs(best.sec - sec)) best = l;
+        if (l.vt != null && (!seen || Math.abs(l.sec - sec) < Math.abs(seen.sec - sec))) seen = l;
+      }
+      if (!best) return;
+      if (videoSrc && seen && Math.abs(seen.sec - sec) < 120) playAt(seen);
+      const at = best.sec;
+      setFocusLine((f) => ({ sec: at, k: (f?.k ?? 0) + 1 }));
+    },
+    [transcript, videoSrc, playAt],
+  );
+  // asked from outside (a source of an answer in 回顾 → 提问, a left-over item in the lobby): the same jump
+  useEffect(() => {
+    if (jump && transcript.length) jumpTo(jump.sec);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jump?.k, transcript.length > 0]);
   // the line being played: the latest-starting line that has started (lines are not strictly in vt order)
   const playing = useMemo(() => {
     if (vtime == null || !videoSrc) return null;
@@ -414,7 +537,7 @@ export function MeetingLayout({
   const title = titleOverride || cleanTitle(meeting?.title) || titlePrefix || t('meeting.title.none');
   const stateKey = state === 'live' ? 'meeting.state.live' : state === 'ended' ? 'meeting.state.ended' : 'meeting.state.idle';
   const showBoard = live && state !== 'ended' ? true : !summary;
-  const tools = tab === 'diff' && !!diffSrc && !!paper;
+  const ptools = tab === 'diff' && !!diffSrc && !!paper;
   // the layers of the body: all stay mounted (the paper's page, its MathJax, the decoded recording), the ones not shown
   // are hidden in place, at their size — switching is a repaint, no reload, no reflow of the paper
   const layer = (k: Tab) => `mt-layer ${tab === k ? '' : 'is-off'}`;
@@ -448,7 +571,7 @@ export function MeetingLayout({
         {/* 新增 right after the name, on the bar's centre line like everything else; the people, 邀请 and 开会/散会 sit at
             the right end (2026-11-15: 新增 at the title row's end hung mid-bar, 12 px above the people, and crowded them) */}
         {(onAddPaper || (papers?.length ?? 0) > 1) && (
-          <PaperMenu papers={papers ?? []} active={activePaper ?? null} onSwitch={onSwitchPaper ?? null} onAdd={onAddPaper ?? null} />
+          <PaperMenu papers={papers ?? []} active={activePaper ?? null} onSwitch={onSwitchPaper ?? null} onAdd={onAddPaper ?? null} onHistory={onHistory ?? null} />
         )}
         <People people={who} status={status ?? null} onRole={onRole} active={active} uiLang={appI18n().lang} />
         {invite && <InviteButton topic={title} active={active} uiLang={appI18n().lang} />}
@@ -458,7 +581,7 @@ export function MeetingLayout({
         <section className="mt-left" aria-label={t('meeting.left.label')}>
           {left ?? (
             <>
-              {(showTabs || tools) && (
+              {(showTabs || ptools) && (
                 <div className={`mt-bar ${showTabs ? '' : 'is-tools-only'}`} data-testid="meeting-bar">
                   {showTabs && (
                     <nav className="mt-tabs" role="tablist">
@@ -469,7 +592,17 @@ export function MeetingLayout({
                       ))}
                     </nav>
                   )}
-                  {tools && paper && <PaperTools s={paper} send={post} />}
+                  {ptools && paper && <PaperTools s={paper} send={post} />}
+                  {showTabs && tab === 'notes' && meeting && onSummaryStarted && (
+                    <SummaryTools
+                      meetingId={meeting.id}
+                      summary={summary}
+                      job={summaryJob ?? null}
+                      busy={!!postBusy || state === 'live'}
+                      onStarted={onSummaryStarted}
+                      onToast={onToast}
+                    />
+                  )}
                 </div>
               )}
               <div className="mt-pane" role="tabpanel">
@@ -507,12 +640,12 @@ export function MeetingLayout({
                 )}
                 {showTabs && (tab === 'notes' || notesSeen) && (
                   <div className={`${layer('notes')} mt-scroll`}>
-                    {showBoard ? <TaskBoard board={board} /> : summary ? <SummaryView summary={summary} people={who} /> : null}
+                    {showBoard ? <TaskBoard board={board} /> : summary ? <SummaryView summary={summary} people={who} talk={talk} usage={usage} onJump={jumpTo} /> : null}
                   </div>
                 )}
                 {showTabs && tab === 'todos' && (
                   <div className={`${layer('todos')} mt-scroll`}>
-                    <TodoList board={board} meetingId={meeting?.id ?? null} />
+                    <TodoList board={board} meetingId={meeting?.id ?? null} done={carryDone ?? null} />
                   </div>
                 )}
                 {/* 录屏也一直挂着：切去看论文时接着放，逐字稿照样跟着亮 */}
@@ -539,23 +672,33 @@ export function MeetingLayout({
           {/* what comes and goes floats over the paper's column and takes no room: the reminder under the paper's
               bar, the notice at the column's foot (2026-11-18: over the transcript they hid its header and newest line) */}
           {onRole && suggest && suggest.length > 0 && <RoleSuggest list={suggest} onRole={onRole} />}
+          {tools && <QuietNote tools={tools} />}
           {notice && <div className="mt-notice">{notice}</div>}
         </section>
-        <Transcript
-          uiLang={appI18n().lang}
-          lines={transcript}
-          partial={live ? partial : null}
-          people={who}
-          follow={live}
-          onDrag={dragTr}
-          onResetWidth={resetTr}
-          active={playing}
-          tick={vtime == null ? 0 : Math.floor(vtime)}
-          onPick={videoSrc ? playAt : undefined}
-          brain={live ? brain ?? null : null}
-          board={live ? board : null}
-          offline={!live}
-        />
+        {/* the right column: the transcript, and the box at its foot (one height, live or ended); what comes and goes
+            (the answer only the one who asked sees, a selected passage) floats over the transcript */}
+        <div className="mt-rcol">
+          <div className="mt-divider" onMouseDown={dragTr} onDoubleClick={resetTr} aria-hidden="true" />
+          <Transcript
+            uiLang={appI18n().lang}
+            lines={transcript}
+            partial={live ? partial : null}
+            people={who}
+            follow={live}
+            active={playing}
+            tick={vtime == null ? 0 : Math.floor(vtime)}
+            onPick={videoSrc ? playAt : undefined}
+            focus={focusLine}
+            brain={live ? brain ?? null : null}
+            board={live ? board : null}
+            offline={!live}
+            marks={bookmarks ?? undefined}
+            onMark={jumpTo}
+            editing={transcriptEdit ?? null}
+          />
+          {tools && <ToolsFloat tools={tools} />}
+          {tools && <Composer tools={tools} />}
+        </div>
       </div>
     </div>
   );
@@ -649,11 +792,13 @@ function MeetingTitle({ title, onRename }: { title: string; onRename?: ((title: 
 /** 新增: one button at the end of the title row, before and during the meeting, its label never changing. A click opens
  *  the papers on the desk (the one on screen ticked; a click on another puts it on screen) and, last, 新增 (the file
  *  picker: the paper joins the others). With no paper listed yet it goes straight to the picker. */
-function PaperMenu({ papers, active, onSwitch, onAdd }: {
+function PaperMenu({ papers, active, onSwitch, onAdd, onHistory }: {
   papers: MeetingPaper[];
   active: string | null;
   onSwitch: ((id: string) => void) | null;
   onAdd: (() => void) | null;
+  /** 第 6 批: 历史版本 of the paper on screen */
+  onHistory?: (() => void) | null;
 }) {
   const menu = useMenu();
   const cur = papers.find((p) => p.id === active) ?? papers[0];
@@ -668,7 +813,8 @@ function PaperMenu({ papers, active, onSwitch, onAdd }: {
           run: () => (p.id !== cur?.id ? onSwitch?.(p.id) : undefined),
           testId: `paper-item-${p.id}`,
         })),
-        !!onAdd && { kind: 'separator' as const },
+        !!(onAdd || onHistory) && { kind: 'separator' as const },
+        !!onHistory && { label: t('meeting.paper.history'), icon: <Icon name="history" size={14} />, run: onHistory, testId: 'paper-history' },
         !!onAdd && { label: t('meeting.paper.new'), icon: <Icon name="plus" size={14} />, run: onAdd, testId: 'paper-add' },
       ]),
       { x: 0, y: 0, anchor: e.currentTarget, align: 'end', minWidth: 220 },
@@ -815,7 +961,10 @@ const InviteButton = memo(function InviteButton({ topic, active, uiLang: _ui }: 
                 <span className="mt-invite-url" data-testid="meeting-invite-url">{inv.url}</span>
               </div>
               {/* 只复制链接本身（不是整段邀请文字） */}
-              <button className="mt-invite-all" onClick={() => void put(inv.url!)} data-testid="meeting-invite-copy">
+              <button className="mt-invite-all" onClick={() => {
+                void put(inv.url!);
+                if (inv.public && !inv.armed) void relayApi.setInvite(true).then(() => setInv({ ...inv, armed: true }), () => {});
+              }} data-testid="meeting-invite-copy">
                 <Icon name={copied ? 'check' : 'copy'} size={14} />
                 {t(copied ? 'meeting.invite.copied' : 'meeting.invite.copy_link')}
               </button>
@@ -1377,6 +1526,8 @@ interface Turn {
   name?: string;
   t: string;
   lines: Line[];
+  /** not a turn: a moment marked (标记) */
+  mark?: Bookmark;
 }
 
 /** Where each of Claude's words came from — three kinds, each with its own name and colour:
@@ -1674,11 +1825,20 @@ export const Transcript = memo(function Transcript({
   active,
   tick,
   onPick,
+  focus,
   brain,
   board,
   offline,
   bare,
+  marks,
+  onMark,
+  editing,
 }: {
+  /** 回顾: the host fixes the transcript by hand (编辑 / 替换 / 撤销 in the head) */
+  editing?: TranscriptEditing | null;
+  /** the moments marked (标记): a small flag row at their time, between the turns; a click goes there */
+  marks?: Bookmark[];
+  onMark?: (sec: number) => void;
   /** the app's language: the header, search box and status words follow it, and a change re-renders this cached list */
   uiLang?: string;
   /** set inside another pane (Dev's preview): no edge to drag the width by */
@@ -1701,6 +1861,8 @@ export const Transcript = memo(function Transcript({
   tick?: number;
   /** a click on a line: play the recording from there */
   onPick?: (l: Line) => void;
+  /** a line to bring into view and light up (a time clicked in the 纪要); k changes on every click */
+  focus?: { sec: number; k: number } | null;
 }) {
   const [q, setQ] = useState('');
   const box = useRef<HTMLDivElement>(null);
@@ -1713,6 +1875,26 @@ export const Transcript = memo(function Transcript({
     // Claude's lines split by where the words came from (随口 / 思考 / Claude): each piece gets its own head
     return base.flatMap((l): ShownLine[] => (l.who === 'student' ? splitClaude(l) : [l]));
   }, [lines, q]);
+  // 回顾 → 编辑: on, a click on a line opens it in place (not the recording), a click on a guest's name renames them
+  const [editOn, setEditOn] = useState(false);
+  const [edLine, setEdLine] = useState<{ i: number; text: string } | null>(null);
+  const [edName, setEdName] = useState<string | null>(null);
+  const canEdit = !!editing?.can;
+  useEffect(() => {
+    if (!canEdit) {
+      setEditOn(false);
+      setEdLine(null);
+      setEdName(null);
+    }
+  }, [canEdit]);
+  const editMode = editOn && canEdit;
+  const editable = (l: Line) => editMode && l.i != null && l.who !== 'system';
+  /** a piece of Claude's line edited: the whole line's words with that piece changed */
+  const saveLine = (l: Line, v: string) => {
+    const whole = lines.find((x) => x.i === l.i);
+    const text = whole && whole.text !== l.text && whole.text.includes(l.text) ? whole.text.replace(l.text, v.trim()) : v;
+    return editing!.line(l.i!, text);
+  };
   const turns = useMemo(() => {
     const out: Turn[] = [];
     for (const l of shown) {
@@ -1724,8 +1906,18 @@ export const Transcript = memo(function Transcript({
         last.lines.push(l);
       else out.push({ who: l.who, name: l.name, t: l.t || fmtDuration(l.sec), lines: [l] });
     }
-    return out;
-  }, [shown]);
+    // the marks, each before the first turn that starts after it (none while searching)
+    const ms = q.trim() ? [] : [...(marks ?? [])].sort((a, b) => a.sec - b.sec);
+    if (!ms.length) return out;
+    const merged: Turn[] = [];
+    let k = 0;
+    for (const u of out) {
+      while (k < ms.length && ms[k].sec < u.lines[0].sec) merged.push({ who: 'system', t: ms[k].t, lines: [], mark: ms[k++] });
+      merged.push(u);
+    }
+    while (k < ms.length) merged.push({ who: 'system', t: ms[k].t, lines: [], mark: ms[k++] });
+    return merged;
+  }, [shown, marks, q]);
   const saying = !q.trim() && partial?.text ? partial : null;
   // ---- following the newest line (live). Stuck to the bottom while the column is at the bottom: new lines, a line that
   // keeps growing as it is said (the half-said line, a guest's "（接上句）", Claude reading on, the steps under a bubble),
@@ -1797,6 +1989,32 @@ export const Transcript = memo(function Transcript({
     if (r.top >= b.top + b.height * 0.1 && r.bottom <= b.bottom - b.height * 0.25) return;
     el.scrollTo({ top: el.scrollTop + (r.top - b.top) - b.height * 0.3, behavior: 'smooth' });
   }, [active, tick]);
+  // a time clicked in the 纪要: its line into view (a third from the top) and lit up for a moment. A search that hides
+  // the line is cleared first; each click (k) is handled once
+  const focusDone = useRef(0);
+  const [flash, setFlash] = useState<{ sec: number; k: number } | null>(null);
+  useEffect(() => {
+    const el = box.current;
+    if (!el || !focus || focusDone.current === focus.k) return;
+    const line = el.querySelector(`[data-sec="${String(focus.sec)}"]`) as HTMLElement | null;
+    if (!line) {
+      if (q.trim()) setQ('');
+      return;
+    }
+    focusDone.current = focus.k;
+    userAt.current = Date.now();
+    const b = el.getBoundingClientRect();
+    const r = line.getBoundingClientRect();
+    el.scrollTo({ top: el.scrollTop + (r.top - b.top) - b.height * 0.3, behavior: 'smooth' });
+    setFlash({ sec: focus.sec, k: focus.k });
+  }, [focus, shown, q]);
+  useEffect(() => {
+    if (!flash) return;
+    const h = setTimeout(() => setFlash(null), 2000);
+    return () => clearTimeout(h);
+  }, [flash]);
+  // the lit line: two names for the same animation, so a second click on the same line starts it again
+  const flashCls = (l: Line) => (flash && l.sec === flash.sec ? (flash.k % 2 ? ' is-flash' : ' is-flash is-flash2') : '');
   const onScroll = () => {
     const el = box.current;
     if (!el) return;
@@ -1833,13 +2051,24 @@ export const Transcript = memo(function Transcript({
     const p = personOf(w, name);
     return (p && byId[p.id]) || (w === 'teacher' ? HOST_COLOR : w === 'student' ? CLAUDE_COLOR : byName[nameOf(w, name)] ?? HOST_COLOR);
   };
-  const lastIsMe = turns.length > 0 && turns[turns.length - 1].who === 'teacher';
+  const lastIsMe = turns.length > 0 && turns[turns.length - 1].who === 'teacher' && !turns[turns.length - 1].mark;
   const head = (w: Line['who'], name?: string, first?: Line) => {
     const c = colorOf(w, name);
+    // 回顾 → 编辑: a guest's name renames them in every line of theirs
+    const who =
+      // (the field opens on the turn clicked only: the same guest heads several turns)
+      editMode && w === 'guest' && name && edName === `${name}@${first?.sec}` ? (
+        <NameEditor name={name} color={nameColor(c)} onSave={(to) => editing!.rename(name, to)} onDone={() => setEdName(null)} />
+      ) : editMode && w === 'guest' && name ? (
+        <button type="button" className="mt-line-who mt-who-btn" style={{ color: nameColor(c) }} onClick={() => setEdName(`${name}@${first?.sec}`)}
+          aria-label={`${ut('meeting.tredit.rename')} ${name}`} data-tip={name} data-tip-trunc="" data-testid="tredit-who">{name}</button>
+      ) : (
+        <span className="mt-line-who" style={{ color: nameColor(c) }} title={nameOf(w, name)}>{nameOf(w, name)}</span>
+      );
     return (
       <header className="mt-turn-head">
         <Avatar person={personOf(w, name)} color={c} />
-        <span className="mt-line-who" style={{ color: nameColor(c) }} title={nameOf(w, name)}>{nameOf(w, name)}</span>
+        {who}
         {w === 'student' && first && <ClaudeChips l={first as ShownLine} />}
       </header>
     );
@@ -1855,6 +2084,7 @@ export const Transcript = memo(function Transcript({
     let at = -1;
     for (let k = turns.length - 1; k >= 0; k--) {
       const f = turns[k].lines[0];
+      if (!f) continue;
       const tag = (f.tag || '').split(/\s+/)[0];
       if (turns[k].who !== 'student' || claimed.has(k) || (tag !== '#deep' && tag !== '#find')) continue;
       if (d.sec0 == null) {
@@ -1894,10 +2124,14 @@ export const Transcript = memo(function Transcript({
   const isNow = (l: Line) => !!active && l.sec === active.sec && l.who === active.who && (l.vt ?? null) === (active.vt ?? null);
   return (
     <aside className={`mt-right ${bare ? 'is-bare' : ''}`} aria-label={ut('meeting.transcript')}>
-      {!bare && <div className="mt-divider" onMouseDown={onDrag} onDoubleClick={onResetWidth} aria-hidden="true" />}
+      {!bare && onDrag && <div className="mt-divider" onMouseDown={onDrag} onDoubleClick={onResetWidth} aria-hidden="true" />}
       <div className="mt-right-head">
         <h2>{ut('meeting.transcript')}</h2>
         <span className="mt-right-n">{lines.length ? i18n().formatNumber(lines.length) : ''}</span>
+        {editing && (
+          <EditTools editing={editing} on={editMode} lines={lines}
+            onToggle={() => (setEditOn((v) => !v), setEdLine(null), setEdName(null))} />
+        )}
       </div>
       <div className="mt-search">
         <Icon name="search" size={14} />
@@ -1940,8 +2174,30 @@ export const Transcript = memo(function Transcript({
         ) : (
           <div className="mt-lines-in" ref={inner}>
             {turns.map((u, i) => (
-              <Fragment key={i}>
-              {u.who === 'system' ? (
+              <Fragment key={u.mark ? `m${u.mark.id}` : i}>
+              {u.mark ? (
+                <div className="mt-mark" data-msec={u.mark.sec} data-testid="transcript-mark">
+                  {(() => {
+                    const b = u.mark!;
+                    const by = b.by || nameOf('teacher');
+                    const inner = (
+                      <>
+                        <Icon name="flag" size={12} />
+                        <time>{b.t}</time>
+                        <span className="mt-mark-who" title={by}>{by}</span>
+                        {b.note ? <span className="mt-mark-note" title={b.note}>{b.note}</span> : null}
+                      </>
+                    );
+                    return onMark ? (
+                      <button type="button" className="mt-mark-b" onClick={() => onMark(b.sec)} data-tip={t('meeting.mark.jump', { t: b.t })}>
+                        {inner}
+                      </button>
+                    ) : (
+                      <span className="mt-mark-b">{inner}</span>
+                    );
+                  })()}
+                </div>
+              ) : u.who === 'system' ? (
                 <p key={i} className="mt-sysline">
                   {u.lines.map((l) => l.text).join(' ')}
                 </p>
@@ -1959,25 +2215,46 @@ export const Transcript = memo(function Transcript({
                     return f.stepsFirst && f.shownSteps?.length ? <Steps steps={f.shownSteps} t0={u.t} /> : null;
                   })()}
                   <div className="mt-bubble">
-                  {u.lines.map((l, k) =>
-                    pickable(l) ? (
+                  {u.lines.map((l, k) => (
+                    <Fragment key={k}>
+                    {edLine && editable(l) && edLine.i === l.i && edLine.text === l.text ? (
+                      <LineEditor text={l.text} onSave={(v) => saveLine(l, v)} onDone={() => setEdLine(null)} pick={pickable(l)} />
+                    ) : editable(l) ? (
+                      // 编辑 on: a click opens the line in place (the recording stays where it is)
                       <p
-                        key={k}
-                        className={`mt-line-text is-pick ${isNow(l) ? 'is-now' : ''}`}
+                        className={`mt-line-text is-editable ${pickable(l) ? 'is-pick' : ''}${flashCls(l)}`}
+                        data-sec={l.sec}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setEdLine({ i: l.i!, text: l.text })}
+                        onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), setEdLine({ i: l.i!, text: l.text }))}
+                        aria-label={ut('meeting.tredit.line')}
+                        data-testid="transcript-line"
+                      >
+                        {l.typed && <span className="mt-typed">{t('meeting.line.typed')}</span>}
+                        <Highlight text={l.text} q={q} />
+                      </p>
+                    ) : pickable(l) ? (
+                      <p
+                        className={`mt-line-text is-pick ${isNow(l) ? 'is-now' : ''}${flashCls(l)}`}
+                        data-sec={l.sec}
                         role="button"
                         tabIndex={0}
                         onClick={() => onPick!(l)}
                         onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onPick!(l))}
                         data-testid="transcript-line"
                       >
+                        {l.typed && <span className="mt-typed">{t('meeting.line.typed')}</span>}
                         <Highlight text={l.text} q={q} />
                       </p>
                     ) : (
-                      <p key={k} className="mt-line-text">
+                      <p className={`mt-line-text${flashCls(l)}`} data-sec={l.sec}>
+                        {l.typed && <span className="mt-typed">{t('meeting.line.typed')}</span>}
                         <Highlight text={l.text} q={q} />
                       </p>
-                    ),
-                  )}
+                    )}
+                    </Fragment>
+                  ))}
                   {/* only what was said: the AI's own judgments on a line (l.skip, "不是在跟它说", "你们在互相说") stay
                       in the data for the logs and are never drawn here */}
                   {u.lines.map((l, k) =>

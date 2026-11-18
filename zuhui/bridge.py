@@ -144,6 +144,7 @@ CREATE_NO_WINDOW = 0x08000000
 
 class AudioBridge:
     def __init__(self, cfg: dict, mouth, me: str = "主持人", devices: bool = True):
+        self.cfg = cfg                              # 和后端共用的那份：设置里换了中继，这里马上看得到
         sc = dict(cfg.get("share") or {})
         self.enabled = sc.get("audio", True) is not False
         self.mouth = mouth
@@ -226,8 +227,7 @@ class AudioBridge:
     def start(self) -> None:
         if not self.enabled or self.running:
             return
-        e = _share._env()
-        if not (e.get("LIVEKIT_API_KEY") and e.get("LIVEKIT_API_SECRET")):
+        if not self._can_join():
             return
         try:
             import livekit.rtc  # noqa: F401
@@ -373,7 +373,26 @@ class AudioBridge:
             loop.close()
             self._loop = None
 
+    def _base(self) -> str:
+        return str(((self.cfg.get("share") or {}).get("base_url")) or "").strip()
+
+    def _can_join(self) -> bool:
+        """自己的中继（有 LiveKit 密钥）一直能进；公共中继要打开了邀请才进（没邀请人，声音不发出去）。"""
+        if not self._base():
+            return False
+        if _share.has_secret(self._base()):
+            return True
+        try:
+            from .relay_cfg import invite_on
+            return invite_on()
+        except Exception:
+            return False
+
     def _token(self, identity: str, name: str, role: str) -> str:
+        if not _share.has_secret(self._base()):        # 公共中继：中继代签
+            tok, url = _share.host_token(self._base(), identity, name, role)
+            self._pub_url = url
+            return tok
         e = _share._env()
         room = _share.room()
         return _share._jwt(e["LIVEKIT_API_KEY"], e["LIVEKIT_API_SECRET"],
@@ -383,6 +402,9 @@ class AudioBridge:
                            extra={"name": name, "metadata": json.dumps({"bloom_host": True, "role": role}, ensure_ascii=False)})
 
     def _url(self) -> str:
+        if not _share.has_secret(self._base()):        # 公共中继：领通行码时中继给的 wss 地址
+            d = _share.device(self._base()) or {}
+            return getattr(self, "_pub_url", "") or str(d.get("ws") or "")
         e = _share._env()
         u = e.get("LIVEKIT_URL") or ""
         if not u:

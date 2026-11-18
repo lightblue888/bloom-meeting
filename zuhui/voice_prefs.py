@@ -9,6 +9,8 @@
   off = 不出声，只在逐字稿里写字。mouth.py 每句都按这里的来，改了马上生效。
 - hotwords：转写容易听错的专有名词（人名、术语），一行一个。写进来就替换 config.json 里 meeting.hotwords 那份
   （lexicon.py 读它）。
+- pron：AI 念词的读法 [{"w": 写法, "r": 读法}]（第 7 批）。AI 说话前按它换（mouth.speakable，所有声音引擎都过这一步），
+  逐字稿上还是原来的写法。
 
 config.load() 调 apply() 叠上去，所以重装、升级都不丢，也不用改 config.json。出错抛 ValueError，参数是界面翻译用的代码。"""
 from __future__ import annotations
@@ -35,8 +37,10 @@ EDGE_VOICES = [
     ("en-US-JennyNeural", "en", "f"),
     ("en-US-AriaNeural", "en", "f"),
 ]
-HOT_MAX = 12            # lexicon 只取前 12 个（转写的热词表有长度上限）
-HOT_LEN = 20
+HOT_MAX = 1000          # 自己的词表最多这么多；每场会转写一次只能带 24 个提示词，lexicon.merged_hotwords 按论文挑
+HOT_LEN = 40
+PRON_MAX = 200          # 读法最多这么多条
+PRON_LEN = 40           # 每条的写法、读法各最多这么多字
 _CACHE = {"mtime": None, "data": {}}
 _SAPI = {"at": 0.0, "list": None, "busy": False}
 _SAPI_LOCK = threading.Lock()
@@ -77,6 +81,91 @@ def hotwords() -> list[str] | None:
     return [str(x) for x in v][:HOT_MAX] if isinstance(v, list) else None
 
 
+def pron() -> list[dict]:
+    """设置里填的读法 [{"w": 写法, "r": 读法}]；没填过是空的。"""
+    v = read().get("pron")
+    if not isinstance(v, list):
+        return []
+    return [{"w": str(x["w"]), "r": str(x["r"])} for x in v
+            if isinstance(x, dict) and str(x.get("w") or "").strip() and str(x.get("r") or "").strip()][:PRON_MAX]
+
+
+# 一行一条：写法和读法之间用 = 、→ 、-> 、Tab 或逗号隔开（csv 导入的"写法,读法"也认）；取第一个分隔符
+_PRON_SEP = re.compile(r"^(.*?)\s*(?:=|→|->|\t|,|，)\s*(.*)$")
+
+
+def _clean_pron(raw) -> list[dict]:
+    """界面送来的读法（[{w, r}] / [[w, r]] / 一行一条的文字）→ 存的样子。同一个写法写了两次：留后写的那个读法。"""
+    if isinstance(raw, str):
+        items = []
+        for line in raw.splitlines():
+            if not line.strip():
+                continue
+            m = _PRON_SEP.match(line.strip())
+            if not m:
+                raise ValueError("pron_bad")
+            items.append((m.group(1), m.group(2)))
+    elif isinstance(raw, list):
+        items = []
+        for x in raw:
+            if isinstance(x, dict):
+                items.append((x.get("w"), x.get("r")))
+            elif isinstance(x, (list, tuple)) and len(x) == 2:
+                items.append((x[0], x[1]))
+            else:
+                raise ValueError("pron_bad")
+    else:
+        raise ValueError("pron_bad")
+    out: dict[str, str] = {}
+    for w, r in items:
+        w, r = re.sub(r"\s+", " ", str(w or "")).strip(), re.sub(r"\s+", " ", str(r or "")).strip()
+        if not w and not r:
+            continue
+        if not w or not r:
+            raise ValueError("pron_bad")
+        if len(w) > PRON_LEN or len(r) > PRON_LEN:
+            raise ValueError("pron_too_long")
+        out[w] = r
+    if len(out) > PRON_MAX:
+        raise ValueError("pron_too_many")
+    return [{"w": w, "r": r} for w, r in out.items()]
+
+
+_PRON_RX: dict = {"key": None, "rx": None, "to": []}
+
+
+def _pron_rx(entries: list[dict]):
+    """读法表 → 一个正则（长的写法先试，换过的字不再被别的条目换第二遍）。英文、数字开头或结尾的写法按整词找
+    （"IT" 不会换掉 "ITEM" 里的）；大小写混着写的（LaTeX、PyTorch）不分大小写，全大写的缩写、中文照原样找。"""
+    key = tuple((e["w"], e["r"]) for e in entries)
+    if _PRON_RX["key"] == key:
+        return _PRON_RX["rx"], _PRON_RX["to"]
+    pats, to = [], []
+    for w, r in sorted(key, key=lambda e: -len(e[0])):
+        p = re.escape(w)
+        if re.match(r"[A-Za-z0-9]", w):
+            p = r"(?<![A-Za-z0-9])" + p
+        if re.search(r"[A-Za-z0-9]$", w):
+            p += r"(?![A-Za-z0-9])"
+        if w != w.lower() and w != w.upper():
+            p = "(?i:" + p + ")"
+        pats.append("(" + p + ")")
+        to.append(r)
+    rx = re.compile("|".join(pats)) if pats else None
+    _PRON_RX.update(key=key, rx=rx, to=to)
+    return rx, to
+
+
+def say_as(text: str) -> str:
+    """念之前按设置里的读法换（mouth.speakable 调，所有声音引擎都过这里）；没填读法原样返回。"""
+    t = text or ""
+    entries = pron()
+    if not entries or not t:
+        return t
+    rx, to = _pron_rx(entries)
+    return rx.sub(lambda m: to[m.lastindex - 1], t) if rx else t
+
+
 def apply(cfg: dict) -> None:
     """叠到 config 上：mouth.edge_voice / sapi_voice / voice，meeting.hotwords。"""
     m = cfg.setdefault("mouth", {})
@@ -109,7 +198,7 @@ def _clean_hot(raw) -> list[str]:
 
 
 def save(patch: dict) -> dict:
-    """改其中几项（voice / edge_voice / sapi_voice / hotwords）→ 存好的全部。"""
+    """改其中几项（voice / edge_voice / sapi_voice / hotwords / pron）→ 存好的全部。"""
     d = read()
     if "voice" in patch:
         v = str(patch.get("voice") or "")
@@ -128,6 +217,8 @@ def save(patch: dict) -> dict:
         d["sapi_voice"] = v
     if "hotwords" in patch:
         d["hotwords"] = _clean_hot(patch.get("hotwords"))
+    if "pron" in patch:
+        d["pron"] = _clean_pron(patch.get("pron"))
     STATE.mkdir(parents=True, exist_ok=True)
     tmp = SPEECH_FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -206,6 +297,9 @@ def public(cfg: dict | None = None) -> dict:
         "hotwords": h,
         "hot_max": HOT_MAX,
         "hot_len": HOT_LEN,
+        "pron": pron(),
+        "pron_max": PRON_MAX,
+        "pron_len": PRON_LEN,
         "edge_voices": [{"id": i, "lang": lang, "gender": g} for i, lang, g in EDGE_VOICES],
         "sapi_voices": sapi_voices(wait=0),
         "has_clone": has_clone(),

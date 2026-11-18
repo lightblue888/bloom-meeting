@@ -46,7 +46,7 @@ fn python_for(dir: &std::path::Path) -> String {
 pub fn zuhui_pick_paper(app: tauri::AppHandle) -> Option<String> {
     let f = crate::island::folder_dialog(&app)
         .set_title("选一篇论文")
-        .add_filter("论文", &["pdf", "md", "markdown", "tex", "docx", "txt"])
+        .add_filter("论文", &["pdf", "md", "markdown", "tex", "docx", "pptx", "txt"])
         .blocking_pick_file()?;
     f.into_path().ok().map(|p| p.to_string_lossy().into_owned())
 }
@@ -85,6 +85,36 @@ pub fn zuhui_pick_recording(app: tauri::AppHandle, name: String, ext: String) ->
         .set_file_name(&name)
         .add_filter("视频", &[ext.as_str()])
         .blocking_save_file()?;
+    f.into_path().ok().map(|p| p.to_string_lossy().into_owned())
+}
+
+/// 回顾 → 保存 → 存成 Word / 存成 PDF / 导出会议包: the system save dialog over the main window (the page passes the
+/// title in the app's language). The chosen path back (None when cancelled); the backend then writes the file there
+/// (POST /api/meetings/<id>/save). Only these three kinds of file.
+#[tauri::command(async)]
+pub fn zuhui_pick_save(app: tauri::AppHandle, name: String, ext: String, title: Option<String>) -> Option<String> {
+    let ext = ext.trim().trim_start_matches('.').to_ascii_lowercase();
+    let filter = match ext.as_str() {
+        "docx" => "Word",
+        "pdf" => "PDF",
+        "html" => "HTML",
+        _ => return None,
+    };
+    let title = title.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).unwrap_or_else(|| "保存".to_string());
+    let f = crate::island::folder_dialog(&app)
+        .set_title(&title)
+        .set_file_name(&name)
+        .add_filter(filter, &[ext.as_str()])
+        .blocking_save_file()?;
+    f.into_path().ok().map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Settings → 散会后自动保存: the system folder picker over the main window. The chosen folder back (None when
+/// cancelled); the backend checks it (POST /api/autosave).
+#[tauri::command(async)]
+pub fn zuhui_pick_folder(app: tauri::AppHandle, title: Option<String>) -> Option<String> {
+    let title = title.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).unwrap_or_else(|| "选择文件夹".to_string());
+    let f = crate::island::folder_dialog(&app).set_title(&title).blocking_pick_folder()?;
     f.into_path().ok().map(|p| p.to_string_lossy().into_owned())
 }
 

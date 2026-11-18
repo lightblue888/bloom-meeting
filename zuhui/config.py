@@ -127,13 +127,16 @@ def load(path: Path | None = None) -> dict:
     apply_profile(cfg)
     from .voice_prefs import apply as apply_speech      # 引导 / 设置 → 语音 里选的声音、专有名词
     apply_speech(cfg)
+    from .relay_cfg import apply as apply_relay         # 设置 → 通用 → 邀请 里粘的连接码：中继地址
+    apply_relay(cfg)
     return cfg
 
 
 # ---------------- 会上那位 AI 叫什么 ----------------
 # 对话模型的 id → 没起名字时的叫法（认不出的叫 AI）
 _MODEL_FAMILY = (("claude", "Claude"), ("gpt", "GPT"), ("o1", "GPT"), ("o3", "GPT"), ("o4", "GPT"), ("gemini", "Gemini"),
-                 ("deepseek", "DeepSeek"), ("qwen", "Qwen"), ("kimi", "Kimi"), ("glm", "GLM"))
+                 ("deepseek", "DeepSeek"), ("qwen", "Qwen"), ("kimi", "Kimi"), ("glm", "GLM"), ("llama", "Llama"),
+                 ("meta-llama", "Llama"), ("gemma", "Gemma"), ("mistral", "Mistral"), ("phi", "Phi"))
 
 
 def default_assistant_name(cfg: dict) -> str:
@@ -143,7 +146,7 @@ def default_assistant_name(cfg: dict) -> str:
     if provider.load().get("kind") == "unset":     # 新装、还没选模型来源：不默认叫 Claude
         return "AI"
     p = provider.active()
-    m = str((p or {}).get("fast") or (cfg.get("fast") or {}).get("model") or "").strip().lower()
+    m = str((p or {}).get("fast") or (cfg.get("fast") or {}).get("model") or "").strip().lower().rsplit("/", 1)[-1]
     return provider.ai_name(p) or next((v for k, v in _MODEL_FAMILY if m.startswith(k)), "AI")
 
 
@@ -171,28 +174,45 @@ _ENV_OVERRIDE = {"dialog": "ZUHUI_FAST_MODEL", "edit": "ZUHUI_HANDS_MODEL", "eff
 # 型号 id 里的厂牌 → 界面上的写法（认不出的厂牌原样显示）
 _BRANDS = {"claude": "Claude", "deepseek": "DeepSeek", "kimi": "Kimi", "moonshot": "Moonshot", "glm": "GLM", "qwen": "Qwen",
            "gpt": "GPT", "gemini": "Gemini", "doubao": "Doubao", "ernie": "ERNIE", "minimax": "MiniMax", "abab": "MiniMax",
-           "yi": "Yi", "hunyuan": "Hunyuan", "step": "Step", "baichuan": "Baichuan", "mistral": "Mistral", "llama": "Llama"}
+           "yi": "Yi", "hunyuan": "Hunyuan", "step": "Step", "baichuan": "Baichuan", "mistral": "Mistral", "llama": "Llama",
+           "gemma": "Gemma", "phi": "Phi", "mixtral": "Mixtral", "internlm": "InternLM"}
 
 
 def pretty_model(m) -> str:
     """型号 id → 界面上好读的名字：claude-opus-5-5 → Claude Opus 5.5，deepseek-flash → DeepSeek Flash，
-    glm-5.3-flash → GLM 5.3 Flash，qwen3.7-max → Qwen3.7 Max，kimi-k3 → Kimi K3。认不出的（自定义接口的型号）原样。"""
+    glm-5.3-flash → GLM 5.3 Flash，qwen3.7-max → Qwen3.7 Max，kimi-k3 → Kimi K3。
+    本机模型：Ollama 的 qwen3:8b → Qwen3 8B（:latest 不写），LM Studio 带组织名的 qwen/qwen3-8b → Qwen3 8B。
+    认不出的（自定义接口的型号）原样。"""
     import re as _re
     raw = str(m or "").strip()
     low = _re.sub(r"\[1m\]$", "", raw.lower())
+    low = low.rsplit("/", 1)[-1]                         # LM Studio、OpenRouter：组织名/型号
+    tag = ""
+    if ":" in low:                                       # Ollama：型号:标签（大小、量化）
+        low, tag = low.split(":", 1)
+        tag = "" if tag == "latest" else tag
     parts = [x for x in _re.split(r"[-_\s]+", low) if x]
+    if len(parts) > 1 and parts[0] == "meta" and parts[1].startswith("llama"):
+        parts = parts[1:]
     if not parts:
         return raw
     brand = next((b for b in _BRANDS if parts[0].startswith(b) and (parts[0] == b or _re.match(r"^[\d.]+$", parts[0][len(b):]))), None)
     if brand is None:
         return raw
     head = _BRANDS[brand] + parts[0][len(brand):]
-    rest = parts[1:]
+    tparts = [x for x in _re.split(r"[-_\s]+", tag) if x]
+    q = next((i for i, x in enumerate(tparts) if _re.match(r"^(?:i?q\d|fp\d|bf16|f16)", x)), None)
+    rest = parts[1:] + (tparts[:q] if q is not None else tparts)    # 量化写法（q4_K_M、fp16）不显示
     if brand == "claude" and len(rest) >= 3 and rest[1].isdigit() and rest[2].isdigit():   # claude-opus-5-5
         return f"Claude {rest[0].capitalize()} {rest[1]}.{rest[2]}" + "".join(" " + x.capitalize() for x in rest[3:])
-    words = [x.upper() if _re.match(r"^[a-z]\d[\w.]*$", x) and len(x) <= 4 else (x if _re.match(r"^[\d.]+[a-z]?$", x) else x.capitalize())
-             for x in rest]
-    return " ".join([head] + words)
+
+    def word(x: str) -> str:
+        if _re.match(r"^\d+(?:\.\d+)?[bmk]$", x):         # 参数量：8b → 8B，0.6b → 0.6B
+            return x.upper()
+        if _re.match(r"^[a-z]\d[\w.]*$", x) and len(x) <= 4:
+            return x.upper()
+        return x if _re.match(r"^[\d.]+[a-z]?$", x) else x.capitalize()
+    return " ".join([head] + [word(x) for x in rest])
 
 
 def model_label(part: str, mid: str | None) -> str:

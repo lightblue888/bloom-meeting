@@ -175,7 +175,16 @@ def save(lex: dict) -> None:
     LEX_DIR.mkdir(parents=True, exist_ok=True)
     CURRENT.write_text(json.dumps(lex, ensure_ascii=False, indent=1), encoding="utf-8")
     # 实时转写的热词：软件名（Claude、DeepSeek、Opus、Bloom、你的名字……）和论文术语各一半（Fun-ASR-Nano 最多 24 个）
-    HOTWORDS.write_text(json.dumps(merged_hotwords(lex["hotwords"]), ensure_ascii=False), encoding="utf-8")
+    HOTWORDS.write_text(json.dumps(merged_hotwords(lex["hotwords"], paper_text=_paper_text(lex)), ensure_ascii=False), encoding="utf-8")
+
+
+def _paper_text(lex: dict) -> str:
+    """词库对应的那篇论文的全文（挑你的词表里这篇用到的词用；读不到就空）。"""
+    try:
+        p = Path(str(lex.get("path") or ""))
+        return p.read_text(encoding="utf-8", errors="replace")[:2_000_000] if p.is_file() else ""
+    except OSError:
+        return ""
 
 
 def ensure(paper: Path, name: str | None = None, force: bool = False) -> dict:
@@ -381,7 +390,8 @@ def _own_hot() -> list[str]:
     try:
         from .config import load
         v = (load().get("meeting") or {}).get("hotwords") or []
-        return [str(x) for x in v if str(x).strip()][:12] if isinstance(v, list) else []
+        from .voice_prefs import HOT_MAX
+        return [str(x).strip() for x in v if str(x).strip()][:HOT_MAX] if isinstance(v, list) else []
     except Exception:
         return []
 
@@ -401,11 +411,16 @@ def learned_hot(n: int = LEARNED_HOT_MAX, days: float = 30.0) -> list[str]:
     return [str(h["word"]) for h in hot[:n]]
 
 
-def merged_hotwords(paper_hot: list[str] | None, n: int = MAX_HOTWORDS, software: int = 10) -> list[str]:
+def merged_hotwords(paper_hot: list[str] | None, n: int = MAX_HOTWORDS, paper_text: str = "") -> list[str]:
+    """这场会给转写的提示词（一次最多 n 个）：软件自己的词 → 你的词表里这篇论文用到的 → 散会后学到的 → 论文术语 →
+    你的词表里其余的（词表可以有上千个，放不下的这场就不带）。"""
     me, ai = _me(), _ai()
-    sw = [me if w == "@ME" else ai if w == "@AI" else w for w in SOFTWARE_HOT] + _own_hot()
+    soft = [me if w == "@ME" else ai if w == "@AI" else w for w in SOFTWARE_HOT]
+    own = _own_hot()
+    hay = (paper_text + " " + " ".join(paper_hot or [])).lower()
+    used = [w for w in own if w.lower() in hay]
     out: list[str] = []
-    for w in sw[:software] + learned_hot() + list(paper_hot or []) + sw[software:]:
+    for w in soft + used + learned_hot() + list(paper_hot or []) + own:
         if w and w not in out:
             out.append(w)
     return out[:n]
@@ -689,7 +704,7 @@ def learn_cleanup(d: Path) -> dict:
     _save_learned(data)
     try:                                                # 热词表重写一遍（下一场会、重转写、访客转写都用）
         lex = json.loads(CURRENT.read_text(encoding="utf-8"))
-        HOTWORDS.write_text(json.dumps(merged_hotwords(lex.get("hotwords")), ensure_ascii=False), encoding="utf-8")
+        HOTWORDS.write_text(json.dumps(merged_hotwords(lex.get("hotwords"), paper_text=_paper_text(lex)), ensure_ascii=False), encoding="utf-8")
     except (OSError, ValueError):
         pass
     return {"rules": added, "hot": new}

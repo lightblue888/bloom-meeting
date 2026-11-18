@@ -48,6 +48,13 @@ describe('settings search', () => {
     expect(results('language', 'zh-Hans').flatMap((g) => g.hits.map((h) => h.entry.id))).toContain('general.language');
     expect(panes('model', 'en')).toContain('speech');
   });
+  it('the notes format and the group requirements, by their words', () => {
+    const ids = (q: string, l: 'en' | 'zh-Hans') => results(q, l).flatMap((g) => g.hits.map((h) => h.entry.id));
+    expect(ids('纪要', 'zh-Hans')).toContain('general.summary_template');
+    expect(ids('进展汇报', 'zh-Hans')).toContain('general.summary_template');
+    expect(ids('template', 'en')).toContain('general.summary_template');
+    expect(ids('requirements', 'en')).toContain('general.summary_custom');
+  });
   it('a miss is no results; every suggestion finds something', () => {
     expect(results('zzqx', 'en')).toEqual([]);
     for (const k of SUGGESTIONS) for (const l of ['en', 'zh-Hans'] as const) expect(results(textIn(k, l)!, l).length, `${k} ${l}`).toBeGreaterThan(0);

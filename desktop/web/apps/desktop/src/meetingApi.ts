@@ -31,6 +31,10 @@ export interface Meeting {
   papers?: MeetingPaper[];
   /** which of them is on screen */
   active_paper?: string | null;
+  /** 第 8 批: when Settings → Storage deleted this meeting's transcripts and notes (they are past the kept days) */
+  records_removed?: string | null;
+  /** 第 8 批: the sample meeting that comes with Bloom (zuhui/sample.py) */
+  sample?: boolean;
 }
 
 /** one of the papers opened in a meeting (zuhui/meetings.py paper_entry) */
@@ -77,6 +81,112 @@ export interface Line {
   steps?: { t?: string; k: string; v?: string }[];
   /** 回顾: where this line starts in the meeting's screen recording, seconds (view.py lines it up with the recording) */
   vt?: number | null;
+  /** typed into the meeting page's box instead of said (the AI took it the same way) */
+  typed?: boolean;
+  /** 回顾: the line's index in the transcript as said (a hand edit names the line by it) */
+  i?: number;
+  /** 回顾: its words were changed by hand */
+  edited?: boolean;
+}
+
+// ---------------------------------------------------------------- 第 7 批: the transcript by hand
+/** 回顾 → 编辑 (zuhui/transcript_edit.py): what a hand edit can hold */
+export const EDIT_LINE_MAX = 2000;
+export const EDIT_WORD_MAX = 40;
+export const GUEST_NAME_MAX = 32;
+/** the last hand edit (撤销 takes it back) */
+export type EditOp =
+  | { op: 'line'; i: number; text: string }
+  | { op: 'replace'; find: string; repl: string }
+  | { op: 'speaker'; from: string; to: string };
+export interface Edits {
+  n: number;
+  last: EditOp | null;
+}
+/** the answer to a hand edit: how many there are now, the last one; a replace says how many it changed and whether
+ *  the new word went into the custom words (added / exists / full) */
+export interface EditResult extends Edits {
+  count?: number;
+  hot?: 'added' | 'exists' | 'full' | 'failed' | 'bad';
+}
+
+// ---------------------------------------------------------------- in the meeting (第 3 批, zuhui/inmeeting.py)
+/** the longest question the meeting's box takes (the backend refuses longer ones) */
+export const ASK_TEXT_MAX = 500;
+/** a bookmark's note */
+export const BOOKMARK_NOTE_MAX = 100;
+/** this long without anyone speaking: the host is reminded (the meeting never ends by itself) */
+export const QUIET_S = 600;
+
+/** 标记: a moment of the meeting someone marked (sec / t: when), with a short note */
+export interface Bookmark {
+  id: string;
+  sec: number;
+  t: string;
+  note: string;
+  /** who marked it (the host's own name when the host did) */
+  by: string | null;
+  host: boolean;
+  at?: number;
+}
+/** 第 6 批: a comment typed on a paragraph of the paper (zuhui/comments.py); the paper's page draws them */
+export interface PaperComment {
+  id: string;
+  /** which paper (meetings.paper_id) */
+  paper?: string | null;
+  /** the paragraph: its first letters, the start of its text, its section and place (when its letters no longer match) */
+  key?: string;
+  quote?: string;
+  section?: string | null;
+  ri?: number | null;
+  by: string;
+  at?: string;
+  /** "mm:ss" into the meeting */
+  t?: string | null;
+  text: string;
+  resolved?: boolean;
+  resolved_by?: string | null;
+  replies?: { id: string; by: string; at?: string; t?: string | null; text: string }[];
+}
+/** the comments the paper's page shows, and what the viewer may do with them */
+export interface PaperComments {
+  items: PaperComment[];
+  canAdd: boolean;
+  canDelete: boolean;
+}
+/** 第 6 批: one saved version of a paper (zuhui/paper_versions.py): before / after a meeting, before a restore, a restore */
+export interface PaperVersion {
+  v: string;
+  kind: 'before' | 'after' | 'backup' | 'restore' | string;
+  at: string;
+  mid?: string | null;
+  title?: string | null;
+  chars?: number;
+  bytes?: number;
+  /** a restore: which version it went back to */
+  of?: string;
+  /** the same as the paper is now */
+  same?: boolean;
+}
+export interface PaperVersions {
+  paper: { id: string; name?: string | null };
+  /** newest first */
+  items: PaperVersion[];
+  current: { sha: string; chars: number } | null;
+  /** a meeting is on: no restoring */
+  live?: boolean;
+}
+export type DocxMode = 'track' | 'direct';
+export const DOCX_MODES: DocxMode[] = ['track', 'direct'];
+
+/** 先选中再说: the passage someone selected in the paper; their next words to the AI are about it */
+export interface AnchorSel {
+  text: string;
+  section?: string | null;
+  /** null: the host; else the co-host's name */
+  by?: string | null;
+  at: number;
+  left_s?: number;
 }
 
 /** one edit the post-meeting cleanup made to the transcript (helper E's meetings.get → "cleanup") */
@@ -165,15 +275,202 @@ export interface Board {
   tasks: Task[];
 }
 
+/** one line of the 纪要. Older summaries hold plain strings; newer ones say where in the meeting it was said
+ *  (`t` "mm:ss" and `sec`, a transcript line's), who gave it (`by`, feedback and asks) or who does it (`who`, to-dos) */
+export type SumItem = string | { text: string; t?: string | null; sec?: number | null; by?: string | null; who?: string | null };
+/** the text of a 纪要 line, either shape */
+export const itemText = (x: SumItem | null | undefined): string => (typeof x === 'string' ? x : x?.text ?? '');
+/** where in the meeting a 纪要 line was said (seconds), when the summary says */
+export const itemSec = (x: SumItem | null | undefined): number | null => (x && typeof x === 'object' && typeof x.sec === 'number' ? x.sec : null);
+/** one person in the 纪要: what they said, the feedback they got, what they were asked to do */
+export interface SumPerson {
+  name: string;
+  said?: SumItem[];
+  feedback?: SumItem[];
+  asks?: SumItem[];
+}
+/** the 纪要's format (Settings → General → Notes; 回顾 can write it again in another) */
+export type SummaryTemplate = 'default' | 'progress' | 'paper' | 'proposal' | 'custom';
+export const SUMMARY_TEMPLATES: SummaryTemplate[] = ['default', 'progress', 'paper', 'proposal', 'custom'];
 export interface Summary {
   title: string;
   speakers: string[];
   abstract: string;
-  conclusions: string[];
-  sections: { title: string; cards: { title: string; bullets: string[] }[] }[];
-  todos: string[];
+  conclusions: SumItem[];
+  sections: { title: string; t?: string | null; sec?: number | null; cards: { title: string; t?: string | null; sec?: number | null; bullets: SumItem[] }[] }[];
+  todos: SumItem[];
+  /** newer summaries: one entry per person (older ones have none) */
+  people?: SumPerson[];
+  /** newer summaries: the format it was written in */
+  template?: SummaryTemplate;
   generated?: string;
   markdown?: string;
+  /** the meeting started with things left from earlier ones: each says whether it got done this time */
+  carried?: CarriedRow[];
+}
+/** what an earlier meeting left: a to-do from its 纪要, a note pinned on its board, an edit nobody accepted in 修订对比 */
+export type CarryKind = 'todo' | 'note' | 'edit';
+/** one thing left from a past meeting on this paper (the lobby lists them; a tick is saved with that meeting) */
+export interface CarryItem {
+  /** "<meeting id>/<key>" */
+  id: string;
+  mid: string;
+  title: string;
+  started: string | null;
+  kind: CarryKind;
+  text: string;
+  who?: string | null;
+  t?: string | null;
+  sec?: number | null;
+  section?: string | null;
+}
+/** a 纪要's "left from last time": the item, whether this meeting got it done, and how (or what's missing) */
+export interface CarriedRow {
+  id: string;
+  ref?: string;
+  kind: CarryKind;
+  item: string;
+  from?: string | null;
+  started?: string | null;
+  done: boolean;
+  text?: string;
+  t?: string | null;
+  sec?: number | null;
+}
+/** 回顾 → 提问: the answer ([n] marks its sources) and the lines it came from */
+export interface PastSource {
+  n: number;
+  mid: string;
+  title: string;
+  started: string | null;
+  text: string;
+  t?: string | null;
+  sec?: number | null;
+}
+export interface PastAnswer {
+  answer: string;
+  sources: PastSource[];
+  /** false: nothing in the past meetings matched (the model was not asked) */
+  found: boolean;
+}
+/** the longest question 提问 takes (the backend refuses longer ones) */
+export const ASK_MAX = 300;
+/** 阶段汇总: how many meetings one can cover */
+export const DIGEST_MIN = 2;
+export const DIGEST_MAX = 12;
+export interface DigestMeeting {
+  id: string;
+  title: string;
+  started: string | null;
+}
+export interface DigestBrief {
+  id: string;
+  created: string;
+  state: 'running' | 'done' | 'failed';
+  error?: string | null;
+  mids: string[];
+  meetings: DigestMeeting[];
+  title: string;
+}
+export interface DigestResult {
+  title: string;
+  overview: string;
+  /** `meetings`: 1-based positions in the digest's meetings */
+  issues: { text: string; meetings: number[] }[];
+  feedback: { text: string; by?: string; meetings: number[] }[];
+  open: { text: string; who?: string; meeting: number | null }[];
+}
+export interface Digest extends DigestBrief {
+  result: DigestResult | null;
+  markdown: string;
+}
+/** the answer split at its source marks: text and [n] in order (only marks with a source become links) */
+export function splitCites(answer: string, known: number[]): (string | number)[] {
+  const out: (string | number)[] = [];
+  let last = 0;
+  for (const m of answer.matchAll(/\[(\d{1,2})\]/g)) {
+    const n = Number(m[1]);
+    if (!known.includes(n)) continue;
+    if (m.index! > last) out.push(answer.slice(last, m.index));
+    out.push(n);
+    last = m.index! + m[0].length;
+  }
+  if (last < answer.length) out.push(answer.slice(last));
+  return out;
+}
+/** how long each person spoke (worked out from the transcript, no model): the host, the AI, each guest by name */
+export interface TalkTime {
+  who: Line['who'];
+  name?: string | null;
+  sec: number;
+  n: number;
+  share: number;
+}
+/** 回顾 → 纪要 → 重新生成, while it runs or after it failed */
+export interface SummaryJob {
+  state: 'running' | 'failed';
+  template: SummaryTemplate;
+  started?: number | null;
+  error?: string | null;
+}
+/** Settings → General → Notes */
+export interface SummaryPrefs {
+  template: SummaryTemplate;
+  custom: string;
+  custom_max: number;
+}
+
+/** 第 5 批 导出和分享 (zuhui/export.py, zuhui/autosave.py): what 回顾 → 保存 writes with the save dialog */
+export type ExportKind = 'docx' | 'pdf' | 'pack';
+/** 散会后自动保存: what it can save (纪要 Word, 纪要 Markdown, 修改清单, 修订对比, 逐字稿), in this order */
+export const AUTOSAVE_ITEMS = ['minutes_docx', 'minutes_md', 'todos', 'diff', 'transcript'] as const;
+export type AutosaveItem = (typeof AUTOSAVE_ITEMS)[number];
+export interface AutosaveResult {
+  meeting: string;
+  title: string;
+  /** epoch seconds */
+  at: number;
+  ok: boolean;
+  /** a code (not_dir, no_summary, no_pandoc, write…) and the reason as the system said it */
+  error?: string | null;
+  detail?: string | null;
+  dir: string;
+  files: string[];
+  failed: string[];
+}
+export interface AutosavePrefs {
+  on: boolean;
+  dir: string;
+  items: AutosaveItem[];
+  dir_max: number;
+  last?: AutosaveResult | null;
+}
+/** the export errors the app has words for (meeting.export.err.*); anything else shows the backend's own words */
+const EXPORT_ERRORS = ['not_found', 'no_summary', 'no_pandoc', 'no_browser', 'convert', 'bad_path', 'write', 'not_dir', 'kind'];
+/** an export failure's reason, for "保存失败：原因" */
+export function exportReason(e: unknown): string {
+  const err = e as { code?: string; detail?: string; message?: string } | null;
+  const code = err?.code ?? String(err?.message ?? e ?? '');
+  if (EXPORT_ERRORS.includes(code)) return t(`meeting.export.err.${code}`);
+  return err?.detail || code;
+}
+class ExportFail extends Error {
+  code: string;
+  detail?: string;
+  constructor(code: string, detail?: string) {
+    super(code);
+    this.code = code;
+    this.detail = detail;
+  }
+}
+/** "2026-11-18 组会 纪要.docx": the save dialog's file name (nothing Windows refuses in a name) */
+export function exportName(title: string, started: string | null | undefined, word: string, ext: string): string {
+  const d = started ? new Date(started) : null;
+  const p = (n: number) => String(n).padStart(2, '0');
+  const day = d && !Number.isNaN(d.getTime()) ? `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` : '';
+  // eslint-disable-next-line no-control-regex
+  const base = cleanTitle(title).replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/[. ]+$/, '');
+  return `${day}${base} ${word}.${ext}`.replace(/\s+/g, ' ').trim();
 }
 
 export interface MeetingBrief {
@@ -190,6 +487,12 @@ export interface MeetingBrief {
   has_diff?: boolean;
   /** the post-meeting work (recording, transcript, cleanup, summary) is still running: its details will change */
   processing?: boolean;
+  /** the papers open in it (回顾 filters by paper); older meetings have none */
+  papers?: { id: string; name: string }[];
+  /** 第 8 批: the sample meeting that comes with Bloom: listed only while there is no meeting of the user's own */
+  sample?: boolean;
+  /** 第 8 批: its transcripts and notes were deleted (Settings → Storage) */
+  records_removed?: boolean;
 }
 
 export interface PaperInfo {
@@ -410,12 +713,45 @@ async function postProfile(path: string, body: unknown): Promise<Profile> {
 
 /** Settings → General → Model source: Claude Code's own login ('claude'), or an API key — for an Anthropic-compatible
  *  endpoint (DeepSeek, Kimi, GLM, Qwen, any other) or for Anthropic's API. The key never comes back, only its last four. */
-export type ProviderKind = 'claude' | 'deepseek' | 'kimi' | 'glm' | 'qwen' | 'anthropic' | 'custom';
+export type ProviderKind = 'claude' | 'deepseek' | 'kimi' | 'glm' | 'qwen' | 'anthropic' | 'custom' | 'openai' | 'ollama' | 'lmstudio';
 export interface ProviderPreset {
   label: string;
   base_url: string;
   fast: string;
   main: string;
+  /** the endpoint's format: Anthropic Messages, or OpenAI Chat Completions (OpenAI-compatible, Ollama, LM Studio) */
+  format?: 'anthropic' | 'openai';
+  /** 'none': no key at all (the local ones); 'optional': may be left empty */
+  key?: 'required' | 'optional' | 'none';
+  /** runs on this computer (Ollama, LM Studio) */
+  local?: boolean;
+}
+/** one model's tokens in a meeting / this month (an API source only); cost only when every call could be priced */
+export interface UsageModel {
+  model: string;
+  /** the model's readable name (config.pretty_model) */
+  pretty?: string;
+  /** the provider's name (DeepSeek, Ollama…) */
+  label: string;
+  calls: number;
+  in: number;
+  out: number;
+  cache_read: number;
+  cache_write: number;
+  tokens: number;
+  currency: string | null;
+  cost: number | null;
+}
+export interface Usage {
+  models: UsageModel[];
+  tokens: number;
+  /** the estimated money by currency ('CNY', 'USD'), from the priced models only */
+  costs: Record<string, number>;
+}
+export interface MonthUsage extends Usage {
+  month: string;
+  /** the model source now: 'claude' (a subscription) shows none */
+  mode?: 'api' | 'claude' | 'none';
 }
 export interface Provider {
   /** 'unset': a fresh install that hasn't picked one yet */
@@ -427,6 +763,8 @@ export interface Provider {
   key_tail: string;
   active: boolean;
   label: string;
+  /** 查文献 (an API source's literature lookup), on by default */
+  lit?: boolean;
   presets: Record<string, ProviderPreset>;
 }
 
@@ -454,6 +792,16 @@ export interface Current {
   transcript_raw?: Line[] | null;
   cleanup?: CleanupItem[] | null;
   processing?: boolean;
+  /** the meeting (on, or the last one): its bookmarks */
+  bookmarks?: Bookmark[];
+  /** 第 6 批: the comments typed on the paper in the meeting (on, or the last one) */
+  comments?: PaperComment[];
+  /** live: the passage selected in the paper */
+  anchor?: AnchorSel | null;
+  /** live, the host's only: how long nobody has spoken (seconds) */
+  quiet_s?: number;
+  /** 散会后自动保存 the last time (within a few hours; null when it is off or never ran): a failure is said once */
+  autosave?: AutosaveResult | null;
 }
 
 export interface MeetingDetail {
@@ -470,6 +818,20 @@ export interface MeetingDetail {
   processing?: boolean;
   /** while the post-meeting work runs: its steps (保存录屏 / 转写 / 整理 / 纪要) and where each is */
   post?: { steps: { key: string; label: string; state: 'pending' | 'running' | 'done' | 'failed' | string }[]; progress?: number | null; error?: string | null } | null;
+  /** each person's talk time, longest first */
+  talk?: TalkTime[] | null;
+  /** the meeting's API tokens and estimated cost (null: no API calls, e.g. a Claude Code account) */
+  usage?: Usage | null;
+  /** 纪要 being written again in another format (or that just failed) */
+  summary_job?: SummaryJob | null;
+  /** the moments marked in the meeting */
+  bookmarks?: Bookmark[];
+  /** 第 6 批: the comments typed on the paper in the meeting (read only here) */
+  comments?: PaperComment[];
+  /** the left-over keys ticked in this meeting's carry.json ("note:T3"…): 修改清单 and the lobby share them */
+  carry_done?: string[];
+  /** the hand edits of its transcript (the transcript above has them applied) */
+  edits?: Edits | null;
 }
 
 /** Dev: one simulated meeting (scratch_ab/sim) as the list shows it — a 回顾 row plus its scenario, round, score */
@@ -511,6 +873,9 @@ export interface GuestTransport {
   setMicMuted: (muted: boolean) => Promise<boolean>;
   /** the level and mute state beside the guest's own avatar (their browser's microphone) */
   watchMic: (on: (s: MicState) => void) => () => void;
+  /** in the meeting: bookmarks and, for a co-host, typed questions and a selected passage go through the relay to the
+   *  host's Bloom */
+  act?: (path: string, body: unknown) => Promise<Record<string, unknown>>;
 }
 let guestT: GuestTransport | null = null;
 export const setGuestTransport = (t: GuestTransport | null) => {
@@ -530,6 +895,10 @@ export interface Invite {
   room?: string;
   /** can the backend reach the relay (LiveKit keys present) */
   relay?: boolean;
+  /** the shared public relay (this PC has no keys of its own) */
+  public?: boolean;
+  /** connected to the relay now: own relays always; the public one once invites are on */
+  armed?: boolean;
   guests?: number;
   error?: string | null;
 }
@@ -538,6 +907,33 @@ export interface Invite {
 export function cleanTitle(title: string | null | undefined): string {
   return (title ?? '').replace(/\s*·\s*\d{1,2}月\d{1,2}日\s*\d{1,2}:\d{2}\s*$/, '').trim();
 }
+
+/** one thing done in the meeting (zuhui/live_api.py): on the guest page it goes through the relay to the host's Bloom.
+ *  Answers the backend's JSON; a refusal throws its code (empty, too_long, not_live, host_only, cohost_only…) */
+async function liveAct<T extends Record<string, unknown>>(path: string, body: unknown, timeoutMs = 15000): Promise<T> {
+  if (guestT?.act) {
+    const d = await guestT.act(path, body);
+    if (!d || d.ok === false) throw new Error(String(d?.error ?? 'failed'));
+    return d as T;
+  }
+  const r = await fetch(`${ZUHUI_BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify(body ?? {}),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const j = (await r.json().catch(() => ({}))) as T & { ok?: boolean; error?: string };
+  if (!r.ok || j.ok === false) throw new Error(j.error || `HTTP ${r.status}`);
+  return j;
+}
+
+/** the codes the meeting's own actions answer with, worded for the page */
+const LIVE_ERRORS = ['empty', 'too_long', 'not_live', 'host_only', 'cohost_only', 'not_ready', 'not_found', 'not_yours', 'too_many', 'failed'];
+export const liveError = (e: unknown): string => {
+  const c = String((e as Error)?.message ?? e);
+  // "too_many" would read as a plural form of the catalog: its words are under over_cap
+  return LIVE_ERRORS.includes(c) ? t(`meeting.live.err.${c === 'too_many' ? 'over_cap' : c}`) : c;
+};
 
 /** 只给干净版：原始版和删改清单不进界面（用户定的；原始版只留在磁盘上给转写训练用） */
 function cleanOnly<T extends { transcript_raw?: unknown; cleanup?: unknown }>(d: T): T {
@@ -551,7 +947,9 @@ function cleanOnly<T extends { transcript_raw?: unknown; cleanup?: unknown }>(d:
 export const meetingApi = {
   current: () => get<Current>('/api/current').then(cleanOnly),
   invite: () => get<Invite>('/api/invite', 4000),
-  meetings: () => get<MeetingBrief[]>('/api/meetings'),
+  // 第 8 批: `sample` lists the sample meeting while there is no meeting of the user's own (回顾 asks for it), in the
+  // app's language (zuhui/sample.py)
+  meetings: (opts?: { sample?: boolean }) => get<MeetingBrief[]>(`/api/meetings?ui=${uiLang()}${opts?.sample ? '&sample=1' : ''}`),
   devRuns: () => get<DevRun[]>('/api/dev/runs'),
   devRun: (id: string) => get<DevDetail>(`/api/dev/runs/${encodeURIComponent(id)}`),
   meeting: (id: string) => get<MeetingDetail>(`/api/meetings/${encodeURIComponent(id)}`).then(cleanOnly),
@@ -670,6 +1068,34 @@ export const meetingApi = {
     });
     return (await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }))) as { ok: boolean; ms?: number; error?: string };
   },
+  /** an OpenAI-format endpoint's models (GET <url>/models; free): from the fields as typed, the saved key when none is typed */
+  providerModels: async (p: { kind: ProviderKind; base_url: string; key?: string }): Promise<{ models?: string[]; error?: string }> => {
+    const r = await fetch(`${ZUHUI_BASE}/api/provider/models`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(p),
+      signal: AbortSignal.timeout(20000),
+    });
+    return (await r.json().catch(() => ({ error: `HTTP ${r.status}` }))) as { models?: string[]; error?: string };
+  },
+  /** 查文献 on / off; answers the source again (its lit) */
+  setLit: async (on: boolean): Promise<Provider> => {
+    const r = await fetch(`${ZUHUI_BASE}/api/provider/lit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ on }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const j = (await r.json().catch(() => ({}))) as Partial<Provider> & { error?: string };
+    if (!r.ok || !j.kind) throw new Error(j.error || 'failed');
+    return j as Provider;
+  },
+  /** this month's API usage (Settings → Model source) */
+  usageMonth: async (): Promise<MonthUsage> => {
+    const r = await fetch(`${ZUHUI_BASE}/api/usage`, { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return (await r.json()) as MonthUsage;
+  },
   /** the live 修订对比 page, for the iframe (host=bloom: its own toolbar hides, the tools sit in the shell's row) */
   liveDiffUrl: () => `${ZUHUI_BASE}/?embed=1&host=bloom&ui=${uiLang()}`,
   /** a past meeting's snapshot (`diff_url` is server-relative) */
@@ -701,6 +1127,151 @@ export const meetingApi = {
     if (!r.ok || !j.ok || !j.meeting) throw new Error(j.error || `HTTP ${r.status}`);
     return j.meeting;
   },
+  /** Settings → General → Notes: the format and the group's own requirements */
+  summaryPrefs: () => get<SummaryPrefs>('/api/summary/prefs'),
+  /** saves the format and / or the requirements; an error's message is its code (template, too_long) */
+  setSummaryPrefs: async (p: { template?: SummaryTemplate; custom?: string }): Promise<SummaryPrefs> => {
+    const r = await fetch(`${ZUHUI_BASE}/api/summary/prefs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify(p),
+      signal: AbortSignal.timeout(8000),
+    });
+    const j = (await r.json().catch(() => ({}))) as SummaryPrefs & { error?: string };
+    if (!r.ok || j.error) throw new Error(j.error || 'failed');
+    return j;
+  },
+  /** 回顾 → 保存 → 复制（带格式）: the meeting's 纪要 as HTML (headings, lists) and as plain text, for the clipboard */
+  minutesClip: async (id: string): Promise<{ html: string; text: string }> => {
+    const r = await fetch(`${ZUHUI_BASE}/api/meetings/${encodeURIComponent(id)}/minutes?ui=${uiLang()}`, { signal: AbortSignal.timeout(15000), cache: 'no-store' });
+    const j = (await r.json().catch(() => ({}))) as { ok?: boolean; html?: string; text?: string; error?: string; detail?: string };
+    if (!r.ok || !j.ok || j.html == null) throw new ExportFail(j.error || `HTTP ${r.status}`, j.detail);
+    return { html: j.html, text: j.text ?? '' };
+  },
+  /** 回顾 → 保存 → 存成 Word / 存成 PDF / 导出会议包: the system save dialog, then the backend writes the file there
+   *  (a PDF takes a few seconds). The saved path back, null when cancelled; a failure throws (exportReason) */
+  saveExport: async (id: string, kind: ExportKind, name: string, transcript = false): Promise<string | null> => {
+    const ext = kind === 'pack' ? 'html' : kind;
+    const to = await tauriInvoke<string | null>('zuhui_pick_save', { name, ext, title: t(`meeting.history.share.dialog.${kind}`) });
+    if (!to) return null;
+    const r = await fetch(`${ZUHUI_BASE}/api/meetings/${encodeURIComponent(id)}/save`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ kind, to, transcript, ui: uiLang() }),
+      signal: AbortSignal.timeout(180000),
+    });
+    const j = (await r.json().catch(() => ({}))) as { ok?: boolean; path?: string; error?: string; detail?: string };
+    if (!r.ok || !j.ok) throw new ExportFail(j.error || `HTTP ${r.status}`, j.detail);
+    return j.path || to;
+  },
+  /** Settings → General → 散会后自动保存 */
+  autosave: () => get<AutosavePrefs>('/api/autosave'),
+  /** saves any of on / dir / items; an error's message is its code (empty, not_abs, too_long, not_dir, no_write, items) */
+  setAutosave: async (p: { on?: boolean; dir?: string; items?: AutosaveItem[] }): Promise<AutosavePrefs> => {
+    const r = await fetch(`${ZUHUI_BASE}/api/autosave`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify(p),
+      signal: AbortSignal.timeout(8000),
+    });
+    const j = (await r.json().catch(() => ({}))) as AutosavePrefs & { error?: string };
+    if (!r.ok || j.error) throw new Error(j.error || 'failed');
+    return j;
+  },
+  /** the system folder picker (散会后自动保存's folder); null when cancelled or outside the app */
+  pickFolder: async (): Promise<string | null> => {
+    try {
+      return (await tauriInvoke<string | null>('zuhui_pick_folder', { title: t('meeting.autosave.pick_title') })) ?? null;
+    } catch {
+      return null;
+    }
+  },
+  /** 回顾 → 纪要: write the meeting's summary again in this format (the model runs; the old one stays until it is done).
+   *  An error's message is its code (busy, custom_empty, template, not_found) */
+  regenSummary: async (id: string, template: SummaryTemplate): Promise<SummaryJob> => {
+    const r = await fetch(`${ZUHUI_BASE}/api/meetings/${encodeURIComponent(id)}/summary`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ template }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const j = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string; job?: SummaryJob };
+    if (!r.ok || !j.ok || !j.job) throw new Error(j.error || 'failed');
+    return j.job;
+  },
+  /** the lobby: what the last meetings on the paper on the desk left undone (ticked ones are not listed) */
+  carry: () => get<{ paper: string | null; items: CarryItem[] }>('/api/carry'),
+  /** ticks (or unticks) one of them; saved with the meeting it came from. An error's message is its code */
+  tickCarry: async (id: string, done: boolean): Promise<void> => {
+    const r = await fetch(`${ZUHUI_BASE}/api/carry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ id, done }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const j = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+  },
+  /** 回顾 → 提问: asks the past meetings (`mids`: only these; none = all). The model runs. An error's message is its
+   *  code (empty, too_long) or the reason */
+  askPast: async (question: string, mids?: string[] | null): Promise<PastAnswer> => {
+    const r = await fetch(`${ZUHUI_BASE}/api/past/ask`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify(mids ? { question, mids } : { question }),
+      signal: AbortSignal.timeout(200_000),
+    });
+    const j = (await r.json().catch(() => ({}))) as Partial<PastAnswer> & { ok?: boolean; error?: string };
+    if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    return { answer: j.answer ?? '', sources: j.sources ?? [], found: !!j.found };
+  },
+  /** 回顾 → 阶段汇总: the saved ones, newest first */
+  digests: () => get<DigestBrief[]>('/api/digests'),
+  digest: (id: string) => get<Digest>(`/api/digests/${encodeURIComponent(id)}`),
+  /** writes one for these meetings in the background (the model runs); comes back at once, still running. An
+   *  error's message is its code (too_few, too_many, not_found, busy) */
+  startDigest: async (mids: string[]): Promise<Digest> => {
+    const r = await fetch(`${ZUHUI_BASE}/api/digests`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ mids }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const j = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string; digest?: Digest };
+    if (!r.ok || !j.ok || !j.digest) throw new Error(j.error || 'failed');
+    return j.digest;
+  },
+  /** 第 6 批 · 设置 → 论文: how a Word paper's edits go back (Word's tracked changes, or straight in) */
+  paperPrefs: () => get<{ docx_mode: DocxMode }>('/api/paper/prefs'),
+  setPaperPrefs: async (p: { docx_mode: DocxMode }): Promise<{ docx_mode: DocxMode }> => {
+    const r = await fetch(`${ZUHUI_BASE}/api/paper/prefs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify(p),
+      signal: AbortSignal.timeout(8000),
+    });
+    const j = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string; docx_mode?: DocxMode };
+    if (!r.ok || !j.ok || !j.docx_mode) throw new Error(j.error || `HTTP ${r.status}`);
+    return { docx_mode: j.docx_mode };
+  },
+  /** 第 6 批: a paper's saved versions (none given: the one on screen) */
+  paperVersions: (paper?: string | null) =>
+    get<PaperVersions>(`/api/paper/versions${paper ? `?paper=${encodeURIComponent(paper)}` : ''}`),
+  /** the diff page between two versions ('cur' = the paper as it is now), for an iframe */
+  versionDiffUrl: (paper: string, a: string, b: string) =>
+    `${ZUHUI_BASE}/api/paper/versions/diff?paper=${encodeURIComponent(paper)}&a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}&embed=1&host=bloom&ui=${uiLang()}`,
+  /** put version `v` back (the paper as it is now is saved first); the list as it is now. Throws the code: live, busy, not_found, gone, failed */
+  restoreVersion: async (paper: string, v: string): Promise<PaperVersions> => {
+    const r = await fetch(`${ZUHUI_BASE}/api/paper/versions/restore`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ paper, v }),
+      signal: AbortSignal.timeout(20000),
+    });
+    const j = (await r.json().catch(() => ({}))) as PaperVersions & { ok?: boolean; error?: string };
+    if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    return j;
+  },
   /** during a meeting: put another of its papers on screen (adding one goes through `paper`) */
   switchPaper: async (id: string): Promise<PaperInfo> => {
     const r = await fetch(`${ZUHUI_BASE}/api/paper/switch`, {
@@ -712,6 +1283,29 @@ export const meetingApi = {
     const j = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string; paper?: PaperInfo };
     if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
     return j.paper as PaperInfo;
+  },
+  /** the meeting's box (the host, a co-host): ask the AI in writing, the same as saying it (in the transcript, said aloud) */
+  ask: (text: string) => liveAct('/api/ask', { text }),
+  /** 标记: this moment (`note` optional); with `id`, that bookmark's note changes */
+  bookmark: (note: string, id?: string) => liveAct<{ bookmark: Bookmark }>('/api/bookmark', id ? { id, note } : { note }),
+  /** 先选中再说: the passage selected in the paper (null: clear it) */
+  anchor: (sel: { text: string; section?: string | null } | null) =>
+    liveAct<{ anchor: AnchorSel | null }>('/api/anchor', sel ? { text: sel.text, section: sel.section ?? null } : { clear: true }),
+  /** 回顾 → 编辑: one hand edit of a past meeting's transcript. A refusal throws its code (no_match, too_long, taken,
+   *  same, busy, live, not_found, nothing…) */
+  editTranscript: async (
+    id: string,
+    body: { op: 'line'; i: number; text: string } | { op: 'replace'; find: string; repl: string; hot?: boolean } | { op: 'speaker'; from: string; to: string } | { op: 'undo' },
+  ): Promise<EditResult> => {
+    const r = await fetch(`${ZUHUI_BASE}/api/meetings/${encodeURIComponent(id)}/transcript`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15000),
+    });
+    const j = (await r.json().catch(() => ({}))) as Partial<EditResult> & { ok?: boolean; error?: string };
+    if (!r.ok || !j.ok) throw new Error(j.error || 'failed');
+    return { n: j.n ?? 0, last: j.last ?? null, count: j.count, hot: j.hot };
   },
   /** where the paper being imported is (MinerU's progress): shown under 正在导入 */
   paperStatus: async (): Promise<{ busy?: boolean; text?: string; done?: number; total?: number; elapsed?: number }> => {
@@ -756,6 +1350,18 @@ export function fmtDuration(s: number): string {
   const mm = String(m).padStart(2, '0');
   const ss = String(sec).padStart(2, '0');
   return h ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+/** "11月11日" from an ISO time: which meeting, when the hour doesn't matter */
+export function fmtDay(iso: string | null | undefined, lang: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  try {
+    return new Intl.DateTimeFormat(lang === 'zh-Hans' ? 'zh-CN' : lang, { month: 'short', day: 'numeric' }).format(d);
+  } catch {
+    return d.toLocaleDateString();
+  }
 }
 
 /** "11月11日 01:30" from an ISO time (the backend's local time) */

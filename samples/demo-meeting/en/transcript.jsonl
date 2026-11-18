@@ -1,0 +1,25 @@
+{"t": "00:05", "sec": 5.0, "who": "teacher", "text": "Today let's go through the guide to Bloom. I want to send it to the new students.", "name": "{ME}"}
+{"t": "00:31", "sec": 31.0, "who": "guest", "text": "The part before the meeting is too long. A first-timer only needs to drag the paper in and click Start.", "name": "Prof. Wang"}
+{"t": "00:48", "sec": 48.0, "who": "teacher", "text": "{AI}, cut the section before the meeting down to two steps: drag the paper in, click Start.", "name": "{ME}"}
+{"t": "00:52", "sec": 52.0, "who": "student", "text": "OK, editing that section."}
+{"t": "01:40", "sec": 100.0, "who": "student", "text": "Done. The section before the meeting has two steps now."}
+{"t": "02:10", "sec": 130.0, "who": "guest", "text": "It doesn't say how to call the AI. The first time I didn't know I had to say its name.", "name": "Chen Yu"}
+{"t": "02:26", "sec": 146.0, "who": "teacher", "text": "Right. {AI}, after the first sentence of the meeting section add: the AI only answers when you say its name.", "name": "{ME}"}
+{"t": "02:31", "sec": 151.0, "who": "student", "text": "OK, after the first sentence of that section."}
+{"t": "03:12", "sec": 192.0, "who": "student", "text": "Added."}
+{"t": "03:40", "sec": 220.0, "who": "guest", "text": "It should also say what you get afterwards: the revisions, the notes, the transcript.", "name": "Prof. Wang"}
+{"t": "03:58", "sec": 238.0, "who": "teacher", "text": "{AI}, in the section after the meeting, list the three things: revisions, notes, transcript.", "name": "{ME}"}
+{"t": "04:03", "sec": 243.0, "who": "student", "text": "OK."}
+{"t": "05:05", "sec": 305.0, "who": "student", "text": "The section after the meeting now lists revisions, notes and transcript."}
+{"t": "05:40", "sec": 340.0, "who": "guest", "text": "Do guests have to install anything?", "name": "Chen Yu"}
+{"t": "05:46", "sec": 346.0, "who": "teacher", "text": "{AI}, do guests need to install anything to join?", "name": "{ME}"}
+{"t": "05:50", "sec": 350.0, "who": "student", "text": "No. A guest opens the invite link in a browser and joins."}
+{"t": "06:30", "sec": 390.0, "who": "guest", "text": "Then put that in too, in the part about inviting.", "name": "Prof. Wang"}
+{"t": "06:41", "sec": 401.0, "who": "teacher", "text": "{AI}, add to the invite paragraph: they open it in a browser, with nothing to install.", "name": "{ME}"}
+{"t": "06:45", "sec": 405.0, "who": "student", "text": "OK."}
+{"t": "07:30", "sec": 450.0, "who": "student", "text": "Added to the invite paragraph."}
+{"t": "08:15", "sec": 495.0, "who": "guest", "text": "Last, add a short FAQ: how to change the model, where the data is kept. Do that after the meeting.", "name": "Prof. Wang"}
+{"t": "08:30", "sec": 510.0, "who": "teacher", "text": "OK, I'll note the FAQ and write it myself after the meeting.", "name": "{ME}"}
+{"t": "08:34", "sec": 514.0, "who": "student", "text": "Noted at the end of the paper, for after the meeting."}
+{"t": "09:20", "sec": 560.0, "who": "teacher", "text": "That's it for today. I'll add the FAQ next week and send it round.", "name": "{ME}"}
+{"t": "09:28", "sec": 568.0, "who": "guest", "text": "Good. Let's end here.", "name": "Prof. Wang"}

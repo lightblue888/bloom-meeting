@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .config import PROMPTS, STATE
 
-_FILES = ("provider.json", "speech.json", "voice.json", "profile.json", "livekit.env")
+_FILES = ("provider.json", "speech.json", "voice.json", "profile.json", "livekit.env", "lit.json")
 
 
 def signature() -> tuple:
@@ -31,11 +31,23 @@ def _models() -> tuple[str, str, str]:
     from . import provider
     mode = provider.mode()
     if mode == "api":
+        from . import littools
+        from .config import pretty_model
         from .llm_api import model
         name = provider.label()
-        return (f"对话、改稿、查论文都走 {name} 的 API：会上对话用 {model('fast')}，改稿、查论文、散会后的纪要用 {model('main')}。",
+        p = provider.active() or {}
+        local = provider.is_local(str(p.get("base_url") or ""))
+        where = f"这台电脑上本机跑的 {name}" if local else f" {name} 的 API"
+        search = ("查资料的那一路能查文献：问到别的论文、要核对引用时，会在 OpenAlex、arXiv 查论文，在 Crossref 核对引用，"
+                  "能带出标题、作者、年份、出处和链接，发出去的只有检索词；打不开论文全文和网页，别的外部事实只能凭已知的说，"
+                  "拿不准就直说。查文献在 设置 → 通用 → 模型来源 里可以关掉。"
+                  if littools.enabled() else
+                  "查资料不联网：问到别的论文、外部事实，只能凭论文和已知的说，拿不准就直说"
+                  "（设置 → 通用 → 模型来源 里打开“查文献”后能查 OpenAlex、arXiv、Crossref）。")
+        return (f"对话、改稿、查论文都走{where}：会上对话用 {pretty_model(model('fast'))}，"
+                f"改稿、查论文、散会后的纪要用 {pretty_model(model('main'))}。",
                 "模型在 设置 → 通用 → 模型来源 里换（服务商、API key、两个型号），开会时换不了。",
-                "查资料不联网：问到别的论文、外部事实，只能凭论文和已知的说，拿不准就直说。")
+                search)
     if mode == "claude":
         return ("对话、改稿、查论文都走主持人自己的 Claude Code 账号：对话用快的那个型号，改稿、查论文用强的那个。",
                 "改稿模型和思考强度可以在 @AI 的参会人卡片上换，只有主持人和共同主持人能换，从下一条改稿任务开始用。",

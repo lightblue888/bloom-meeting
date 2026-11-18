@@ -127,6 +127,101 @@
   padding: 0 8px;
 }
 
+/* 第 8 批：打开"自动删除逐字稿和纪要"前列出会删哪几场。对话框一个尺寸，列表自己滚，按钮不动 */
+.sto-dlg-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  background: rgb(0 0 0 / 0.45);
+}
+.sto-dlg {
+  box-sizing: border-box;
+  width: min(480px, calc(100vw - 48px));
+  height: min(420px, calc(100vh - 64px));
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  border: 1px solid var(--line-2, var(--line));
+  background: var(--panel, var(--bg-2));
+  color: var(--ink);
+  box-shadow: 0 20px 60px rgb(0 0 0 / 0.4);
+}
+.sto-dlg-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 16px 20px 4px;
+  min-width: 0;
+}
+.sto-dlg-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sto-dlg-head .st-dim {
+  flex: none;
+  font-size: 12px;
+}
+.sto-dlg-line,
+.sto-dlg-keep {
+  margin: 0;
+  padding: 4px 20px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.sto-dlg-keep {
+  color: var(--mute);
+  font-size: 12px;
+}
+.sto-dlg-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  list-style: none;
+  margin: 6px 20px;
+  padding: 4px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.sto-dlg-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 28px;
+  font-size: 13px;
+}
+.sto-dlg-list li > .sto-cut {
+  flex: 1 1 auto;
+}
+.sto-dlg-when {
+  flex: none;
+  color: var(--mute);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.sto-dlg-more {
+  color: var(--mute);
+}
+.sto-dlg-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 20px 16px;
+}
+.app .sto-dlg-foot button {
+  min-width: 88px;
+  justify-content: center;
+  min-height: var(--ctl-h);
+  padding: 0 12px;
+}
+
 /* the backend isn't there: a caution mark and plain words in the lead */
 .sto-warn {
   display: inline-flex;

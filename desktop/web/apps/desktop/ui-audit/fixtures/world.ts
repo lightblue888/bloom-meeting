@@ -3,6 +3,7 @@
 // lib/mock-backend.ts read it on every request — so a transition can change it and the app's next poll sees that.
 // Shapes follow src/meetingApi.ts (types imported from there, so a renamed field shows up as a type error here).
 import type {
+  Bookmark,
   Board,
   Brain,
   Current,
@@ -15,9 +16,23 @@ import type {
   Participant,
   Profile,
   Provider,
+  SumItem,
   Summary,
+  SummaryPrefs,
+  AutosavePrefs,
+  TalkTime,
   Task,
+  CarryItem,
+  Digest,
+  PastAnswer,
+  MonthUsage,
+  Usage,
+  PaperComment,
+  PaperVersions,
 } from '../../src/meetingApi';
+
+/** a 纪要 line's text (src/meetingApi.ts itemText; only types come from there: the page's modules don't load in Node) */
+const itemText = (x: SumItem) => (typeof x === 'string' ? x : x.text);
 
 export type Lang = 'zh' | 'en';
 
@@ -68,8 +83,12 @@ export interface RelayState {
   participants?: Participant[];
   assistant?: { name?: string; dialog?: string; edit?: string; effort?: string; tts?: string; asr?: string };
   focus?: unknown;
+  bookmarks?: Bookmark[];
+  anchor?: unknown;
   avatar_default?: string;
   lv?: string;
+  /** 第 8 批: the host is recording (the join card's line, the bar's marker) */
+  rec?: 'screen' | 'audio' | null;
 }
 
 export interface World {
@@ -94,7 +113,7 @@ export interface World {
   /** what the stub paper page in the iframe reports (the paper tools in the bar) */
   paper: { cur: number; total: number; view: string; views: string[]; canEdit: boolean; editing: boolean; zoom: number; zoomSaved: boolean };
   /** the guest relay */
-  relay: { sv: number; pv: number; state: RelayState | null; transcript: Line[]; board: Board | null };
+  relay: { sv: number; pv: number; state: RelayState | null; transcript: Line[]; board: Board | null; lastAct?: Record<string, unknown> };
   /** the first-run guide (/api/setup): done / skipped; the guide shows while neither */
   setup: { done: boolean; skipped: boolean; components?: Record<string, { ok: boolean; path?: string | null; detail?: string }> | null; voice_engine?: 'clone' | 'edge' | 'sapi' | null };
   /** the AI's voice and the words transcription should know (/api/voice) */
@@ -103,6 +122,27 @@ export interface World {
   storage: Record<string, unknown>;
   /** what the Tauri side says (fixtures/tauri-mock.ts): the speech models on this PC, Storage's paths */
   tauri: { speechInstalled: string[]; home: string; login: boolean; autoDays: number | null };
+  /** Settings → General → Notes (/api/summary/prefs) */
+  summaryPrefs: SummaryPrefs;
+  /** Settings → Model source → this month (/api/usage) */
+  usageMonth: MonthUsage;
+  /** what an OpenAI-format endpoint lists (/api/provider/models); null: listing fails */
+  providerModels: string[] | null;
+  /** Settings → General → 散会后自动保存 (/api/autosave); off by default */
+  autosave: AutosavePrefs;
+  /** 第 6 批: Settings → General → 论文 (/api/paper/prefs) and the paper menu's 历史版本 (/api/paper/versions) */
+  paperPrefs?: { docx_mode: 'track' | 'direct' };
+  paperVersions?: PaperVersions;
+  /** the lobby's left-over items (/api/carry); empty unless a screen turns them on (withCarry) */
+  carry: CarryItem[];
+  /** what withCarry puts there: the last meetings' to-dos, notes, edits not accepted */
+  carryDemo: CarryItem[];
+  /** 回顾 → 提问's answer (/api/past/ask) */
+  askAnswer: PastAnswer;
+  /** set: /api/past/ask fails with this (502) */
+  askError: string | null;
+  /** 回顾 → 阶段汇总: the saved ones, newest first (/api/digests) */
+  digests: Digest[];
   /** strings typed by people (names, titles, model names): "…" on these is the app's intended behaviour */
   userStrings: string[];
 }
@@ -212,6 +252,15 @@ export function baseWorld(lang: Lang, stress = false): World {
     { id: 'p2', name: T('申报书.docx', 'proposal.docx') },
   ];
 
+  // 第 3 批: two bookmarks
+  const bookmarks: Bookmark[] = [
+    { id: 'b1', sec: 130, t: '02:10', note: T('表 2 要补基线', 'Table 2 needs a baseline'), by: host, host: true },
+    {
+      id: 'b2', sec: 1199, t: '19:59', host: false, by: g1,
+      note: stress ? T('数据划分'.repeat(25), 'data split '.repeat(9) + 'x').slice(0, 100) : '',
+    },
+  ];
+
   const current: Current = {
     backend: true,
     meeting: {
@@ -239,28 +288,68 @@ export function baseWorld(lang: Lang, stress = false): World {
     papers,
     active_paper: 'p1',
     processing: false,
+    bookmarks,
+    anchor: null,
+    quiet_s: 30,
   };
 
+  // the 纪要 as the backend writes it now: each line says when it was said (a transcript line's t / sec), one entry per
+  // person; one conclusion and one to-do are plain strings, as older summaries hold them
+  const at = (sec: number) => ({ t: mmss(sec), sec });
   const summary: Summary = {
     title: T('FooBench 论文合稿 · 组会纪要', 'FooBench paper draft · meeting notes'),
     speakers: [host, ai, ...guests.slice(0, 3)],
+    template: 'default',
     abstract: T(
       `${host} 和 ${g1} 过了一遍第三、四节：表 2 补上了 TimeGAN 基线，3.2 节的数据划分改写得更清楚；消融实验留到会后。`,
       `${host} and ${g1} went through sections 3 and 4: TimeGAN was added to table 2, the data split in 3.2 was made clearer; the ablation is left for after the meeting.`,
     ),
-    conclusions: [T('表 2 补上 TimeGAN', 'Add TimeGAN to table 2'), T('3.2 节说明按时间划分', 'State in 3.2 that the split is by time'), T('消融实验会后补', 'Ablation after the meeting')],
+    conclusions: [
+      { text: T('表 2 补上 TimeGAN', 'Add TimeGAN to table 2'), ...at(130) },
+      { text: T('3.2 节说明按时间划分', 'State in 3.2 that the split is by time'), ...at(1205) },
+      T('消融实验会后补', 'Ablation after the meeting'),
+    ],
     sections: [
       {
         title: T('实验设置', 'Experimental setup'),
+        ...at(65),
         cards: [
-          { title: T('基线', 'Baselines'), bullets: [T('表 2 少了 TimeGAN，已补', 'Table 2 missed TimeGAN: added'), T('正文第 4 段与表 2 对齐', 'Paragraph 4 now matches table 2')] },
-          { title: T('数据划分', 'Data split'), bullets: [T('按时间切分', 'Split by time'), T('写明各集合的时间范围', 'State the time range of each set')] },
+          { title: T('基线', 'Baselines'), ...at(65), bullets: [{ text: T('表 2 少了 TimeGAN，已补', 'Table 2 missed TimeGAN: added'), ...at(100) }, { text: T('正文第 4 段与表 2 对齐', 'Paragraph 4 now matches table 2'), ...at(130) }] },
+          { title: T('数据划分', 'Data split'), ...at(1198), bullets: [{ text: T('按时间切分', 'Split by time'), ...at(1205) }, T('写明各集合的时间范围', 'State the time range of each set')] },
         ],
       },
     ],
-    todos: [T('补消融实验（需要新跑）', 'Run the ablation (needs new runs)'), T('图 3 坐标轴单位统一', 'Same axis units in figure 3')],
+    people: [
+      { name: host, said: [{ text: T('今天主要看第三节的实验设置', 'Today is about the setup in section 3'), ...at(12) }, { text: T('把 TimeGAN 补进表 2，3.2 节第二段改清楚', 'Add TimeGAN to table 2; make 3.2 paragraph 2 clearer'), ...at(130) }], feedback: [], asks: [] },
+      {
+        name: g1,
+        said: [{ text: T('表 2 的基线少了一个', 'A baseline is missing from table 2'), ...at(65) }, { text: T('问 3.2 节是不是按时间划分', 'Asked whether 3.2 splits by time'), ...at(1198) }],
+        feedback: [{ text: T('数据划分要写清楚', 'The data split must be spelled out'), by: host, ...at(1220) }],
+        asks: [{ text: T('核对表 2 的基线', 'Check the baselines in table 2'), by: host, ...at(130) }],
+      },
+      ...guests.slice(1).map((g, i) => ({ name: g, said: [{ text: T('汇报了这周的进展', 'Reported this week’s progress'), ...at(1198 + i) }], feedback: [], asks: [] })),
+    ],
+    todos: [{ text: T('补消融实验（需要新跑）', 'Run the ablation (needs new runs)'), who: host, ...at(130) }, T('图 3 坐标轴单位统一', 'Same axis units in figure 3')],
+    // what the meeting before left: one got done this time, one didn't come up
+    carried: [
+      {
+        id: 'c1', kind: 'todo', item: T('表 2 补上 TimeGAN 基线', 'Add the TimeGAN baseline to table 2'), from: 'm-002', started: isoAgo(86400 * 2), done: true,
+        text: stress
+          ? T(`${g1} 跑完了 TimeGAN，表 2 已经补上一行，正文第 4 段也跟着改了，方差和置信区间下周再补`, `${g1} ran TimeGAN; table 2 has the row now and paragraph 4 follows it; the variance and confidence intervals come next week`)
+          : T(`${g1} 跑完了，表 2 已补`, `${g1} ran it; table 2 has it`),
+        ...at(130),
+      },
+      { id: 'c2', kind: 'note', item: T('图 3 坐标轴单位统一', 'Same axis units in figure 3'), from: 'm-002', started: isoAgo(86400 * 2), done: false, text: T('会上没提到', 'Not mentioned') },
+    ],
     generated: isoAgo(100),
   };
+  // each person's talk time (the backend works it out from the transcript), longest first
+  const talk: TalkTime[] = [
+    { who: 'teacher', name: null, sec: 412.5, n: 9, share: 0.41 },
+    { who: 'student', name: null, sec: 301.2, n: 14, share: 0.3 },
+    { who: 'guest', name: g1, sec: 220.4, n: 5, share: 0.22 },
+    ...guests.slice(1).map((g, i): TalkTime => ({ who: 'guest', name: g, sec: 20 - i, n: 1, share: 0.006 })),
+  ];
 
   // 回顾: past meetings, newest first
   const nMeetings = stress ? 40 : 6;
@@ -275,10 +364,15 @@ export function baseWorld(lang: Lang, stress = false): World {
         ? STRESS.titleZh
         : STRESS.titleEn
       : [T('FooBench 论文合稿', 'FooBench paper draft'), T('大创申报书修改', 'Grant proposal revision'), T('第三章实验讨论', 'Chapter 3 experiments'), 'Weekly sync', T('开题报告', 'Thesis proposal'), T('投稿前最后一遍', 'Last pass before submission')][i % 6];
-    meetings.push({ id, title: mt, started: isoAgo(ago), ended: isoAgo(ago - dur), state: 'ended', duration_s: dur, n_tasks: 4, n_done: 3, n_lines: lines.length, has_summary: true, has_diff: true, processing: false });
+    meetings.push({
+      id, title: mt, started: isoAgo(ago), ended: isoAgo(ago - dur), state: 'ended', duration_s: dur, n_tasks: 4, n_done: 3, n_lines: lines.length, has_summary: true, has_diff: true, processing: false,
+      // the papers it had open (回顾 filters by them): most meetings the main paper, some the proposal, one both
+      papers: i % 3 === 1 ? [papers[1]] : i === 2 ? [papers[0], papers[1]] : [papers[0]],
+    });
     details[id] = {
       meeting: { id, title: mt, started: isoAgo(ago), ended: isoAgo(ago - dur), state: 'ended', duration_s: dur, lang, title_auto: true, papers, active_paper: 'p1' },
-      transcript: lines.map((l, k) => ({ ...l, vt: k * 2 })),
+      // `i`: the line's place in the transcript as said (回顾 → 编辑 names a line by it)
+      transcript: lines.map((l, k) => ({ ...l, vt: k * 2, i: k })),
       board,
       summary: { ...summary, title: mt },
       diff_url: `/snap/${id}/`,
@@ -286,8 +380,74 @@ export function baseWorld(lang: Lang, stress = false): World {
       video: i === 0 ? { url: `/api/meetings/${id}/video`, type: 'video/webm', duration: 3, bytes: 4000, offset: 0 } : null,
       processing: false,
       post: null,
+      talk,
+      summary_job: null,
+      bookmarks,
+      carry_done: ['note:N1'],
+      edits: { n: 0, last: null },
     };
   }
+
+  // the lobby's left-over items from the last meetings on this paper (withCarry turns them on)
+  const carryTexts = stress
+    ? [
+        T('补消融实验：去掉记忆模块和去掉注意力模块各跑一组，三个随机种子，结果放进 4.4 节新的表里，正文同步改写', 'Run the ablation: without the memory module and without attention, three seeds each, results in a new table in 4.4 and the text updated to match'),
+        T('图 3 坐标轴单位统一成毫秒，图例字号和正文一致', 'Same axis units (ms) in figure 3, legend font size as in the text'),
+        T('3.2 节第二段写清楚按时间划分训练集、验证集和测试集各自覆盖的时间范围', 'Make 3.2 paragraph 2 say which time range each of the train, validation and test sets covers'),
+      ]
+    : [
+        T('补消融实验（需要新跑）', 'Run the ablation (needs new runs)'),
+        T('图 3 坐标轴单位统一', 'Same axis units in figure 3'),
+        T('3.2 节第二段改清楚', 'Make 3.2 paragraph 2 clearer'),
+        T('表 2 补上方差', 'Add the variance to table 2'),
+        T('相关工作补两篇 2025 年的', 'Two 2025 papers in related work'),
+      ];
+  const carryKinds: CarryItem['kind'][] = ['todo', 'note', 'edit'];
+  const carryDemo: CarryItem[] = Array.from({ length: stress ? 23 : 5 }, (_, i) => {
+    const m = meetings[(i % 3) * 3 % meetings.length];
+    return {
+      id: `${m.id}/${carryKinds[i % 3]}:${i}`, mid: m.id, title: m.title, started: m.started, kind: carryKinds[i % 3],
+      text: carryTexts[i % carryTexts.length] + (i >= carryTexts.length ? ` (${i + 1})` : ''),
+      who: i % 3 === 0 ? (i % 2 ? g1 : host) : null,
+      ...(i % 3 === 0 ? at(130) : {}),
+    };
+  });
+  // 回顾 → 提问: an answer with two sources
+  const askAnswer: PastAnswer = {
+    found: true,
+    answer: stress
+      ? T(`11月17日那次 ${g1} 问到第三章的消融实验，${host} 说不够，要补一组去掉注意力模块的对照 [1]。11月16日那次又提过一次，要求三个随机种子 [2]。`.repeat(2),
+          `On Nov 17 ${g1} asked about the ablation in chapter 3; ${host} said it wasn't enough and asked for a run without attention [1]. On Nov 16 it came up again, with three seeds [2]. `.repeat(2))
+      : T(`11月17日那次 ${host} 说第三章的消融实验不够，要补一组去掉注意力模块的对照 [1]，11月16日那次也提过 [2]。`,
+          `On Nov 17 ${host} said the ablation in chapter 3 wasn't enough and asked for a run without attention [1]; it came up on Nov 16 too [2].`),
+    sources: [
+      { n: 1, mid: meetings[0].id, title: meetings[0].title, started: meetings[0].started, t: '02:10', sec: 130, text: T(`${host}：那把 TimeGAN 补进表 2，消融实验也要补一组`, `${host}: add TimeGAN to table 2, and one more ablation run`) + (stress ? ' ' + STRESS.url : '') },
+      { n: 2, mid: meetings[1].id, title: meetings[1].title, started: meetings[1].started, t: '19:58', sec: 1198, text: T(`${g1}：3.2 节的数据划分是按时间切的吗？`, `${g1}: Is the data split in 3.2 by time?`) },
+    ],
+  };
+  // 回顾 → 阶段汇总: one saved
+  const dgMeetings = meetings.slice(0, 3).reverse().map((m) => ({ id: m.id, title: m.title, started: m.started }));
+  const digests: Digest[] = [
+    {
+      id: 'd-001', created: isoAgo(3600), state: 'done', error: null, mids: dgMeetings.map((m) => m.id), meetings: dgMeetings,
+      title: stress ? T('十一月第三周到第四周组会阶段汇总：第三章实验与数据划分', 'Weeks 3–4 of November: chapter 3 experiments and the data split') : T('十一月阶段汇总', 'November digest'),
+      result: {
+        title: stress ? T('十一月第三周到第四周组会阶段汇总：第三章实验与数据划分', 'Weeks 3–4 of November: chapter 3 experiments and the data split') : T('十一月阶段汇总', 'November digest'),
+        overview: T('这三次会都在改第三章：补基线、补消融、把数据划分写清楚。', 'All three meetings worked on chapter 3: baselines, the ablation, and the data split.'),
+        issues: [
+          { text: T('消融实验够不够', 'Is the ablation enough'), meetings: [1, 2, 3] },
+          { text: T('数据划分是不是按时间切', 'Is the split by time'), meetings: [2, 3] },
+        ],
+        feedback: [{ text: T('数据划分要写清楚', 'Spell out the data split'), by: host, meetings: [2, 3] }],
+        open: [{ text: carryTexts[0], who: g1, meeting: 3 }, { text: carryTexts[1], who: '', meeting: 2 }],
+      },
+      markdown: '# digest',
+    },
+    {
+      id: 'd-000', created: isoAgo(86400), state: 'failed', error: T('还没设置模型来源', 'no model source set'), mids: dgMeetings.slice(0, 2).map((m) => m.id),
+      meetings: dgMeetings.slice(0, 2), title: '', result: null, markdown: '',
+    },
+  ];
 
   const profile: Profile = {
     name: host, avatar: null, custom: false, assistant: stress ? ai : '', assistant_default: 'DeepSeek', assistant_custom: stress,
@@ -299,10 +459,45 @@ export function baseWorld(lang: Lang, stress = false): World {
     glm: { label: T('智谱 GLM', 'Zhipu GLM'), base_url: 'https://open.bigmodel.cn/api/anthropic', fast: 'glm-5-air', main: 'glm-5' },
     qwen: { label: T('通义千问', 'Qwen'), base_url: 'https://dashscope.aliyuncs.com/apps/anthropic', fast: 'qwen3.7-flash', main: 'qwen3.7-max' },
     anthropic: { label: 'Anthropic', base_url: 'https://api.anthropic.com', fast: 'claude-haiku-5-5', main: 'claude-opus-5-5' },
+    custom: { label: '', base_url: '', fast: '', main: '' },
+    openai: { label: '', base_url: '', fast: '', main: '', format: 'openai' as const, key: 'optional' as const },
+    ollama: { label: 'Ollama', base_url: 'http://127.0.0.1:11434/v1', fast: '', main: '', format: 'openai' as const, key: 'none' as const, local: true },
+    lmstudio: { label: 'LM Studio', base_url: 'http://127.0.0.1:1234/v1', fast: '', main: '', format: 'openai' as const, key: 'none' as const, local: true },
   };
   const provider: Provider = stress
-    ? { kind: 'custom', base_url: 'https://llm-gateway.internal.example-university.edu.cn/v1/anthropic-compatible/endpoint', fast: STRESS.modelFast, main: STRESS.modelMain, key_set: true, key_tail: '9f3a', active: true, label: 'Custom', presets }
-    : { kind: 'deepseek', base_url: presets.deepseek.base_url, fast: 'deepseek-v4-flash', main: 'deepseek-v4-pro', key_set: true, key_tail: 'a1b2', active: true, label: 'DeepSeek', presets };
+    ? { kind: 'custom', base_url: 'https://llm-gateway.internal.example-university.edu.cn/v1/anthropic-compatible/endpoint', fast: STRESS.modelFast, main: STRESS.modelMain, key_set: true, key_tail: '9f3a', active: true, label: 'Custom', lit: true, presets }
+    : { kind: 'deepseek', base_url: presets.deepseek.base_url, fast: 'deepseek-v4-flash', main: 'deepseek-v4-pro', key_set: true, key_tail: 'a1b2', active: true, label: 'DeepSeek', lit: true, presets };
+  // this month's API usage (Settings) and each past meeting's (回顾 → 纪要, last)
+  const usageMonth: MonthUsage = stress
+    ? {
+        month: '2026-11', mode: 'api', tokens: 98_765_432, costs: { CNY: 1234.56, USD: 78.9 },
+        models: [
+          { model: STRESS.modelMain, pretty: STRESS.modelMain, label: 'Custom', calls: 4321, in: 60_000_000, out: 8_765_432, cache_read: 30_000_000, cache_write: 0, tokens: 98_765_432, currency: null, cost: null },
+        ],
+      }
+    : {
+        month: '2026-11', mode: 'api', tokens: 3_456_000, costs: { CNY: 6.42 },
+        models: [
+          { model: 'deepseek-v4-pro', pretty: 'DeepSeek V4 Pro', label: 'DeepSeek', calls: 120, in: 1_800_000, out: 260_000, cache_read: 900_000, cache_write: 0, tokens: 2_960_000, currency: 'CNY', cost: 5.31 },
+          { model: 'deepseek-v4-flash', pretty: 'DeepSeek V4 Flash', label: 'DeepSeek', calls: 410, in: 300_000, out: 96_000, cache_read: 100_000, cache_write: 0, tokens: 496_000, currency: 'CNY', cost: 1.11 },
+        ],
+      };
+  const meetingUsage: Usage = stress
+    ? {
+        tokens: 12_345_678, costs: { CNY: 123.45 },
+        models: [
+          { model: STRESS.modelMain, pretty: STRESS.modelMain, label: 'Custom', calls: 321, in: 9_000_000, out: 1_345_678, cache_read: 2_000_000, cache_write: 0, tokens: 12_345_678, currency: null, cost: null },
+          { model: 'deepseek-v4-pro', pretty: 'DeepSeek V4 Pro', label: 'DeepSeek', calls: 99, in: 400_000, out: 60_000, cache_read: 0, cache_write: 0, tokens: 460_000, currency: 'CNY', cost: 123.45 },
+        ],
+      }
+    : {
+        tokens: 186_400, costs: { CNY: 0.42 },
+        models: [
+          { model: 'deepseek-v4-pro', pretty: 'DeepSeek V4 Pro', label: 'DeepSeek', calls: 6, in: 120_000, out: 18_400, cache_read: 30_000, cache_write: 0, tokens: 168_400, currency: 'CNY', cost: 0.39 },
+          { model: 'deepseek-v4-flash', pretty: 'DeepSeek V4 Flash', label: 'DeepSeek', calls: 31, in: 14_000, out: 4_000, cache_read: 0, cache_write: 0, tokens: 18_000, currency: 'CNY', cost: 0.03 },
+        ],
+      };
+  for (const id of Object.keys(details)) details[id].usage = meetingUsage;
 
   const models: Models = {
     dialog: { current: 'fast', options: [{ id: 'fast', label: fast }, { id: 'main', label: main }] },
@@ -327,14 +522,17 @@ export function baseWorld(lang: Lang, stress = false): World {
     participants: people.map((p) => ({ ...p, you: false })),
     assistant: { name: ai, dialog: fast, edit: main, effort, tts: 'CosyVoice 3', asr: 'Fun-ASR Nano' },
     focus: null, lv: '1',
+    bookmarks, anchor: null,
+    rec: 'screen',
   };
 
   return {
     lang, stress, backendUp: true, current, meetings, details, models,
     devices: { mic: current.ready!.devices!.mic, speaker: current.ready!.devices!.speaker },
     mic: { muted: false, talk: [] },
-    profile, provider,
-    invite: { ok: true, url: 'https://example.com/room/k3J9xQ2mZp', room: 'k3J9xQ2mZp', relay: true, guests: guests.length },
+    profile, provider, usageMonth,
+    providerModels: stress ? Array.from({ length: 60 }, (_, i) => `${STRESS.modelMain}-${i}`) : ['gemma3:4b', 'llama3.1:8b', 'qwen3:8b', 'qwen3:14b'],
+    invite: { ok: true, url: 'https://relay.example.org/room/k3J9xQ2mZp', room: 'k3J9xQ2mZp', relay: true, public: true, armed: false, guests: guests.length },
     profileError: null, avatarMe: false,
     paper: { cur: 1, total: 6, view: 'mark', views: ['mark', 'new', 'old'], canEdit: true, editing: false, zoom: 1, zoomSaved: true },
     relay: { sv: 1, pv: 1, state: relayState, transcript: lines, board },
@@ -351,6 +549,12 @@ export function baseWorld(lang: Lang, stress = false): World {
       hotwords: stress ? Array.from({ length: 40 }, (_, i) => `${['FooBench', 'TimeGAN', 'TSGBench', 'Diffusion-TS', 'CSDI', '消融实验', '组会', 'FinTS'][i % 8]}${i >= 8 ? i : ''}`) : ['FooBench', 'TimeGAN', 'TSGBench'],
       hot_max: 200,
       hot_len: 40,
+      // 第 7 批: 读法 (200 at most, 40 characters each side; stress: all 200, the longest)
+      pron: stress
+        ? Array.from({ length: 200 }, (_, i) => ({ w: `${'W'.repeat(36)}${String(i).padStart(3, '0')}`, r: '读'.repeat(40) }))
+        : [{ w: 'LaTeX', r: lang === 'zh' ? '雷泰克' : 'lay-tek' }, { w: 'BERT', r: lang === 'zh' ? '伯特' : 'bert' }],
+      pron_max: 200,
+      pron_len: 40,
       edge_voices: [
         { id: 'zh-CN-XiaoxiaoNeural', lang: 'zh', gender: 'f' },
         { id: 'zh-CN-YunxiNeural', lang: 'zh', gender: 'm' },
@@ -389,13 +593,33 @@ export function baseWorld(lang: Lang, stress = false): World {
           ],
           unused: [{ path: `${home}\\.zuhui\\models\\old-whisper-large-v3`, name: 'whisper-large-v3', bytes: 3.1 * GB }],
         },
-        records: { bytes: 0.4 * GB, meetings: { ...t(14, 0.3 * GB), path: `${home}\\.zuhui\\meetings` }, papers: { ...t(9, 0.1 * GB), path: `${home}\\.zuhui\\papers` } },
+        records: {
+          bytes: 0.4 * GB, meetings: { ...t(14, 0.3 * GB), path: `${home}\\.zuhui\\meetings` }, papers: { ...t(9, 0.1 * GB), path: `${home}\\.zuhui\\papers` },
+          // 第 8 批: what turning on "delete transcripts and notes" would take now (the confirmation lists them)
+          retention: (() => {
+            const old = Array.from({ length: stress ? 40 : 3 }, (_, i) => ({
+              id: `20260${(i % 9) + 1}0${(i % 3) + 1}-1000${String(i).padStart(2, '0')}`,
+              title: stress ? (lang === 'zh' ? STRESS.titleZh : STRESS.titleEn) : T(['周三组会', '开题预答辩', '论文第三章'][i % 3], ['Wednesday group meeting', 'Proposal rehearsal', 'Chapter 3'][i % 3]),
+              started: `2026-0${(i % 9) + 1}-0${(i % 3) + 1}T10:00:00`,
+            }));
+            const of = (n: number) => ({ count: n, bytes: n * 180_000, meetings: old.slice(0, n) });
+            return { days: 0, preview: { '30': of(old.length), '90': of(Math.ceil(old.length / 2)), '180': of(1), '365': of(0) } };
+          })(),
+        },
         caches: { bytes: 0.3 * GB, clearable: 0.25 * GB, path: `${home}\\.zuhui\\cache` },
         logs: { bytes: 0.05 * GB, path: `${home}\\.zuhui\\logs` },
       };
     })(),
     tauri: { speechInstalled: ['fun-asr-nano-onnx', 'sensevoice-small'], home: stress ? 'C:\\Users\\Maximilian.Montgomery-WW' : 'C:\\Users\\maya', login: false, autoDays: null },
-    userStrings: [...tasks.map((x) => x.title), ...tasks.map((x) => x.plan ?? '').filter(Boolean), ...summary.conclusions, host, ai, ...guests, title, fast, main, effort, ...papers.map((p) => p.name), STRESS.mic, STRESS.speaker, current.ready!.devices!.mic!, current.ready!.devices!.speaker!, 'DeepSeek V4 Pro', 'DeepSeek V4 Flash', 'CosyVoice 3', 'Fun-ASR Nano', ...meetings.map((m) => m.title), STRESS.url, provider.base_url],
+    summaryPrefs: { template: 'default', custom: '', custom_max: 2000 },
+    autosave: { on: false, dir: '', items: ['minutes_docx', 'todos', 'diff'], dir_max: 180, last: null },
+    carry: [],
+    carryDemo,
+    askAnswer,
+    askError: null,
+    digests,
+    userStrings: [...tasks.map((x) => x.title), ...tasks.map((x) => x.plan ?? '').filter(Boolean), ...tasks.map((x) => x.result ?? '').filter(Boolean), ...tasks.map((x) => x.remark).filter(Boolean), ...summary.conclusions.map(itemText), host, ai, ...guests, title, fast, main, effort, ...papers.map((p) => p.name), STRESS.mic, STRESS.speaker, current.ready!.devices!.mic!, current.ready!.devices!.speaker!, 'DeepSeek V4 Pro', 'DeepSeek V4 Flash', 'CosyVoice 3', 'Fun-ASR Nano', ...meetings.map((m) => m.title), STRESS.url, provider.base_url,
+      ...carryDemo.map((x) => x.text), ...bookmarks.map((b) => b.note).filter(Boolean), ...askAnswer.sources.map((x) => x.text), ...askAnswer.sources.map((x) => x.title), ...digests.map((d) => d.title), ...digests.map((d) => d.error ?? '').filter(Boolean)],
   };
 }
 
@@ -409,6 +633,50 @@ export function idle(w: World): World {
   c.transcript = [];
   c.participants = c.participants!.filter((p) => p.id === 'me' || p.id === 'claude');
   c.board = { counts: {}, tasks: [] };
+  c.anchor = null;
+  return w;
+}
+/** the lobby with what the last meetings on this paper left undone */
+export function withCarry(w: World): World {
+  idle(w);
+  w.carry = clone(w.carryDemo);
+  return w;
+}
+/** 第 6 批: the paper's saved versions (the paper menu's 历史版本): before / after three meetings, a restore. Stress: long
+ *  meeting names, 120 versions */
+export function withVersions(w: World): World {
+  const T = (zh: string, en: string) => (w.lang === 'zh' ? zh : en);
+  const names = w.stress
+    ? [T('FooBench 论文合稿第三轮修改讨论（老师提了很多关于实验部分和图表排版的意见，需要逐条处理）', 'FooBench joint draft, third round of edits (the advisor had many comments on the experiments and the figure layout)')]
+    : [T('第三次组会', 'Third meeting'), T('第二次组会', 'Second meeting'), T('第一次组会', 'First meeting')];
+  const n = w.stress ? 120 : 6;
+  const items = Array.from({ length: n }, (_, k) => {
+    const m = Math.floor(k / 2);
+    const kind = k === 0 ? 'restore' : k % 2 ? 'after' : 'before';
+    return {
+      v: String(n - k), kind, at: isoAgo(3600 * 24 * (m + 1) + k * 60), mid: `m${m}`,
+      title: kind === 'restore' ? null : names[m % names.length], chars: 18000 + k * 37, same: k === 0,
+      ...(kind === 'restore' ? { of: String(n - 3) } : {}),
+    };
+  });
+  const paper = { id: w.current.active_paper ?? 'p1', name: w.current.paper?.name ?? 'paper' };
+  w.paperVersions = { paper, items, current: { sha: 'x', chars: 18000 }, live: w.current.meeting?.state === 'live' };
+  w.userStrings.push(...names, paper.name);     // meeting titles and the paper's name: what people typed
+  return w;
+}
+/** 第 6 批: comments typed on the paper (the paper's page draws them; the shell only passes them on) */
+export function withComments(w: World): World {
+  const T = (zh: string, en: string) => (w.lang === 'zh' ? zh : en);
+  const long = w.stress ? T('这一段的论证还不够，'.repeat(45), 'This paragraph does not argue it well enough yet. '.repeat(10)).slice(0, 500) : '';
+  const c: PaperComment[] = [
+    { id: 'c1', paper: w.current.active_paper ?? null, key: 'x', quote: T('第一段', 'First paragraph'), ri: 1, by: w.stress ? 'Alexandra Konstantinopoulou-Wang' : T('赵同学', 'Sam Zhao'),
+      at: isoAgo(600), t: '12:03', text: long || T('这句能不能举个具体例子？', 'Can this sentence get a concrete example?'), resolved: false,
+      replies: [{ id: 'c1-1', by: w.current.participants?.[0]?.name ?? 'host', at: isoAgo(500), t: '13:10', text: T('下周补上', 'Next week') }] },
+    { id: 'c2', paper: w.current.active_paper ?? null, key: 'y', quote: T('实验', 'Experiments'), ri: 4, by: T('李老师', 'Prof. Li'), at: isoAgo(300), t: '30:00',
+      text: T('要写清楚是哪个数据集。', 'Say which dataset this is.'), resolved: true, resolved_by: T('赵同学', 'Sam Zhao'), replies: [] },
+  ];
+  w.current.comments = c;
+  if (w.relay.state) (w.relay.state as { comments?: PaperComment[] }).comments = clone(c);
   return w;
 }
 /** a fresh install: no paper, no meeting, no model source picked */
@@ -420,6 +688,7 @@ export function fresh(w: World): World {
   c.papers = [];
   c.active_paper = null;
   w.provider = { ...w.provider, kind: 'unset', base_url: '', fast: '', main: '', key_set: false, key_tail: '', active: false };
+  w.usageMonth = { month: w.usageMonth.month, mode: 'none', models: [], tokens: 0, costs: {} };
   w.meetings = [];
   w.details = {};
   // (the first-run guide was skipped: see firstRun for the guide itself); no speech model downloaded yet

@@ -721,6 +721,41 @@
   margin-inline-end: 5px;
   vertical-align: -1px;
 }
+/* 散会后自动保存: the folder (or why it was refused) on one line in the same place, cut with …; the things to save
+   as one row of ticks under their title */
+.st-path {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.st-detail.warn .st-path {
+  max-width: calc(100% - 18px);
+}
+.st-autosave-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  padding: 0 0 12px;
+}
+.st-autosave-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ink-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.st-autosave-item input {
+  margin: 0;
+  accent-color: var(--brand-ink);
+}
+.st-autosave-item:has(input:disabled) {
+  cursor: default;
+}
 /* Add a cloud model: the lead, then one form grid — labels right-aligned in a 96 px column, controls filling the rest */
 
 /* Projects: the row's actions behind ⋯ on hover (and a right-click), as the Mac's ProjectsPane */
@@ -773,8 +808,62 @@
   outline: none;
   border-color: var(--brand, #3b82f6);
 }
+/* 会出报错 / 测试结果的这几行：平时也留出说明那一行的高度，报错出来不把下面几行往下推 */
+.st-row[data-setting='general.name'],
+.st-row[data-setting='general.provider_check'],
+.st-row[data-setting='speech.voice_test'],
+.st-row[data-setting='general.relay_check'],
+.st-row[data-setting='general.summary_template'] {
+  min-height: 64px;
+}
+.app .st-name.st-mono {
+  font-family: var(--mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
 .app .st-name.st-wide {
   width: 320px;
+}
+/* 型号：输入框 + 右边一个选型号的小按钮，合起来和别的输入框一样宽；按钮里箭头和转圈占同一个格子 */
+.st-combo {
+  display: inline-flex;
+  width: 320px;
+}
+.app .st-combo .st-name {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+  border-start-end-radius: 0;
+  border-end-end-radius: 0;
+  text-overflow: ellipsis;
+}
+.app .st-combo .st-combo-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  min-width: 30px;
+  min-height: var(--ctl-h);
+  padding: 0;
+  border: 1px solid var(--ctl-border);
+  border-inline-start: 0;
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: var(--ctl-bg);
+  color: var(--mute);
+}
+.app .st-combo .st-combo-btn:hover:not(:disabled) {
+  color: var(--ink);
+}
+/* 本月用量：一行，太长省略号（悬停看每个型号） */
+.st-usage {
+  display: inline-block;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2, var(--ink));
 }
 /* 名字颜色：一排小圆点，选中的外面一圈 */
 .st-swatches {

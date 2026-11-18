@@ -7,6 +7,16 @@
     POST /api/storage/auto             {"days": 0|30|90|180}：自动删除录屏（0 = 从不）；存下来马上按新期限清一次
     POST /api/storage/models           {"paths": [...]}：不用的模型送进回收站（只认 scan 里列为不用的）
     POST /api/storage/caches           {}：清临时文件（语音缓存不动）
+    POST /api/storage/retention        {"days": 0|30|90|180|365}：自动删除旧会议的逐字稿和纪要（0 = 从不，默认）；
+                                       存下来马上按新期限清一次（会删哪些先由 scan 的 records.retention.preview 列给你确认）
+
+逐字稿和纪要的保留期（第 8 批）：到期的会议，逐字稿（各个版本、删改清单、重转写记录、手改记录 transcript.edits.json，
+录屏文件夹里录屏软件自己那份转写）、纪要、书签、遗留勾选送进回收站（RECORD_FILES、SESSION_RECORD_FILES）。留着：
+meta.json（会议名、时间、时长、论文）、participants.json（谁来了）、board.json（修改清单）、
+diff.html（修订对比）、usage.json（用量）、录屏（录屏有自己的期限）、截图。修改清单和修订
+对比是论文改了什么，论文本身也留着，所以不删；它们每条修改里带着当时说的那句话（board.json 的 remark）。散会后自动
+保存到你选的文件夹里的那几份不动。删过的会在 meta.json 记 records_removed（时间）和 records_days（按几天删的）。
+按散会时间（没有就开会时间）算几天前；正在开的会、还在收尾的会不动。示例会议不在会议库里，不受影响。
 
 录屏 = 会议录屏文件夹（meta.json 的 session，Blurt 录屏软件建的 …/sessions/<时间戳>/）里的录像和录音：recording.*
 （录像，连同 recording.scan.npz）、audio.*、live/audio.pcm。逐字稿、截图（meeting/shot-*.png，逐字稿里的行指着它们）、
@@ -398,9 +408,175 @@ def start_auto_clean(viewer, every: float = 24 * 3600, delay: float = 120.0) -> 
                     log.info("自动删除录屏：%d 段，%.1f MB", r["count"], r["bytes"] / 1e6)
             except Exception as e:          # 一次没清成不该让线程死掉
                 log.warning("自动删除录屏没成：%r", e)
+            try:
+                r = apply_records_auto(viewer)
+                if r["count"]:
+                    log.info("自动删除逐字稿和纪要：%d 场", r["count"])
+            except Exception as e:
+                log.warning("自动删除逐字稿和纪要没成：%r", e)
             time.sleep(every)
 
     threading.Thread(target=run, name="storage-auto-clean", daemon=True).start()
+
+
+# ---------------------------------------------------------------- 逐字稿和纪要的保留期（见文件头）
+RECORD_CHOICES = (0, 30, 90, 180, 365)
+RECORD_AGES = (30, 90, 180, 365)
+RECORD_FILES = ("transcript.jsonl", "transcript.live.jsonl", "transcript.clean.jsonl", "cleanup.json", "retranscribe.json",
+                "transcript.edits.json", "summary.json", "summary.md", "bookmarks.json", "carry.json", "carry_in.json")
+SESSION_RECORD_FILES = ("transcript.json", "transcript.txt", "live/transcript.jsonl", "live/preview.json")
+PREVIEW_MAX = 200                  # 确认框里最多列这么多场（再多只报个数）
+
+
+def records_days() -> int:
+    d = _read_json(SETTINGS)
+    try:
+        v = int((d or {}).get("records_days") or 0)
+    except (TypeError, ValueError, AttributeError):
+        return 0
+    return v if v in RECORD_CHOICES else 0
+
+
+def _iso_ts(s) -> float | None:
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(str(s)).timestamp() if s else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _clean_title(t) -> str:
+    import re
+    return re.sub(r"\s*·\s*\d{1,2}月\d{1,2}日\s*\d{1,2}:\d{2}\s*$", "", str(t or "")).strip()
+
+
+def record_rows(viewer=None) -> list[dict]:
+    """会议库里还有逐字稿或纪要的每场会：{id, title, started, age_days, files（会议文件夹里的）, session_files
+    （录屏文件夹里那份转写，别的会也指着这段录屏、或者它正在录时不算）, bytes, busy}。新的在前。"""
+    mroot = _meetings_root(viewer)
+    metas: list[tuple[Path, dict]] = []
+    for d in _children(mroot):
+        m = _read_json(d / "meta.json")
+        if isinstance(m, dict) and m.get("id"):
+            metas.append((d, m))
+    linked: dict[str, dict] = {}
+    by_session: dict[str, list[str]] = {}
+    for _d, m in metas:
+        if m.get("session"):
+            k = _key(m["session"])
+            linked.setdefault(k, m)
+            by_session.setdefault(k, []).append(str(m["id"]))
+    busy_sessions = _busy(viewer, linked)
+    proc = getattr(viewer, "processing", None)
+    now = time.time()
+    rows = []
+    for d, m in sorted(metas, key=lambda x: x[0].name, reverse=True):
+        if m.get("sample"):
+            continue
+        files = [d / n for n in RECORD_FILES if (d / n).is_file()]
+        sfiles: list[Path] = []
+        sd = Path(str(m["session"])) if m.get("session") else None
+        if sd is not None and _is_session_dir(sd) and _key(sd) not in busy_sessions:
+            sfiles = [sd / n for n in SESSION_RECORD_FILES if (sd / n).is_file()]
+        if not files and not sfiles:
+            continue
+        busy = m.get("state") == "live"
+        if not busy and callable(proc):
+            try:
+                busy = bool(proc(str(m.get("id") or "")))
+            except Exception:
+                busy = False
+        t = _iso_ts(m.get("ended")) or _iso_ts(m.get("started"))
+        if t is None:
+            try:
+                t = d.stat().st_mtime
+            except OSError:
+                t = now
+        rows.append({"id": str(m["id"]), "title": _clean_title(m.get("title")), "started": m.get("started"),
+                     "age_days": max(0.0, (now - t) / 86400), "files": files, "session_files": sfiles,
+                     "session": _key(sd) if sd is not None else None,
+                     "bytes": sum(du(f) for f in files + sfiles), "busy": busy, "dir": d})
+    for r in rows:
+        r["shared"] = len(by_session.get(r["session"] or "", [])) > 1
+    return rows
+
+
+def _pick_records(rows: list[dict], days: int) -> list[dict]:
+    return [r for r in rows if days and not r["busy"] and r["age_days"] >= days]
+
+
+def records_preview(rows: list[dict], days: int) -> dict:
+    """打开 days 天的保留期时马上会删的：{count, bytes, meetings: [{id, title, started}]}（最多 PREVIEW_MAX 场）。"""
+    picked = _pick_records(rows, days)
+    return {"count": len(picked), "bytes": sum(r["bytes"] for r in picked),
+            "meetings": [{"id": r["id"], "title": r["title"], "started": r["started"]} for r in picked[:PREVIEW_MAX]]}
+
+
+def _stamp_records(d: Path, days: int) -> None:
+    f = d / "meta.json"
+    m = _read_json(f)
+    if not isinstance(m, dict):
+        return
+    m["records_removed"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    m["records_days"] = int(days)
+    tmp = f.with_name(f.name + ".storage.tmp")
+    try:
+        tmp.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(tmp, f)
+    except OSError:
+        pass
+
+
+def trash_records(viewer=None, days: int = 0) -> dict:
+    """到期会议的逐字稿和纪要送回收站（见文件头）→ {count（场）, bytes}。录屏文件夹里那份转写：指着这段录屏的会都到期了才删。"""
+    if not days:
+        return {"count": 0, "bytes": 0}
+    with _lock:
+        rows = record_rows(viewer)
+        picked = _pick_records(rows, days)
+        ids = {r["id"] for r in picked}
+        keep_sessions = {r["session"] for r in rows if r["id"] not in ids and r["session"]}
+        n, freed = 0, 0
+        for r in picked:
+            files = [f for f in r["files"] if _touchable(f)]
+            if r["session"] not in keep_sessions:
+                files += [f for f in r["session_files"] if _touchable(f)]
+            if not files:
+                continue
+            sizes = {_key(f): du(f) for f in files}
+            gone = _recycle(files)
+            if gone:
+                _stamp_records(r["dir"], days)
+                n += 1
+                freed += sum(sizes.get(_key(f), 0) for f in gone)
+        if n:
+            log.info("逐字稿和纪要送回收站：%d 场，%.1f MB（%d 天前的）", n, freed / 1e6, days)
+        return {"count": n, "bytes": freed}
+
+
+def set_records_auto(viewer, days) -> dict:
+    """自动删除逐字稿和纪要的期限（0 = 从不）存进 ~/.zuhui/storage.json，马上按新期限清一次 → {days, count, bytes}。"""
+    try:
+        days = int(days or 0)
+    except (TypeError, ValueError):
+        raise ValueError("days")
+    if days not in RECORD_CHOICES:
+        raise ValueError("days")
+    with _lock:
+        d = _read_json(SETTINGS)
+        d = d if isinstance(d, dict) else {}
+        d["records_days"] = days
+        d["records_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        STATE.mkdir(parents=True, exist_ok=True)
+        tmp = SETTINGS.with_name(SETTINGS.name + ".tmp")
+        tmp.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(tmp, SETTINGS)
+    out = trash_records(viewer, days) if days else {"count": 0, "bytes": 0}
+    return {"days": days, **out}
+
+
+def apply_records_auto(viewer=None) -> dict:
+    return trash_records(viewer, records_days())
 
 
 # ---------------------------------------------------------------- 模型
@@ -678,6 +854,12 @@ def scan(viewer=None) -> dict:
             total += r["bytes"] + r["rest"]
     models_in_home = md["bytes"]
     records = meetings_bytes + papers_bytes
+    try:
+        rrows = record_rows(viewer)
+    except Exception as e:                 # 保留期那一行读不出来，别的照样给
+        log.warning("逐字稿保留期：列不出来 %r", e)
+        rrows = []
+    retention = {"days": records_days(), "preview": {str(d): records_preview(rrows, d) for d in RECORD_AGES}}
     split = {"recordings": rec_bytes, "models": models_in_home, "records": records}
     split["other"] = max(0, total - sum(split.values()))
 
@@ -696,7 +878,8 @@ def scan(viewer=None) -> dict:
         "models": md,
         "records": {"bytes": records,
                     "meetings": {"count": len(meeting_dirs), "bytes": meetings_bytes, "path": str(mroot)},
-                    "papers": {"count": len(papers), "bytes": papers_bytes, "path": str(papers_dir)}},
+                    "papers": {"count": len(papers), "bytes": papers_bytes, "path": str(papers_dir)},
+                    "retention": retention},
         "caches": {"bytes": cache_bytes, "clearable": clearable, "path": str(STATE / "cache")},
         "logs": {"bytes": logs_bytes, "path": str(STATE)},
     }
@@ -717,6 +900,8 @@ def post(viewer, path: str, body: dict) -> tuple[dict, int]:
             return {"ok": True, **trash_recordings(viewer, days, which)}, 200
         if act == "auto":
             return {"ok": True, **set_auto(viewer, body.get("days"))}, 200
+        if act == "retention":
+            return {"ok": True, **set_records_auto(viewer, body.get("days"))}, 200
         if act == "models":
             return {"ok": True, **trash_models(viewer, body.get("paths"))}, 200
         if act == "caches":

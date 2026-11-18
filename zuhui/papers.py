@@ -6,6 +6,8 @@
                             写到同目录下的 <名字>-bloom/<名字>.md，学生改这份（不回写 PDF）；
                             MinerU 没装 / 失败 / 超时就退回 PyMuPDF 按版面块抽纯文本
     .docx                   pandoc 转 gfm（公式 TeX，图抽进 figures/），同样写到 <名字>-bloom/<名字>.md
+    .pptx                   转成讲稿（每页标题、正文、表格、图、备注，zuhui/pptx_conv.py），写到 <名字>-bloom/<名字>.md；
+                            只读：AI 不改 PPT，手改一段、写回也不做
 转换出来的放在单独的 <名字>-bloom/ 文件夹：同一目录里几篇论文的图、你自己的 figures/ 都不会被覆盖。
 以前导入时放在 PDF 旁边的 <名字>.md 如果开会时改过，就接着用它。
 开会时的原样另存一份到 ~/.zuhui/papers/<时间戳>-<文件名>/original.<ext>，对比页拿它当"原文"。
@@ -241,9 +243,9 @@ def _convert(src: Path, ext: str, folder: Path, work: Path, in_place: bool, cb) 
     pandoc = _find_pandoc() if ext == ".docx" else None
     if ext == ".docx" and not pandoc:
         raise RuntimeError("没有 pandoc，转不了 .docx")
-    # 1) 以前放在源文件旁边、开会改过的那份
+    # 1) 以前放在源文件旁边、开会改过的那份（PPT 没有这回事：旁边同名的 .md 是你自己的）
     legacy = folder / (src.stem + ".md")
-    if in_place and legacy.exists() and legacy.stat().st_mtime >= src.stat().st_mtime \
+    if ext != ".pptx" and in_place and legacy.exists() and legacy.stat().st_mtime >= src.stat().st_mtime \
             and _legacy_edited(src, legacy, ext, pandoc):
         return legacy, {"engine": "existing", "note": "沿用旁边已有的、改过的 " + legacy.name}
     # 2) 转换结果放进自己的文件夹
@@ -280,6 +282,10 @@ def _convert(src: Path, ext: str, folder: Path, work: Path, in_place: bool, cb) 
                 _report(cb, stage="PyMuPDF", text="MinerU 没转成，改用纯文本抽取")
                 shutil.rmtree(stage / "figures", ignore_errors=True)
                 md, stats = _pdf_text(src), {"engine": "pymupdf", "warning": str(e)[:300]}
+        elif ext == ".pptx":
+            from . import pptx_conv
+            _report(cb, stage="pptx", text="转 PPT")
+            md, stats = pptx_conv.convert_pptx(src, stage)
         else:
             _report(cb, stage="pandoc", text="pandoc 转 Word")
             md, stats = pdfconv.convert_docx(src, stage, pandoc)
@@ -291,7 +297,7 @@ def _convert(src: Path, ext: str, folder: Path, work: Path, in_place: bool, cb) 
         meta_p.write_text(json.dumps({"engine": stats.get("engine"), "source": str(src), "src_mtime": src.stat().st_mtime,
                                       "md_sha1": _sha1(dst), "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                       **({"conv": pdfconv.DOCX_VERSION} if ext == ".docx" else {}),
-                                      **{k: v for k, v in stats.items() if k in ("figures", "tables", "equations", "tier", "secs")}},
+                                      **{k: v for k, v in stats.items() if k in ("figures", "tables", "equations", "tier", "secs", "slides")}},
                                      ensure_ascii=False, indent=1), encoding="utf-8")
     except OSError:
         pass
@@ -307,8 +313,8 @@ def import_file(src: str | Path, progress=None) -> dict:
     if src.is_dir():
         raise ValueError(f"这是一个文件夹，不是论文文件：{src.name}")
     ext = src.suffix.lower()
-    if ext not in TEXT_EXT | {".tex", ".pdf", ".docx"}:
-        raise ValueError(f"不支持的文件类型：{ext or '（没有扩展名）'}（支持 pdf / md / tex / docx / txt）")
+    if ext not in TEXT_EXT | {".tex", ".pdf", ".docx", ".pptx"}:
+        raise ValueError(f"不支持的文件类型：{ext or '（没有扩展名）'}（支持 pdf / md / tex / docx / pptx / txt）")
     if src.stat().st_size == 0:
         raise ValueError(f"这个文件是空的：{src.name}")
     if ext == ".pdf":
@@ -348,7 +354,7 @@ def _import(src: Path, ext: str, progress) -> dict:
             dst = work / (src.name if ext == ".tex" else src.stem + ".md")
             shutil.copyfile(src, dst)
         kind = "latex" if ext == ".tex" else "markdown"
-    elif ext in (".pdf", ".docx"):
+    elif ext in (".pdf", ".docx", ".pptx"):
         try:
             try:
                 dst, conv = _convert(src, ext, folder, work, in_place, progress)
@@ -363,9 +369,9 @@ def _import(src: Path, ext: str, progress) -> dict:
             if len(re.sub(r"\s", "", body)) < 20:
                 shutil.rmtree(keep, ignore_errors=True)
                 raise ValueError(f"这份 PDF 里抽不出文字（多半是扫描件）：{src.name}。先用 OCR 转成文字版再拖进来。")
-        kind = "pdf" if ext == ".pdf" else "docx"
+        kind = "pdf" if ext == ".pdf" else "pptx" if ext == ".pptx" else "docx"
     else:
-        raise ValueError(f"不支持的文件类型：{ext}（支持 pdf / md / tex / docx / txt）")
+        raise ValueError(f"不支持的文件类型：{ext}（支持 pdf / md / tex / docx / pptx / txt）")
     try:
         chars = len(dst.read_text(encoding="utf-8-sig"))
     except UnicodeDecodeError:

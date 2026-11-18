@@ -6,7 +6,7 @@
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { Icon } from '@blurt/icons';
 import { i18n, t, setMeetingLang } from '../i18n';
-import { fmtDuration, fmtWhen, meetingApi, type Brain, type DevDetail, type DevRun, type Participant } from '../meetingApi';
+import { itemText, fmtDuration, fmtWhen, meetingApi, type Brain, type DevDetail, type DevRun, type Participant } from '../meetingApi';
 import { MeetingLayout, Transcript } from './MeetingLayout';
 import { keep } from './useDismiss';
 
@@ -206,7 +206,7 @@ export function DevMeetings({ active = true }: { active?: boolean }) {
                               {(d.summary.conclusions?.length ?? 0) > 0 && (
                                 <ul className="mt-hp-points">
                                   {d.summary.conclusions.slice(0, 5).map((c, i) => (
-                                    <li key={i}>{c}</li>
+                                    <li key={i}>{itemText(c)}</li>
                                   ))}
                                 </ul>
                               )}

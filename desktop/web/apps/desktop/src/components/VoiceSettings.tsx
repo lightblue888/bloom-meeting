@@ -80,7 +80,7 @@ export function VoiceGroup({ footer, title }: { footer?: string; title?: string 
   const eng = v ? engineOf(v) : null;
   const choices = KINDS.filter((k) => k !== 'clone' || v?.has_clone || v?.voice === 'clone').filter((k) => k !== 'edge' || v?.has_edge || v?.voice === 'edge');
   const hints = choices.map((k) => (k === 'edge' ? S('voice.edge_net') : undefined));
-  const now = !v ? undefined : eng ? S('voice.now', S(`voice.${eng}`)) : S('voice.now_off');
+  const now = v?.voice === 'auto' && eng ? S('voice.now', S(`voice.${eng}`)) : null;
   return (
     <Group id="speech.voice" title={title} footer={footer}>
       <Row id="speech.voice" detail={now}>
@@ -111,15 +111,35 @@ export function VoiceGroup({ footer, title }: { footer?: string; title?: string 
   );
 }
 
+/** "a, b；c" or one per line → the words, trimmed, each once */
+export const splitWords = (raw: string): string[] => [...new Set(raw.split(/[\r\n,，;；\t、]+/).map((x) => x.trim()).filter(Boolean))];
+
 export function HotwordsGroup() {
   const [v, setV] = useVoice();
   const [text, setText] = useState('');
   const [msg, setMsg] = useState<{ text: string; warn: boolean } | null>(null);
   const editing = useRef(false);
   const cancelled = useRef(false);
+  const file = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (v && !editing.current) setText(v.hotwords.join('\n'));
   }, [v]);
+  const max = v?.hot_max ?? 1000;
+  const store = useCallback(
+    async (words: string[], done?: string) => {
+      if (!v) return;
+      try {
+        const x = await setupApi.setVoice({ hotwords: words });
+        setV(x);
+        setText(x.hotwords.join('\n'));
+        setMsg(done ? { text: done, warn: false } : null);
+      } catch (e) {
+        const c = String((e as Error)?.message ?? e);
+        setMsg({ text: c === 'hot_too_long' ? S('voice.hot.too_long', v.hot_len) : c === 'hot_too_many' ? S('voice.hot.count_max', v.hot_max) : S('voice.err.save'), warn: true });
+      }
+    },
+    [v, setV],
+  );
   const save = useCallback(async () => {
     editing.current = false;
     if (cancelled.current) {
@@ -127,29 +147,37 @@ export function HotwordsGroup() {
       return;
     }
     if (!v) return;
-    const words = text.split('\n').map((x) => x.trim()).filter(Boolean);
+    const words = splitWords(text);
     if (words.join('\n') === v.hotwords.join('\n')) return setMsg(null);
+    await store(words);
+  }, [text, v, store]);
+  // a .txt / .csv / .md: one per line, or separated by commas; added after the ones already here
+  const importFile = async (f: File | undefined) => {
+    if (!f || !v) return;
     try {
-      const x = await setupApi.setVoice({ hotwords: words });
-      setV(x);
-      setText(x.hotwords.join('\n'));
-      setMsg({ text: S('voice.hot.saved'), warn: false });
-    } catch (e) {
-      const c = String((e as Error)?.message ?? e);
-      setMsg({ text: c === 'hot_too_long' ? S('voice.hot.too_long', v.hot_len) : c === 'hot_too_many' ? S('voice.hot.count_max', v.hot_max) : S('voice.err.save'), warn: true });
+      const add = splitWords(await f.text()).filter((w) => !v.hotwords.includes(w));
+      const words = [...v.hotwords, ...add].slice(0, max);
+      await store(words, S('voice.hot.imported', words.length - v.hotwords.length));
+    } catch {
+      setMsg({ text: S('voice.err.save'), warn: true });
+    } finally {
+      if (file.current) file.current.value = '';
     }
-  }, [text, v, setV]);
-  const max = v?.hot_max ?? 12;
+  };
+  const count = splitWords(text).length;
   return (
     <Group id="speech.hotwords">
-      <Row id="speech.hotwords" detail={msg?.text ?? S('settings.speech.hotwords.detail', max)} warn={!!msg?.warn} />
+      <Row id="speech.hotwords" detail={msg?.text ?? `${count} / ${max}`} warn={!!msg?.warn}>
+        <button disabled={!v} onClick={() => file.current?.click()} data-testid="hotwords-import">{S('voice.hot.import')}</button>
+        <input ref={file} type="file" accept=".txt,.csv,.md,text/plain,text/csv" hidden onChange={(e) => void importFile(e.target.files?.[0])} />
+      </Row>
       <div className="st-hot">
         <textarea
           value={text}
-          rows={4}
+          rows={6}
           disabled={!v}
           spellCheck={false}
-          maxLength={max * ((v?.hot_len ?? 20) + 2)}
+          maxLength={max * ((v?.hot_len ?? 40) + 2)}
           placeholder={S('voice.hot.placeholder')}
           aria-label={S('settings.speech.hotwords_row')}
           data-testid="hotwords"

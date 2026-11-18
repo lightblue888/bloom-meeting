@@ -1537,9 +1537,9 @@ def install(stage: Path, md: str, dst: Path) -> None:
         old = json.loads((figs_old / "figures.json").read_text(encoding="utf-8"))
         for v in (old or {}).values():
             f = figs_old / Path(str((v or {}).get("file") or "")).name
-            if f.is_file() and (v or {}).get("source") in ("mineru", "docx"):
+            if f.is_file() and (v or {}).get("source") in ("mineru", "docx", "pptx"):
                 f.unlink()
-        if all((v or {}).get("source") in ("mineru", "docx") for v in (old or {}).values()):
+        if all((v or {}).get("source") in ("mineru", "docx", "pptx") for v in (old or {}).values()):
             (figs_old / "figures.json").unlink()
     except (OSError, ValueError, AttributeError):
         pass

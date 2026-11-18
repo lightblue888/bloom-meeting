@@ -138,8 +138,14 @@ def set_lang(lang: str) -> None:
 
 def speakable(text: str) -> str:
     """念之前把数字写法换成读法：第2段 → 第二段，表 2 → 表二，式 (2) → 式二，3.1 → 三点一，0.25 → 零点二五。
-    合成器自己的前端会把"第2段"读成"第两段"、把"2.3.1"读成"二.三点一"。英文组会原样念（英文前端自己会读数字）。"""
+    合成器自己的前端会把"第2段"读成"第两段"、把"2.3.1"读成"二.三点一"。英文组会原样念（英文前端自己会读数字）。
+    最先按设置 → 语音 → 读法换（第 7 批，voice_prefs.say_as）：克隆音色、微软在线语音、Windows 自带的都走这里。"""
     t = text or ""
+    try:
+        from .voice_prefs import say_as
+        t = say_as(t)
+    except Exception:
+        log.debug("读法没换成", exc_info=True)
     if LANG == "en":
         return t
     t = re.sub(r"第\s*(\d{1,3})\s*(?=[节章段条处页行个张部步点句])", lambda m: "第" + _cn_int(int(m.group(1))), t)

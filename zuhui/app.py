@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 from . import roles
+from . import inmeeting
 from . import dialog_rules as _rules
 from .board import Board
 from .draft_match import same_meaning
@@ -457,6 +458,15 @@ def _write_atomic(path: Path, obj) -> None:
 from .aftermeeting import PostMeeting, sizes_for as _post_sizes  # noqa: E402
 
 
+def _usage_begin(meeting_dir) -> None:
+    """开会 / 接着开：之后调 API 的 token 用量记进这场会（zuhui/usage.py）。记账出错不影响开会。"""
+    try:
+        from . import usage
+        usage.begin(meeting_dir)
+    except Exception:
+        pass
+
+
 # 短闲聊才走轻前缀：一沾论文、小节、改稿、指代（这/那），就用带全文的前缀
 _PAPERISH = re.compile(r"(?i)\d|[一二三四五六七八九十]点[一二三四五六七八九十]|节|章|段|表|图|公式|论文|文章|稿|引言|摘要|方法|实验|"
                        r"结果|结论|定义|定理|引理|证明|参考|文献|数据|指标|基准|bench|改|删|加|写|换|调|这|那|哪|任务|进度|第|读")
@@ -529,6 +539,11 @@ class Meeting:
         self.fast = FastBrain(self.cfg, self.paper, self.board)
         self.hands = Hands(self.cfg, self.board, self._on_task_done, paper_path(self.cfg), dry=dry)
         self.meetings = Meetings()
+        # 往期会议（zuhui/past.py）：会上 AI 的固定前缀里放同一篇论文最近几场的要点，问到以前时附上检索到的往期片段
+        self._past_cache: tuple | None = None
+        self.fast.past_fn = self._past_brief
+        self.fast.past_recall = self._past_recall
+        threading.Thread(target=self._past_warm, name="past-index", daemon=True).start()
         self.events: queue.Queue = queue.Queue()
         self.pending_reports: list[dict] = []
         self.pending_answers: list[dict] = []          # 查论文的答案：查的时候被打断了，查好了等空下来自己念
@@ -568,6 +583,8 @@ class Meeting:
         self._judged: set[str] = set()                # 已经提醒过 / 判过"不像"两次的参会者
         self._p_wait: list[dict] = []                 # 参会者说完的话，等学生这一轮说完再处理（问了问题才答）
         self._hold_last = ""                          # 上次"我去论文里查一下"用的是哪句（换着说）
+        # 第 3 批（zuhui/inmeeting.py）：先选中再说的那一段
+        self.anchor = inmeeting.Anchor()
         _say = self.mouth.say
 
         def _say_and_note(text, on_start=None, _say=_say):
@@ -667,6 +684,7 @@ class Meeting:
             return
         resumed = self.meetings.resume(session)
         if resumed:
+            _usage_begin(self.meetings.root / resumed["id"])
             self.log("meeting", state="接着开", text=resumed.get("title") or session)
             self._papers_changed(papers_of(resumed))   # 崩之前摊开的那几篇（屏幕上那篇已由 current_paper.json 接上）
             self._bridge_on()
@@ -691,6 +709,20 @@ class Meeting:
         here, papers = self._meeting_papers()
         m = self.meetings.start(session=session, title=self.paper.title, lang="en" if self._en() else "zh",
                                 papers=papers, active=here["id"])
+        try:                                     # 第 6 批：每篇论文开会前的样子存一份（论文的历次版本，zuhui/paper_versions.py）
+            from . import paper_versions
+            paper_versions.snapshot_meeting(m, "before")
+        except Exception as e:
+            self.log("fast_error", error=self._L(f"开会前的论文版本没存上：{e!r}", f"saving the paper's version failed: {e!r}"))
+        _usage_begin(self.meetings.root / m["id"])  # 用 API 时：这场会的 token 用量记进会议目录（zuhui/usage.py）
+        try:                                     # 上次遗留：还没勾掉的抄进这场会（AI 知道这些，散会纪要写出落实了没有）
+            from . import past
+            past.snapshot_in(self.meetings, m["id"], past.carry(self.meetings, here, exclude=m["id"]))
+        except Exception as e:
+            self.log("fast_error", error=self._L(f"上次遗留没带进来：{e!r}", f"carrying last meeting's items failed: {e!r}"))
+        self.anchor.clear()
+        self._past_cache = None
+        threading.Thread(target=self._past_warm, name="past-index", daemon=True).start()
         self._papers_changed(papers_of(m))
         self._seen_guests = {}
         self._guest_said, self._judged, self._frag, self._p_wait = {}, set(), None, []
@@ -750,6 +782,7 @@ class Meeting:
             self._flush_guests(drop=True)
             self._p_wait = []
             self.meetings.set_partial(None)
+            self.anchor.clear()
             m = self.meetings.end(board_tasks=self.board.tasks())
             if not m:
                 return None
@@ -778,15 +811,21 @@ class Meeting:
         return m
 
     def _watch_post(self, post: PostMeeting, session: str | None, m: dict, talk: threading.Thread | None = None) -> None:
-        """散会后的后台收尾（见 zuhui/aftermeeting.py）。出错只记日志，不影响后端。"""
+        """散会后的后台收尾（见 zuhui/aftermeeting.py）。出错只记日志，不影响后端。
+        收尾时调的接口（纪要、整理、没改完的稿）也算这场会的用量；收完尾才不再算。"""
+        from . import usage
+        d = self.meetings.root / m["id"]
         try:
             from . import aftermeeting
-            aftermeeting.run(self, post, m, session, talk)
+            with usage.bind(d):
+                aftermeeting.run(self, post, m, session, talk)
         except Exception as e:
             self.log("fast_error", error=self._L(f"散会收尾出错：{e!r}", f"wrap-up after the meeting failed: {e!r}"))
             for k in ("save", "transcript", "polish", "summary"):
                 if post.state(k) not in ("done", "failed"):
                     post.set(k, "failed", error=f"散会收尾出错：{e}")
+        finally:
+            usage.finish(d)
 
     def _save_board_snapshot(self):
         """工人改完一条就把任务板快照写进当前（或刚结束的）会议目录，历史页能看到。"""
@@ -918,6 +957,48 @@ class Meeting:
         ps = papers_of(self.meetings.current())
         return ps[0]["id"] if ps else None
 
+    # ---------- 往期会议（zuhui/past.py） ----------
+    def _past_warm(self) -> None:
+        try:
+            from . import past
+            past.warm(self.meetings)
+        except Exception:
+            pass
+
+    def _past_names(self) -> dict:
+        import getpass
+        return {"teacher": str((self.cfg.get("meeting") or {}).get("me") or getpass.getuser() or "主持人"),
+                "student": assistant_name(self.cfg)}
+
+    def _past_brief(self) -> str:
+        """会上 AI 固定前缀里的往期要点（屏幕上这篇论文最近几场会 + 遗留项）。开会时按（这篇、这场）定下来，一场会里不变，
+        接口缓存照样命中；没开会时遗留项勾了就重算。"""
+        from . import past
+        cur = self.meetings.current()
+        here = self._paper_now()
+        mid = cur.get("id") if cur else None
+        key = (here.get("id"), mid, None if mid else past.generation())
+        c = self._past_cache
+        if c and c[0] == key:
+            return c[1]
+        text = past.brief(self.meetings, here, exclude=mid, carried=past.carry_in(self.meetings, mid) if mid else None)
+        self._past_cache = (key, text)
+        return text
+
+    def _past_recall(self, text: str) -> str:
+        """这一句问到了以前的会（"上次""上周"……）：往期纪要和逐字稿里最相关的几段；没问就空串。"""
+        from . import past
+        cur = self.meetings.current()
+        return past.recall_block(self.meetings, text, self._paper_now(), exclude=cur.get("id") if cur else None,
+                                 names=self._past_names())
+
+    def _past_for_deep(self, said: str) -> str:
+        """转后台查（#deep）时附上的往期：要点 + 这句问到以前时检索到的片段。"""
+        try:
+            return "\n\n".join(x for x in (self._past_brief(), self._past_recall(said)) if x)
+        except Exception:
+            return ""
+
     def _papers_changed(self, papers: list[dict]) -> None:
         """这场会摊开的论文变了（开会、接着开、加了一篇、切了一篇）：对比页记下（散会快照一页几篇、旧任务算第一篇），
         快嘴记下别的几篇叫什么（对方说"刚才那篇"时知道有这么几篇）。"""
@@ -946,6 +1027,13 @@ class Meeting:
             papers.append(entry)
         out = self._activate(old or entry, papers, new=old is None)
         out.update({k: info.get(k) for k in ("kind", "chars", "in_place", "source")})
+        if old is None:                            # 第 6 批：会中新加进来的这篇，加进来时的样子存一份
+            try:
+                from . import paper_versions
+                cur = self.meetings.current() or {}
+                paper_versions.snapshot(entry["path"], entry.get("name"), "before", cur.get("id"), cur.get("title"))
+            except Exception:
+                pass
         return out
 
     def switch_paper(self, pid: str) -> dict:
@@ -1051,8 +1139,12 @@ class Meeting:
                 self.viewer.on_profile = self._on_profile      # 设置里改了昵称
                 self.viewer.on_provider = self._on_provider    # 设置里换了模型来源
                 self.viewer.voice_test = self._voice_test      # 设置 / 引导里的"试听"
+                self.viewer.on_invite = lambda: self._bridge_on() if self.meetings.current() else None   # 开会时才打开邀请
                 self.viewer.mic_mute = lambda m=None: self.ears.set_muted(m) if self.ears is not None else False   # 主持人麦克风静音（m=None 只问）
                 self.viewer.on_log = self.log                  # 访客在会议页上做的事记进会议日志
+                self.viewer.on_ask = self.ask_typed            # 打字问 AI（主持人、共同主持人）
+                self.viewer.anchor = self.anchor               # 先选中再说：页面报上来的那段，下一句以它为准
+                self.viewer.quiet = self._quiet_s              # 多久没人说话（主持人那边提醒散会）
                 if not any(self.board.counts().values()):
                     self.viewer.ensure_base(rebase=True)  # 任务板是空的 = 新一场会：以当前镜像为"原文"
                 self.viewer.serve(open_browser=open_browser)
@@ -2339,6 +2431,31 @@ class Meeting:
             self._start_talk(self.handle, u)
             return
 
+    # ---------- 第 3 批：打字问 AI（zuhui/inmeeting.py、zuhui/live_api.py） ----------
+    def ask_typed(self, text, by: str | None = None) -> dict:
+        """会议页上打字问 AI（POST /api/ask），只有主持人和共同主持人（by = 访客页上的共同主持人）：和说了这句一样
+        （走 handle，进逐字稿、标出是打字的，该念就念，能让 AI 改论文）。
+        空的 / 太长 ValueError("empty" / "too_long")，没在开会 ValueError("not_live")，不是共同主持人 ValueError("cohost_only")。"""
+        q = inmeeting.clean_question(text)
+        if not self.meetings.current():
+            raise ValueError("not_live")
+        by = (str(by).strip() or None) if by else None
+        if by and not roles.is_cohost(by):
+            raise ValueError("cohost_only")
+        now = time.time()
+        u = Utterance(n=0, text=q, t="", shot=None, session="", heard=now, landed=now, sent=now, started=now)
+        u.typed = True
+        if by:
+            u.guest = by
+        self._on_event("utterance", u)
+        return {}
+
+    def _quiet_s(self) -> float:
+        """开着会多久没人说话（主持人那边 10 分钟提醒一次散会，不自动散会）。"""
+        busy = bool(getattr(self.mouth, "speaking", False) or self.meetings.partial
+                    or (self.ears is not None and self.ears.user_talking(0.5)) or self._guests_talking())
+        return inmeeting.quiet_seconds(time.time(), self.meetings.t0, self.meetings.current_lines(),
+                                       last_speech=self.last_speech, busy=busy)
 
     # ---------- 换模型：会议页卡片上点（viewer.models_set，by=None），或者开会时说一句（主持人、老师才算数） ----------
     def models_get(self) -> dict:
@@ -2485,11 +2602,12 @@ class Meeting:
     def handle(self, u: Utterance, cancel: threading.Event | None = None):
         guest = getattr(u, "guest", None)            # 共同主持人 / 参会者说的（会议语音桥那一路）；None = 你说的
         is_part = bool(getattr(u, "participant", False))   # 参会者：问了问题才答（模型判断），要求不照办
+        typed = bool(getattr(u, "typed", False))     # 打字发的（ask_typed）：等于叫了 AI 说这句，没有回声、半截话这些事
         if not self.meetings.current():
             # 散会之后才到的话（录音最后一截的转写晚到）：不记进已经散了的会，学生也不接
             self.log("after_end", text=u.text)
             return
-        if not guest:
+        if not guest and not typed:
             leak = self._guest_leak(u, cancel)
             if leak:
                 self.log("echo", text=u.text, guest=leak, why=self._L(f"{leak} 的声音从扬声器漏进麦克风（和他那一路转出来的字对上了），丢掉", f"{leak}'s voice leaked into the mic (it matches their own track); dropped"))
@@ -2507,16 +2625,17 @@ class Meeting:
                 return
             if cleaned != u.text:
                 u.text = cleaned
-        if not is_part and not self._merge_fragment(u):
+        if not is_part and not typed and not self._merge_fragment(u):
             return
+        mark = {"typed": True} if typed else None    # 逐字稿上标出是打字的
         if getattr(u, "recorded", False):
             pass                                     # 参会者的话：说完时已经记进逐字稿了
         elif guest:
-            self.log("teacher", n=u.n, text=u.text, guest=guest)
-            self._hline = self.meetings.add_line("guest", u.text, name=guest, at=getattr(u, "started", None))
+            self.log("teacher", n=u.n, text=u.text, guest=guest, typed=typed or None)
+            self._hline = self.meetings.add_line("guest", u.text, name=guest, at=getattr(u, "started", None), extra=mark)
         else:
-            self.log("teacher", n=u.n, text=u.text)
-            self._hline = self.meetings.add_line("teacher", u.text, at=getattr(u, "started", None))
+            self.log("teacher", n=u.n, text=u.text, typed=typed or None)
+            self._hline = self.meetings.add_line("teacher", u.text, at=getattr(u, "started", None), extra=mark)
         if getattr(u, "recorded", False):
             self._hline = getattr(self, "_guest_lines", {}).get(guest)
         self.last_speech = time.time()
@@ -2526,12 +2645,12 @@ class Meeting:
             self._spoke[guest] = time.time()
         # 多人在聊：这句是不是冲学生说的（见 _address_level）。两个人的会照旧什么都接
         unmuted = False
-        if getattr(self, "_mute", False) and _CALL_NAME.search(u.text or ""):
+        if getattr(self, "_mute", False) and (typed or _CALL_NAME.search(u.text or "")):
             self._mute = False
             unmuted = True
             self.log("mute", text=self._L("叫了 Claude：解除静音", "Claude was called: unmuted"))
         self._turn_speaker = guest
-        lvl, said = self._said_for(u.text, guest, is_part, at=getattr(u, "started", None))   # 送模型、记历史用这句
+        lvl, said = self._said_for(u.text, guest, is_part, at=getattr(u, "started", None), typed=typed)   # 送模型、记历史用这句
         if unmuted:                              # 叫了名字解除静音：这句话本身照常判断、照常答（第 7 轮：解除那句被吞了）
             said = "【刚才的静音已经解除（这句叫了你的名字），这句照常判断接不接、照常回答】" + said
         hush, only_edit = lvl is None, False
@@ -2566,7 +2685,7 @@ class Meeting:
             said = ("【主持人让你先别说话（叫你的名字再恢复）。这句话里要是交代了要办的事（改稿、记下来），照常写 #edit，"
                     "口头只说“好”；没有要办的事就 #silent】" + said)
             self._mute_turn = True
-        dec = self._addr_decide(u.text, guest) if lvl != "two" else None
+        dec = self._addr_decide(u.text, guest) if lvl != "two" and not typed else None
         if dec is False and lvl is not None:
             lvl, hush = None, True
             said = "【会上还有别人，这句不是在跟你说（软件判断）：标 #silent】" + said
@@ -2584,6 +2703,13 @@ class Meeting:
                 said = said.replace(_HUSH_NOTE, "").replace("【会上还有别人，这句不是在跟你说（软件判断）：标 #silent】", "")
                 self._last_hushed = None
             said = cont["note"] + said
+        # 先选中再说：这个人（主持人 / 共同主持人）刚在论文里选中了一段，这句对 AI 说的话以它为准；用一次就清掉
+        anchor = None if (is_part or hush) else self.anchor.take(by=guest)
+        if anchor:
+            u.anchor = anchor
+            said = inmeeting.anchor_note(anchor) + said
+            self.log("anchor", text=_short(anchor["text"], 80), guest=guest,
+                     why=self._L("这句以选中的那段为准", "this line is about the selected passage"))
         said = self._turn_begin(u, guest, is_part, lvl, hush, said, cont)
         cmd = None if is_part else parse_model_command(u.text)     # 参会者换模型在 _on_guest 里已经回过了
         if cmd:                                      # "对话模型换成 Flash""/model claude-opus-4-6[1m]"：不过模型，换完说一句
@@ -2630,7 +2756,10 @@ class Meeting:
             self._look(u, cancel)
             return
         focus = self._focus()
-        if focus:
+        if getattr(u, "anchor", None):       # 选中的那段：位置以它为准（改稿的工人照它找）
+            a = u.anchor
+            focus = {"section": a.get("section") or (focus or {}).get("section"), "text": a["text"][:200], "no": None, "picked": True}
+        if focus and focus.get("section"):
             fs = self.paper.by_title(focus.get("section"))
             if fs:
                 self.paper.current = fs      # 老师没点名小节时，find() 落回屏幕上正显示的这一节
@@ -3572,13 +3701,26 @@ class Meeting:
                 self._app_todo(title, u)
             return                                   # 参会者的话只答不办：不记改稿任务、不撤销、不看屏幕
         if head == "#edit":
-            remark = f"共同主持人{guest}说：{u.text}" if guest else u.text
+            from .pptx_conv import READONLY_SAY, readonly
+            if readonly(self.paper.path):            # 第 6 批：屏幕上这篇是 PPT 讲稿，只能看不能改（不记改稿任务）
+                self.log("reclass", text=self._L(f"PPT 只能看不能改，没记改稿：{rest}", f"slides are view-only, no edit: {rest}"))
+                said = str(getattr(self, "_last_reply", "") or "")
+                if "只能看" not in said and "view-only" not in said:
+                    self.say(self._L(*READONLY_SAY))
+                return
+        picked = getattr(u, "anchor", None)
+        pick_note = (f"（对方先在论文里选中了这一段，改的就是它：「{picked['text']}」"
+                     + (f"，在 {picked['section']}" if picked.get("section") else "") + "）") if picked else ""
+        if head == "#edit":
+            remark = (f"共同主持人{guest}说：{u.text}" if guest else u.text) + pick_note
             said_back = str(getattr(self, "_last_reply", "") or "").strip()
             if said_back:                             # 当场复述、对方认了的改法（定好的那句原话）：改稿照这个改
                 remark += f"（Claude 当场复述的改法：{_short(said_back, 300)}）"
             multi = self._multi_party()
             if multi:
                 remark = self._discussion() or remark   # 多人：把这段讨论整段交给它，卡片上也按人列出来
+                if pick_note and pick_note not in remark:
+                    remark += pick_note
             # 记上是哪篇论文上的（屏幕上这篇）：之后切到别篇，工人照样改这篇，撤回也只在这篇里算
             task = self.board.add(remark=remark, title=title, shot=u.shot, section=sec, focus=focus, paper=self._paper_now())
             self.hands.notify()
@@ -3611,7 +3753,7 @@ class Meeting:
             self._app_todo(title, u)                 # 也进待办的"软件"那一组（不进论文、不成标注）
         elif head == "#note":
             # 只记不改（"先别改，记一下""put it on the list, don't change it yet"）：进任务板，不叫工人
-            remark = f"共同主持人{guest}说：{u.text}" if guest else u.text
+            remark = (f"共同主持人{guest}说：{u.text}" if guest else u.text) + pick_note
             # 标注模式（2026-11-14）：先排队交给工人只读地看一遍原文，写出钉在哪一段、怎么改、要补什么（不改论文，写好也不再念）
             task = self.board.add_note(remark=remark, title=title, section=sec, focus=focus,
                                        result=self._L("只记下了，没改论文", "Noted only; the paper was not changed"), plan_job=True,
@@ -3643,12 +3785,18 @@ class Meeting:
         return cleaned
 
     def _said_for(self, text: str, guest: str | None = None, is_part: bool = False, peek: bool = False,
-                  at: float | None = None):
-        """→ (lvl, 送模型的那句)。多人在聊时按 _address_level 加提示；两个人的会 lvl = "two"、原话照送。"""
-        lvl = self._address_level(text, guest, peek=peek, at=at) if self._multi_party() else "two"
-        named = bool(_CALL_NAME.search(text or ""))
+                  at: float | None = None, typed: bool = False):
+        """→ (lvl, 送模型的那句)。多人在聊时按 _address_level 加提示；两个人的会 lvl = "two"、原话照送。
+        typed：打字发给 AI 的（会议页上的输入框）：等于叫了它的名字（lvl = "name"），不用判是不是在跟它说。"""
+        if typed:
+            lvl = "name" if self._multi_party() else "two"
+        else:
+            lvl = self._address_level(text, guest, peek=peek, at=at) if self._multi_party() else "two"
+        named = typed or bool(_CALL_NAME.search(text or ""))
         said = (f"【这句是参会者{guest}说的】{text}" if is_part else
                 f"【这句是共同主持人{guest}说的】{text}" if guest else text)
+        if typed:
+            said = "【这句是打字发给你的，等于叫了你：照常接】" + said
         if getattr(self, "_mute", False) and not named:
             # 静音中：一般不接；但看起来是接着跟你说、明着问你要你说的（"你重新说一下第七条"），交给模型判，只答这一句
             if lvl in ("engaged", "two"):
@@ -3966,7 +4114,8 @@ class Meeting:
                     changes = ""
                 answer, err = self.hands.ask_paper(said, self._last_focus, self._recent_history(12), draft=draft,
                                                    why=why, cancel=job["qcancel"], host=host, said_before=said_before,
-                                                   on_step=on_step, quick=quick, changes=changes)
+                                                   on_step=on_step, quick=quick, changes=changes,
+                                                   past="" if quick else self._past_for_deep(said))
             except Exception as e:
                 err = repr(e)
             if answer:                       # 查过的记下来：同一个问题再被问到，快嘴直接用（上下文里列出最近几个）

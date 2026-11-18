@@ -7,6 +7,7 @@ import { Icon } from '@blurt/icons';
 import { Group, Line, Page, S } from '../settings/kit';
 import { mb, ModelProgress, useDictationModels } from './ModelDownload';
 import { HotwordsGroup, VoiceGroup } from './VoiceSettings';
+import { PronounceGroup } from './PronSettings';
 
 function StopDownload() {
   // the same size as the Download it replaced
@@ -19,6 +20,7 @@ export function ModelsPane() {
       <SpeechModelsGroup />
       <VoiceGroup />
       <HotwordsGroup />
+      <PronounceGroup />
     </Page>
   );
 }

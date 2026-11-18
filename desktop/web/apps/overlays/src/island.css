@@ -1118,7 +1118,7 @@ button.row:hover::before,
   background: #8a8a90;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8);
   transition:
-    transform 260ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    transform 260ms cubic-bezier(0.2, 0, 0, 1),
     opacity 160ms ease-out,
     background 120ms ease;
 }
@@ -1997,7 +1997,6 @@ button.row:hover::before,
 .ptile .tpic.voice {
   background: #323234;
   color: var(--fg);
-  box-shadow: inset 3px 0 0 #e8d9b0;
 }
 /* hover and the keyboard's tile: one look — a lighter plate behind the tile and its title, its actions; the
    keyboard's ring drawn inside the plate (never clipped by the grid's edge) */

@@ -106,7 +106,7 @@ def _hotwords(n: int = 24) -> list[str]:
             paper = json.loads(CURRENT.read_text(encoding="utf-8")).get("hotwords") or []
         except (OSError, ValueError):
             paper = []
-        return merged_hotwords(paper, n=n, software=max(1, n // 2))
+        return merged_hotwords(paper, n=n)
     except Exception:
         return []
 

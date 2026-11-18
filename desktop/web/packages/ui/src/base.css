@@ -255,27 +255,8 @@ kbd {
 }
 
 /* ---------- brand utilities (system.md §2.2, §5.2) ---------- */
-/* Gradient text: a hero headline only (≥ 20 px; unused in the app UIs, kept for the site redo), never body, labels,
-   numbers or small text.
-   Flat --ink where background-clip: text is missing, under Increase Contrast (the generated block sets
-   --brand-text: none there) and in forced colours. */
-.g-text {
-  color: var(--ink);
-}
-@supports ((background-clip: text) or (-webkit-background-clip: text)) {
-  .g-text {
-    background: var(--brand-text);
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
-  }
-}
-@media (prefers-contrast: more), (forced-colors: active) {
-  .g-text {
-    background: none;
-    -webkit-text-fill-color: currentColor;
-  }
-}
+/* (Gradient text, .g-text, was removed 2026-11-18: nothing used it, and gradient-clipped text reads as an AI-made
+   page — Impeccable's gradient-text rule.) */
 
 /* The field: the large gradient surface (light field / deep in dark mode, both in --brand-field) with grain.
    Only on boxes ≥ 64 px in both dimensions (a hero; unused in the app UIs, kept for the site redo); never buttons,

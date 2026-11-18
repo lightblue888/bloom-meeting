@@ -386,6 +386,8 @@ pub fn run() {
             zuhui::zuhui_pick_paper,
             zuhui::zuhui_save_text,
             zuhui::zuhui_pick_recording,
+            zuhui::zuhui_pick_save,
+            zuhui::zuhui_pick_folder,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Bloom");

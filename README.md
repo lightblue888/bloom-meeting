@@ -1,5 +1,3 @@
-https://github.com/user-attachments/assets/815369c9-5372-4953-84ec-d6c1b68a329c
-
 # Bloom
 
 https://github.com/user-attachments/assets/59b28cfb-14b0-43d2-bd3d-1de72682a463

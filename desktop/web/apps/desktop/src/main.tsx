@@ -4,6 +4,9 @@ import App from './App';
 import '@blurt/ui/tokens.css';
 import '@blurt/ui/base.css';
 import './styles.css';
+import { trackKeyboardNav } from './kbnav';
+
+trackKeyboardNav();
 
 // the browser's own menu (Back / Refresh / Print) only where it is useful: in a text field or over selected text
 // (cut, copy, paste); the

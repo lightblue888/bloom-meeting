@@ -466,10 +466,16 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
                           onKeyDown={(e) => e.key === 'Escape' && setConfirm(null)}
                           data-testid={confirm === brief.id ? `history-delete-yes-${brief.id}` : `history-delete-${brief.id}`}
                         >
-                          <Icon name="trash" size={13} />
+                          {/* the icon goes with each word, so 删除 sits next to it, centred in the room 确认删除 needs */}
                           <span className="mt-swap">
-                            <span className={confirm === brief.id ? 'is-off' : ''}>{t('meeting.history.delete')}</span>
-                            <span className={confirm === brief.id ? '' : 'is-off'}>{t('meeting.history.delete_confirm')}</span>
+                            <span className={confirm === brief.id ? 'is-off' : ''}>
+                              <Icon name="trash" size={13} />
+                              {t('meeting.history.delete')}
+                            </span>
+                            <span className={confirm === brief.id ? '' : 'is-off'}>
+                              <Icon name="trash" size={13} />
+                              {t('meeting.history.delete_confirm')}
+                            </span>
                           </span>
                         </button>
                       )}

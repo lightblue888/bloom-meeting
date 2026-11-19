@@ -27,7 +27,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .board import Board, task_paper
+from .board import Board, task_paper, note_tags
 from .board import is_app_task as _is_app_task
 from .config import STATE, load, paper_path
 from .meetings import paper_id
@@ -350,8 +350,16 @@ INJECT = r"""
      打勾 = 看过了，这条连同它的修订标记一起消掉 */
   var TASKS = __TASKS__, ME = __ME__;
   var STATUS = {queued: '{{T:s_queued}}', working: '{{T:s_working}}', done: '{{T:s_done}}', failed: '{{T:s_failed}}'};
-  /* 标注（会上改不了、钉在这里的，2026-11-14）：状态写"标注 · 待处理"；图钉不写编号，改过的是勾，标注是空心小旗 */
+  /* 标注（会上改不了、钉在这里的，2026-11-14）：图钉不写编号，改过的是勾，标注是空心小旗。
+     标注的状态（会后改 / 已处理）和标签（要重新跑实验……）画成卡片底下一排胶囊，头上不再写状态（2026-11-19） */
   function stText(t){ return t.note ? (t.resolved ? '{{T:s_note_ok}}' : '{{T:s_note}}') : (STATUS[t.status] || ''); }
+  var TAGS = {rerun: '{{T:tag_rerun}}', data: '{{T:tag_data}}', figure: '{{T:tag_figure}}', lit: '{{T:tag_lit}}', discuss: '{{T:tag_discuss}}'};
+  function tagRow(t){
+    if (!t.note) return '';
+    var s = '<span class="zh-tag ' + (t.resolved ? 'is-ok' : 'is-st') + '">' + stText(t) + '</span>';
+    (t.tags || []).forEach(function(k){ if (TAGS[k]) s += '<span class="zh-tag">' + TAGS[k] + '</span>'; });
+    return '<div class="zh-tags">' + s + '</div>';
+  }
   var ICON = {
     done: '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3L13 4.5"/></svg>',
     note: '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14V2.5M4 3h7.5l-1.8 2.7L11.5 8.5H4"/></svg>',
@@ -361,7 +369,8 @@ INJECT = r"""
   ICON.queued = ICON.working;
   function pinIcon(st){ return ICON[st] || ICON.done; }
   function norm(s){ return (s || '').replace(/\s+/g, ' ').trim(); }
-  function esc(s){ var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+  /* 引号也要转：拼进 title="…"、style="…" 里的是访客能写的字（批注、名字），只转尖括号会被 " 断开属性塞进 onmouseover */
+  function esc(s){ return (s == null ? '' : String(s)).replace(/[&<>"']/g, function(c){ return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]; }); }
   /* 比对用的"字"：只留字母、数字、汉字（Markdown 记号、标点、空白都不算），和后端 Viewer._key 一样 */
   function kOf(s){ return (s || '').replace(/[^0-9A-Za-zÀ-ɏͰ-Ͽ一-鿿]+/g, ''); }
   var ROWS = Array.prototype.slice.call(docs.querySelectorAll('.row, .sect'));
@@ -421,14 +430,14 @@ INJECT = r"""
     var canOk = LIVE && g.tasks.some(function(t){ return t.status === 'done' || t.status === 'failed'; });
     var html = '<div class="zh-note-head"><span class="zh-note-no">' + pinIcon(statusOf(g.tasks)) + '</span><span class="zh-note-title">'
       + esc(many ? (first.section || (first.focus || {}).section || first.title) : first.title) + '</span>'
-      + (many ? '' : '<span class="zh-note-st' + (first.note ? ' is-note' : '') + '">' + stText(first) + '</span>')
+      + (many || first.note ? '' : '<span class="zh-note-st">' + stText(first) + '</span>')
       + (LIVE && !many && first.status === 'done' && !first.note ? '<button type="button" class="zh-note-x" aria-label="{{T:reject_aria}}">×</button>' : '')
       + (canOk ? '<button type="button" class="zh-note-ok" aria-label="{{T:ok_aria}}">✓</button>' : '') + '</div>';
     g.tasks.forEach(function(t){
       var who = t.who || ME, col = t.who_color ? ' style="color:' + esc(t.who_color) + '"' : '';
       html += '<div class="zh-item is-' + t.status + '" data-id="' + esc(t.id) + '">'
         + (many ? '<div class="zh-item-head"><span class="zh-item-no">' + pinIcon(t.note ? 'note' : t.status) + '</span><span class="zh-item-title">' + esc(t.title) + '</span>'
-                  + '<span class="zh-note-st' + (t.note ? ' is-note' : '') + '">' + stText(t) + '</span>'
+                  + (t.note ? '' : '<span class="zh-note-st">' + stText(t) + '</span>')
                   + (LIVE && t.status === 'done' && !t.note ? '<button type="button" class="zh-note-x" aria-label="{{T:reject_aria}}">×</button>' : '') + '</div>' : '')
         + (t.thread ? (function(th){
               var line = function(x){ return x.who ? '<p class="zh-note-said"><b style="color:' + esc(x.color) + '">' + esc(x.who) + '</b>' + esc(x.text) + '</p>'
@@ -448,6 +457,7 @@ INJECT = r"""
             ? (t.plan ? '<p class="zh-note-did"><b>{{T:plan}}</b>' + esc(t.plan) + '</p>' : '')
               + (t.need ? '<p class="zh-note-did"><b>{{T:need}}</b>' + esc(t.need) + '</p>' : '')
               + (t.plan ? '' : '<p class="zh-note-did"><b>AI</b>' + esc(t.status !== 'done' ? '{{T:plan_wait}}' : (t.result || '')) + '</p>')
+              + tagRow(t)
             : (t.result ? '<p class="zh-note-did"><b>AI</b>' + esc(t.result) + '</p>' : ''))
         + (t.error ? '<p class="zh-note-bad">' + esc(t.error) + '</p>' : '')
         + '</div>';
@@ -584,7 +594,11 @@ INJECT = r"""
     inl.push(p);
   });
   if (maths.length || inl.length) {
-    window.MathJax = { tex: { tags: 'ams', displayMath: [['\\[', '\\]']], inlineMath: [['\\(', '\\)'], ['$', '$']], processEscapes: true }, svg: { fontCache: 'global' },
+    /* 公式是稿子里的字（访客传的论文、批注、共同主持人改的段都可能进来）：\href{javascript:…} 会变成整块能点的链接、
+       \style \class 能改页面样式。这几个只留里面的内容，html、require 扩展不加载（\require{html} 也拉不回来） */
+    window.MathJax = { tex: { tags: 'ams', displayMath: [['\\[', '\\]']], inlineMath: [['\\(', '\\)'], ['$', '$']], processEscapes: true,
+        packages: {'[-]': ['html', 'require']},
+        macros: { href: ['{#2}', 2], class: ['{#2}', 2], style: ['{#2}', 2], cssId: ['{#2}', 2], data: ['{#2}', 2] } }, svg: { fontCache: 'global' },
       startup: { typeset: false, ready: function(){ MathJax.startup.defaultReady();
         var all = maths.concat(inl);   /* 先一次排完（快）；有一个出错再退回一块一块排，免得连累整页 */
         MathJax.typesetPromise(all).catch(function(){
@@ -1103,6 +1117,18 @@ html { scrollbar-width: thin; scrollbar-color: var(--rule) transparent; backgrou
 .zh-note p b { margin-right: 7px; font-size: 11px; font-weight: 600; }
 .zh-note-said b { color: #7cc0ff; }
 .zh-note p.zh-note-did { color: var(--ink); }
+/* 标注卡片底下那排：状态（会后改 / 已处理）+ 标签（要重新跑实验……），会自动换行，卡片宽度不变 */
+.zh-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.zh-tag { font-size: 11px; line-height: 18px; padding: 1px 9px; border-radius: 10px; white-space: nowrap;
+  color: color-mix(in srgb, var(--muted) 60%, var(--ink)); background: color-mix(in srgb, var(--ink) 8%, transparent); }
+.zh-tag.is-st { color: #7a4f05; background: rgba(217,154,43,.16); }
+.zh-tag.is-ok { color: #166534; background: rgba(22,163,74,.14); }
+@media (prefers-color-scheme: dark) {
+  html:root:not([data-theme="light"]) .zh-tag.is-st { color: #e0a43a; }
+  html:root:not([data-theme="light"]) .zh-tag.is-ok { color: #6cc483; }
+}
+html:root[data-theme="dark"] .zh-tag.is-st { color: #e0a43a; }
+html:root[data-theme="dark"] .zh-tag.is-ok { color: #6cc483; }
 .zh-note-did b { color: #d97757; }
 .zh-note p.zh-note-bad { color: var(--del); }
 /* 图放回原位；公式排版；行内上下标 */
@@ -1288,7 +1314,6 @@ html.zh-tbl-open, html.zh-tbl-open body { overflow: hidden; }
 .zh-pin svg, .zh-note-no svg, .zh-item-no svg { display: block; }
 .zh-pin.is-note { background: transparent !important; border: 1.5px solid #d99a2b !important; color: #d99a2b !important; }
 .zh-pin.is-note:hover, .zh-pin.is-note.on { box-shadow: 0 0 0 3px rgba(217,154,43,.22) !important; }
-.zh-note-st.is-note { color: #d99a2b !important; }
 .zh-note-no, .zh-item-no { display: inline-grid; place-items: center; }
 .zh-note p.zh-note-sys { font-size: 12px; font-style: italic; opacity: .75; }
 /* 左边那道线（2026-11-15）：一段一种颜色，由批注脚本按固定先后写在 data-zh-bar 上（标注 > 没打勾的改动 > 其余改过的），
@@ -1311,6 +1336,8 @@ DEMO_TASKS = [
     {"id": "D2", "idx": 2, "title": "3.1 概念段拆成几个小点", "status": "working", "remark": "这段概念堆在一起，给我拆成几个小点。",
      "section": "3.1 数据与回测", "focus": {"section": "3.1 数据与回测", "text": ""}},
     {"id": "D3", "idx": 3, "title": "引理证明写清楚", "status": "failed", "remark": "这个引理的证明太糊了。", "error": "没定位到你指的引理，没有改。"},
+    {"id": "D4", "idx": 4, "title": "第 4 节消融实验", "status": "done", "note": True, "remark": "消融实验不够，要补一组去掉注意力模块的对照。",
+     "plan": "加一组去掉注意力模块的对照，重跑表 3。", "need": "重跑消融实验", "tags": ["rerun", "figure"]},
 ]
 
 
@@ -1369,12 +1396,16 @@ _SYS_ROW = re.compile(r"^(?:切到 \S|Switched to \S)")
 # 不带 Origin 的（本机脚本、语音桥转来的访客操作、/bloom 技能）照常。以前是 *：你浏览器里随便哪个网站都能悄悄调本机
 # 47330 切论文、清任务板、改名字（2026-11-17 收紧）
 _LOCAL_ORIGIN = re.compile(r"^(?:tauri://localhost|https?://tauri\.localhost|https?://(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?)$", re.I)
+_LOCAL_HOST = re.compile(r"^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$", re.I)
+_GUEST_UP = [0]                # 访客传的论文：正在取、导入、排队的份数（Viewer.guest_act）
+_GUEST_UP_LOCK = threading.Lock()
 _GCOLOR: dict = {}            # 访客 → 颜色（Viewer.guest_colors 定的，批注卡片里的名字也用它）
 
 
 def _task_brief(t: dict, me: str = "") -> dict:
     b = {k: t.get(k) for k in ("id", "idx", "title", "remark", "status", "result", "error", "section", "focus", "resolved",
                                "discussion_rows", "note", "plan", "need", "mode")}
+    b["tags"] = note_tags(t)                       # 标注的标签：小旗卡片底下那排（会后改 + 要重新跑实验……）
     # 工人找不到地方时会写"无（文件读不到…）"这种占位：当成没有位置，别拿它去对小节标题、段落开头
     if str(b.get("section") or "").startswith("无"):
         b["section"] = None
@@ -1491,7 +1522,7 @@ def _briefs(tasks: list, me: str = "") -> list:
     return out
 
 
-INJECT_TEXT = {'connecting': ('组会 · 连接中', 'Meeting · connecting'), 'start': ('开始组会', 'Start meeting'), 'unfold_aria': ('展开或收起没改动的段落', 'Show or hide unchanged paragraphs'), 'unfold': ('全文', 'Full text'), 'rec_ok': ('已叫 Bloom 开始录屏', 'Asked Bloom to start recording'), 'rec_fail': ('没叫动 Bloom，按 Alt+Shift+R', 'Could not reach Bloom. Press Alt+Shift+R'), 'st_queued': ('任务 排队', 'Tasks: queued '), 'st_working': (' 改中', ' · editing '), 'st_done': (' 已改', ' · done '), 'st_failed': (' 失败', ' · failed '), 'st_rebuilding': (' · 重算中…', ' · updating…'), 'down': ('组会服务断了', 'Meeting service disconnected'), 'toc_head': ('章节', 'Sections'), 'toc_n': (' 节', ''), 'toc_chg': (' 节有改动', ' changed'), 'toc_aria': ('收起/展开章节', 'Collapse or expand sections'), 's_queued': ('排队', 'Queued'), 's_working': ('改中', 'Editing'), 's_done': ('已改', 'Done'), 's_failed': ('没改成', 'Failed'), 's_note': ('标注 · 待处理', 'Note · to do'), 's_note_ok': ('标注 · 已处理', 'Note · done'), 'plan': ('怎么改', 'Change'), 'need': ('要补', 'Needs'), 'plan_wait': ('正在看原文，写怎么改', 'Reading the paper to write the change'), 'st_notes': (' 标注', ' · notes '), 'reject_aria': ('不要这条改动，撤回原样', 'Reject this change and restore the original'), 'ok_aria': ('看过了，这一处消掉', 'Mark as reviewed'), 'other_a': ('其他 ', ''), 'other_b': (' 句', ' more lines'), 'earlier_a': ('前面 ', ''), 'earlier_b': (' 句', ' earlier lines'), 'undo_fail': ('没撤成', 'Could not undo'), 'edit': ('编辑', 'Edit'), 'edit_done': ('完成编辑', 'Done editing'), 'not_found': ('在稿子里没找到这一段', 'This paragraph was not found in the draft'), 'edit_hint': ('Ctrl+Enter 保存 · Esc 取消', 'Ctrl+Enter to save · Esc to cancel'), 'cancel': ('取消', 'Cancel'), 'save': ('保存', 'Save'), 'not_saved': ('没存上', 'Not saved'), 'saved': ('已保存', 'Saved'), 'no_backend': ('后端没应答', 'The backend did not respond'), 'find': ('查找', 'Find'), 'prev': ('上一个', 'Previous'), 'next': ('下一个', 'Next'), 'close': ('关闭', 'Close'), 'zoom_tbl': ('放大看全表', 'Enlarge table')}   # 键 → (中文, English)
+INJECT_TEXT = {'connecting': ('组会 · 连接中', 'Meeting · connecting'), 'start': ('开始组会', 'Start meeting'), 'unfold_aria': ('展开或收起没改动的段落', 'Show or hide unchanged paragraphs'), 'unfold': ('全文', 'Full text'), 'rec_ok': ('已叫 Bloom 开始录屏', 'Asked Bloom to start recording'), 'rec_fail': ('没叫动 Bloom，按 Alt+Shift+R', 'Could not reach Bloom. Press Alt+Shift+R'), 'st_queued': ('任务 排队', 'Tasks: queued '), 'st_working': (' 改中', ' · editing '), 'st_done': (' 已改', ' · done '), 'st_failed': (' 失败', ' · failed '), 'st_rebuilding': (' · 重算中…', ' · updating…'), 'down': ('组会服务断了', 'Meeting service disconnected'), 'toc_head': ('章节', 'Sections'), 'toc_n': (' 节', ''), 'toc_chg': (' 节有改动', ' changed'), 'toc_aria': ('收起/展开章节', 'Collapse or expand sections'), 's_queued': ('排队', 'Queued'), 's_working': ('改中', 'Editing'), 's_done': ('已改', 'Done'), 's_failed': ('没改成', 'Failed'), 's_note': ('会后改', 'After the meeting'), 's_note_ok': ('已处理', 'Handled'), 'tag_rerun': ('要重新跑实验', 'Rerun experiments'), 'tag_data': ('要补数据', 'Needs new data'), 'tag_figure': ('要重画图表', 'Redo figures or tables'), 'tag_lit': ('要查文献', 'Check the literature'), 'tag_discuss': ('要再讨论', 'Needs discussion'), 'plan': ('怎么改', 'Change'), 'need': ('要补', 'Needs'), 'plan_wait': ('正在看原文，写怎么改', 'Reading the paper to write the change'), 'st_notes': (' 标注', ' · notes '), 'reject_aria': ('不要这条改动，撤回原样', 'Reject this change and restore the original'), 'ok_aria': ('看过了，这一处消掉', 'Mark as reviewed'), 'other_a': ('其他 ', ''), 'other_b': (' 句', ' more lines'), 'earlier_a': ('前面 ', ''), 'earlier_b': (' 句', ' earlier lines'), 'undo_fail': ('没撤成', 'Could not undo'), 'edit': ('编辑', 'Edit'), 'edit_done': ('完成编辑', 'Done editing'), 'not_found': ('在稿子里没找到这一段', 'This paragraph was not found in the draft'), 'edit_hint': ('Ctrl+Enter 保存 · Esc 取消', 'Ctrl+Enter to save · Esc to cancel'), 'cancel': ('取消', 'Cancel'), 'save': ('保存', 'Save'), 'not_saved': ('没存上', 'Not saved'), 'saved': ('已保存', 'Saved'), 'no_backend': ('后端没应答', 'The backend did not respond'), 'find': ('查找', 'Find'), 'prev': ('上一个', 'Previous'), 'next': ('下一个', 'Next'), 'close': ('关闭', 'Close'), 'zoom_tbl': ('放大看全表', 'Enlarge table')}   # 键 → (中文, English)
 
 
 def _inject(build: int | None, tasks: list, me: str, figs: dict | None = None, lang: str = "zh",
@@ -3483,6 +3514,7 @@ class Viewer:
             out["v2_error"] = repr(e)[:200]
         return out
 
+    GUEST_UPLOADS_PENDING = 2                                        # 访客传的论文同时在导入、排队的最多几份
     GUEST_OPEN = ("/api/paper/switch",)                              # 谁都能做：切论文（新增走 upload）
     GUEST_COHOST = ("/api/board/resolve", "/api/board/reject", "/api/para/source", "/api/para/save")   # 只有共同主持人
 
@@ -3496,19 +3528,31 @@ class Viewer:
             return {"ok": False, "error": "会议没在开"}
         log = getattr(self, "on_log", None)
         if path == "upload":
-            name, data = fetch_upload(str(body.get("upload") or ""))
-            mid = self.meetings.current()["id"]
-            d = STATE / "guest_papers" / mid
-            d.mkdir(parents=True, exist_ok=True)
-            base = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", Path(str(name)).name).strip(" .") or "paper.pdf"
-            fp, k = d / base, 2
-            while fp.exists():
-                fp = d / f"{Path(base).stem}-{k}{Path(base).suffix}"
-                k += 1
-            fp.write_bytes(data)
-            if callable(log):
-                log("guest_act", text=f"{by} 新增论文：{fp.name}（{len(data) // 1024} KB）")
-            return self._local_post("/api/paper", {"path": str(fp)}, timeout=600)
+            # 论文一次只导入一篇（app 里排队）：访客连着传，排着的最多 GUEST_UPLOADS_PENDING 份，
+            # 再多的先不取（中继那边留着、满了让他稍等），免得一份份 50 MB 在内存里、磁盘上越堆越多
+            with _GUEST_UP_LOCK:
+                if _GUEST_UP[0] >= self.GUEST_UPLOADS_PENDING:
+                    return {"ok": False, "error": "正在导入其他论文，请稍后再传"}
+                _GUEST_UP[0] += 1
+            try:
+                name, data = fetch_upload(str(body.get("upload") or ""))
+                mid = self.meetings.current()["id"]
+                d = STATE / "guest_papers" / mid
+                d.mkdir(parents=True, exist_ok=True)
+                base = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", Path(str(name)).name).strip(" .") or "paper.pdf"
+                fp, k = d / base, 2
+                while fp.exists():
+                    fp = d / f"{Path(base).stem}-{k}{Path(base).suffix}"
+                    k += 1
+                fp.write_bytes(data)
+                size = len(data)
+                del data
+                if callable(log):
+                    log("guest_act", text=f"{by} 新增论文：{fp.name}（{size // 1024} KB）")
+                return self._local_post("/api/paper", {"path": str(fp)}, timeout=600)
+            finally:
+                with _GUEST_UP_LOCK:
+                    _GUEST_UP[0] -= 1
         if path in self.GUEST_COHOST and not roles.is_cohost(by):
             if callable(log):
                 log("guest_act", text=f"{by}（参会者）想做 {path}：只有主持人和共同主持人能做")
@@ -3704,9 +3748,17 @@ class Viewer:
                     self.send_header("Vary", "Origin")
 
             def _origin_ok(self) -> bool:
-                """这个请求能不能改东西：没带 Origin（本机脚本）或者来自 Bloom 自己的窗口、本机页面。"""
+                """这个请求能不能改东西：来自 Bloom 自己的窗口、本机页面（Origin 对得上），或者没带 Origin 的本机脚本。
+                没带 Origin 的还要看 Sec-Fetch-Site：别的网站用 <img>、链接发的 GET 不带 Origin，浏览器会标成 cross-site / same-site。"""
                 o = self.headers.get("Origin")
-                return not o or bool(_LOCAL_ORIGIN.match(o))
+                if o:
+                    return bool(_LOCAL_ORIGIN.match(o))
+                return (self.headers.get("Sec-Fetch-Site") or "none").strip().lower() in ("none", "same-origin")
+
+            def _host_ok(self) -> bool:
+                """Host 只认 127.0.0.1 / localhost / [::1]：防 DNS 重绑定（别的网站把自己的域名解析到 127.0.0.1 来读会议）。"""
+                h = (self.headers.get("Host") or "").strip()
+                return not h or bool(_LOCAL_HOST.match(h))
 
             def _send(self, code, body: bytes, ctype="text/html; charset=utf-8", cache: str = "no-store"):
                 self.send_response(code)
@@ -3839,6 +3891,11 @@ class Viewer:
                     pass
 
             def do_HEAD(self):
+                if not self._host_ok():
+                    self.send_response(403)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 p = self.path.split("?")[0]
                 if p.startswith("/api/meetings/") and p.endswith("/video"):
                     f = viewer.video_path(p.split("/")[3])
@@ -3860,9 +3917,13 @@ class Viewer:
                 return {"_bad_json": True}
 
             def do_OPTIONS(self):
+                if not self._host_ok():
+                    return self._send(403, b"host not allowed", "text/plain")
                 self._send(204, b"", "text/plain")
 
             def do_GET(self):
+                if not self._host_ok():
+                    return self._send(403, b"host not allowed", "text/plain")
                 p = self.path.split("?")[0]
                 embed = "embed=1" in self.path
                 hosted = "host=bloom" in self.path       # Bloom 窗口里那份：工具栏在外壳那一行、用本机字体
@@ -4081,6 +4142,8 @@ class Viewer:
             def do_POST(self):
                 p = self.path.split("?")[0]
                 body = self._body()
+                if not self._host_ok():
+                    return self._json({"error": "host not allowed"}, 403)
                 if not self._origin_ok():      # 别的网站发来的（text/plain 的 POST 不走预检，光靠响应头拦不住）
                     return self._json({"error": "origin not allowed"}, 403)
                 if p == "/api/scroll":         # 连续流：滚动中的每一帧，直接转给访客（不记、不进中继）

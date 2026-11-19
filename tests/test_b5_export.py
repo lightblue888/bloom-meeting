@@ -201,9 +201,10 @@ class TodosTest(Base):
         t1 = checks[1][0]
         self.assertTrue(t1["done"])                                    # carry.json 里勾掉了
         self.assertEqual(t1["text"], "补 TimeGAN 实验（实验数据）")
-        self.assertEqual(t1["sub"], ["王一凡 这个要补", "怎么改 加一行到表 2"])
+        # 末尾那行是标签（board.note_tags：标题里有"实验"、要补里有"数据"、怎么改里有"表 2"）
+        self.assertEqual(t1["sub"], ["王一凡 这个要补", "怎么改 加一行到表 2", "要重新跑实验、要补数据、要重画图表"])
         self.assertFalse(checks[2][0]["done"])
-        self.assertEqual(checks[2][0]["sub"], ["整理中"])
+        self.assertEqual(checks[2][0]["sub"], ["整理中", "要重画图表"])      # 标题"图 3 坐标轴"
         self.assertEqual([x["text"] for x in checks[4]], ["改摘要第一句"])  # 撤回的不算
         md = ex.blocks_md(b)
         self.assertIn("- [x] 补 TimeGAN 实验（实验数据）", md)

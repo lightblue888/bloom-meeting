@@ -51,8 +51,10 @@ $BlurtBin = Join-Path $BlurtHome 'bin'
 $FFmpegVer = '9.0.2'
 $FFmpegUrls = @("https://github.com/GyanD/codexffmpeg/releases/download/$FFmpegVer/ffmpeg-$FFmpegVer-essentials_build.zip",
                 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip')
-# Pipecat smart-turn v3.2 (BSD-2), the file zuhui/turn.py loads
-$SmartTurnUrl = 'https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.2-cpu.onnx'
+# Pipecat smart-turn v3.2 (BSD-2), the file zuhui/turn.py loads. huggingface.co does not load from mainland China
+# without a proxy: hf-mirror.com next (the same file, checked against the SHA-256 below)
+$SmartTurnUrls = @('https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.2-cpu.onnx',
+                   'https://hf-mirror.com/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.2-cpu.onnx')
 $SmartTurnSize = 8679182
 $SmartTurnSha = '2BB026316B14A660486A75B1733CD3FBAB8C2FD0314DC9AF7BE49F8CCA967E4F'
 # the live transcript's model (Blurt's asr_models.json id) and Bloom's settings for it in ~/.blurt/config.json
@@ -338,7 +340,7 @@ New-Item -ItemType Directory -Force -Path $models | Out-Null
 $st = Join-Path $models 'smart-turn-v3.2-cpu.onnx'
 if (-not ((Test-Path -LiteralPath $st) -and (Get-Item -LiteralPath $st).Length -eq $SmartTurnSize)) {
     Say '\u4e0b\u8f7d\u5224\u505c\u6a21\u578b smart-turn\uff088 MB\uff09...' 'Downloading the turn-taking model smart-turn (8 MB)...'
-    [void](Get-File @($SmartTurnUrl) $st $SmartTurnSha)
+    [void](Get-File $SmartTurnUrls $st $SmartTurnSha)
 }
 if ((Test-Path -LiteralPath $st) -and (Get-Item -LiteralPath $st).Length -eq $SmartTurnSize) { Ok 'smart-turn v3.2' } else { Warn 'smart-turn did not download (run this again; meetings still work, turn-taking is slower)' }
 

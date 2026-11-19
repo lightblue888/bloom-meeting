@@ -312,7 +312,8 @@ html:root[data-theme="dark"] { --zh-nm: 100%; }
   var card = null, cardRow = null, replyTo = null;
   function kOf(s){ return (s || '').replace(/[^0-9A-Za-zÀ-ɏͰ-Ͽ一-鿿]+/g, ''); }
   function norm(s){ return (s || '').replace(/\s+/g, ' ').trim(); }
-  function esc(s){ var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+  /* 引号也要转：批注引的原文、名字会拼进 title="…" 里，只转尖括号会被 " 断开属性塞进 onmouseover */
+  function esc(s){ return (s == null ? '' : String(s)).replace(/[&<>"']/g, function(c){ return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]; }); }
   function rows(){ return Array.prototype.slice.call(docs.querySelectorAll('.row, .sect')); }
   function textOf(el){
     var c = el.cloneNode(true);

@@ -89,6 +89,29 @@ function Progress({ p }: { p: NonNullable<Task['progress']> }) {
   return <p className="mt-card-progress">{parts.join(' · ')}</p>;
 }
 
+/** the kinds of work a note waits for (zuhui/board.py NOTE_TAGS), in their fixed order */
+const NOTE_TAGS = ['rerun', 'data', 'figure', 'lit', 'discuss'];
+
+/** a note's chips: its state (会后改 / 已处理, when `state`) and the kinds of work it waits for (要重新跑实验…) */
+export function NoteTags({ task, state }: { task: Task; state?: boolean }) {
+  const kinds = (task.tags ?? []).filter((k) => NOTE_TAGS.includes(k));
+  if (!state && !kinds.length) return null;
+  return (
+    <span className="mt-ntags">
+      {state && (
+        <span className={`mt-ntag ${task.resolved ? 'is-ok' : 'is-st'}`}>
+          {t(task.resolved ? 'meeting.tag.handled' : 'meeting.tag.after')}
+        </span>
+      )}
+      {kinds.map((k) => (
+        <span key={k} className="mt-ntag">
+          {t(`meeting.tag.${k}`)}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function NoteCard({ task, multi }: { task: Task; multi: boolean }) {
   const where = whereOf(task, multi, task.section || task.focus?.section);
   return (
@@ -106,6 +129,7 @@ function NoteCard({ task, multi }: { task: Task; multi: boolean }) {
         <p className="mt-card-report">{t('meeting.todos.writing')}</p>
       ) : null}
       {task.need && <p className="mt-card-report">{t('meeting.todos.need', { a: task.need })}</p>}
+      <NoteTags task={task} state />
       {where && <span className="mt-card-section">{where}</span>}
     </article>
   );
@@ -245,6 +269,8 @@ export function TodoList({ board, meetingId, done }: { board: Board | null; meet
         const s = saidBy(x.remark || '');
         md.push(`- [${ticked.includes(x.id) ? 'x' : ' '}] ${x.title}${x.need ? `（${x.need}）` : ''}`);
         if (x.plan) md.push(`  - ${t('meeting.todos.plan', { a: x.plan })}`);
+        const kinds = (x.tags ?? []).filter((k) => NOTE_TAGS.includes(k)).map((k) => t(`meeting.tag.${k}`));
+        if (kinds.length) md.push(`  - ${kinds.join(i18n().lang.startsWith('en') ? ', ' : '、')}`);
         if (s.text) md.push(`  - ${s.who ? s.who + ' ' : ''}${s.text}`);
       }
     }
@@ -303,6 +329,7 @@ export function TodoList({ board, meetingId, done }: { board: Board | null; meet
                     </>
                   ) : null}
                 </span>
+                <NoteTags task={x} />
               </label>
             );
           })}

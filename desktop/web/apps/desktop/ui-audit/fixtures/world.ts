@@ -228,7 +228,7 @@ export function baseWorld(lang: Lang, stress = false): World {
     { id: 'T3', idx: 3, title: T('统一图 3 的坐标轴单位', 'Use the same axis units in figure 3'), remark: '', status: 'queued', section: '4.3', created: isoAgo(20), paper: 'p1', paper_name: 'FooBench.md' },
     {
       id: 'N1', idx: 4, title: T('补充消融实验', 'Add an ablation study'), remark: T('林晓：会后补消融', 'Lin Xiao: add the ablation after the meeting'), status: 'done', note: true,
-      plan: T('在 4.4 节加一张表，对比去掉记忆模块前后的结果', 'Add a table in 4.4 comparing with and without the memory module'), need: T('需要新跑实验', 'Needs new runs'), created: isoAgo(500), paper: 'p1', paper_name: 'FooBench.md',
+      plan: T('在 4.4 节加一张表，对比去掉记忆模块前后的结果', 'Add a table in 4.4 comparing with and without the memory module'), need: T('需要新跑实验', 'Needs new runs'), tags: ['rerun', 'figure'], created: isoAgo(500), paper: 'p1', paper_name: 'FooBench.md',
     },
     { id: 'A1', idx: 5, title: T('字幕延迟有点大', 'The captions lag a bit'), remark: '', status: 'done', note: true, app: true, created: isoAgo(300) },
   ];

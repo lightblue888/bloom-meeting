@@ -483,7 +483,18 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # 安静
         pass
 
+    def _foreign(self) -> bool:
+        """浏览器发来的（带 Origin / Sec-Fetch-*，或 Host 不是本机，比如 DNS 重绑定）：网页不能叫这台电脑念话、往任意路径
+        写 wav、把服务关掉。只认本机程序（mouth.py 用 urllib 直接发，不带这些头）。"""
+        import re as _re
+        h = (self.headers.get("Host") or "").strip()
+        if h and not _re.match(r"^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d{1,5})?$", h, _re.I):
+            return True
+        return any(self.headers.get(k) for k in ("Origin", "Sec-Fetch-Site", "Sec-Fetch-Mode"))
+
     def do_GET(self):
+        if self._foreign():
+            return self._json(403, {"ok": False, "error": "forbidden"})
         if self.path.startswith("/health"):
             g = gsv_cfg()
             self._json(200, {"ok": bool(State.ready), "loaded": bool(State.ready), "engine": "gptsovits",
@@ -495,6 +506,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"ok": False, "error": "not found"})
 
     def do_POST(self):
+        if self._foreign():
+            return self._json(403, {"ok": False, "error": "forbidden"})
         n = int(self.headers.get("Content-Length") or 0)
         try:
             req = json.loads(self.rfile.read(n).decode("utf-8")) if n else {}

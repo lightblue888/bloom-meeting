@@ -105,7 +105,8 @@ body {
   color: var(--ink);
   font: inherit;
 }
-.app input:focus,
+/* text fields only: a check box that got this glow on every click looked like a blue frame round it ("很丑") */
+.app input:where(:not([type='checkbox'], [type='radio'], [type='range'])):focus,
 .app select:focus {
   border-color: var(--focus);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 22%, transparent);
@@ -729,3 +730,13 @@ table.grid th {
 
 /* Send Feedback (the Mac's LabBarButton): the paper plane and the words in the ink at 12 px, a quiet wash on hover */
 
+
+/* 勾选框的焦点：只在用 Tab 键切过来时画（html.zh-kbnav，kbnav.ts），画成贴着框的一圈淡色描边。
+   点过勾选框再按 Shift、截图键时，浏览器自带的规则会给它补一圈蓝框（"很丑"），这里不画 */
+input[type="checkbox"]:focus-visible {
+  outline: none;
+}
+html.zh-kbnav input[type="checkbox"]:focus-visible {
+  border-radius: 3px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 55%, transparent);
+}

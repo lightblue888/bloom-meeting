@@ -90,13 +90,35 @@ export class GuestVoice {
     return d.token as string;
   }
 
+  /** the key the relay gave this browser for this name in this room: the name stays ours for the meeting (a refresh, a
+   *  rejoin bring it along; someone else typing the same name is turned away), see relay/token_server.py _claim.
+   *  Kept under a hash of room + name: the room number is the meeting's password, never written into storage as it is */
+  private claims: Record<string, string> = {};
+  private async claimKey(name: string): Promise<string> {
+    const plain = `${this.ROOM}\n${name.split(/\s+/).filter(Boolean).join(' ').toLowerCase()}`;
+    try {
+      const h = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(plain)));
+      return 'bloom.claim.' + Array.from(h.slice(0, 12), (b) => b.toString(16).padStart(2, '0')).join('');
+    } catch {
+      return '';                                     // no WebCrypto (not https): kept in memory only
+    }
+  }
+
   private async tokenFor(name: string): Promise<any> {
-    const r = await fetch(`/token?room=${encodeURIComponent(this.ROOM)}&name=${encodeURIComponent(name)}`, { cache: 'no-store' });
+    const ck = await this.claimKey(name);
+    let claim = this.claims[name] || '';
+    try { claim = claim || (ck && localStorage.getItem(ck)) || ''; } catch { /* private mode: kept in memory only */ }
+    const r = await fetch(`/token?room=${encodeURIComponent(this.ROOM)}&name=${encodeURIComponent(name)}${claim ? `&claim=${encodeURIComponent(claim)}` : ''}`,
+      { cache: 'no-store' });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) {
-      const e: any = new Error(d.error || `HTTP ${r.status}`);
-      e.tokenStatus = r.status;
+      const e: any = new Error(d.error === 'name_taken' ? this.L('与会上其他人重名', 'Someone in the meeting already uses this name') : (d.error || `HTTP ${r.status}`));
+      e.tokenStatus = d.error === 'name_taken' ? 403 : r.status;
       throw e;
+    }
+    if (typeof d.claim === 'string' && d.claim) {
+      this.claims[name] = d.claim;
+      try { if (ck) localStorage.setItem(ck, d.claim); } catch { /* private mode */ }
     }
     this.token = d.token;
     this.tokenAt = Date.now();

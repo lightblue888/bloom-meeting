@@ -555,6 +555,9 @@ class Meetings:
             board = json.loads((d / "board.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             board = {"tasks": []}
+        if isinstance(board, dict) and isinstance(board.get("tasks"), list):   # 标注带上标签（旧会议存的快照里没有）
+            from .board import with_tags
+            board["tasks"] = [with_tags(t) if isinstance(t, dict) else t for t in board["tasks"]]
         try:
             summary = json.loads((d / "summary.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):

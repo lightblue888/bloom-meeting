@@ -73,6 +73,39 @@ def is_app_task(t: dict | None) -> bool:
     return bool(t.get("note") and t.get("unchanged") and _APP_SAID.search(str(t.get("result") or "")))
 
 
+# 标注（会上改不了的那几条）身上的标签，按标题、"怎么改""要补"里的字眼归类，小旗卡片、修改清单、导出都画（2026-11-19）。
+# 顺序固定，一条最多三个。"会后改 / 已处理"是状态，不在这里：界面按 resolved 自己画
+NOTE_TAGS = (
+    ("rerun", re.compile(r"重跑|重新跑|再跑|补跑|跑一?[组次遍轮]|回归|实验|消融|对照|稳健性|鲁棒|训练|微调"
+                         r"|(?i:ablation|regress|experiment|re-?run|robustness|retrain|fine-?tun)")),
+    ("data", re.compile(r"数据|样本|观测|问卷|采集|调研|(?i:\bdata\b|dataset|\bsamples?\b|survey|observations)")),
+    ("figure", re.compile(r"[图表]\s*\d|[张幅个]图|[张个]表(?![达述示明现面])|图表|配图|重画|画(?:一张|一幅|个|图)|作图"
+                          r"|示意图|折线图|柱状图|散点图|热力图|流程图|框架图|曲线图|表格"
+                          r"|(?i:\bfig(?:ure)?s?\b|\btables?\b|\bplots?\b|\bcharts?\b)")),
+    ("lit", re.compile(r"文献|引用|参考|引文|相关工作|(?i:citation|literature|references?\b|\bcite|related work)")),
+    ("discuss", re.compile(r"再讨论|讨论一下|待讨论|商量|拍板|待定|再定|确认|请示|问一?下|问(?:老师|导师)"
+                           r"|(?i:\bdecide\b|discuss with|check with|confirm|to be decided|\bTBD\b)")),
+)
+NOTE_TAG_KEYS = tuple(k for k, _ in NOTE_TAGS)
+
+
+def note_tags(t: dict | None) -> list[str]:
+    """标注的标签（NOTE_TAG_KEYS 里的键）。任务上存了 tags 就用存的，否则按标题、怎么改、要补现推（旧会议的也能显示）。
+    不是标注、软件意见：[]。"""
+    if not t or not t.get("note") or is_app_task(t):
+        return []
+    have = t.get("tags")
+    if isinstance(have, list):
+        return [k for k in NOTE_TAG_KEYS if k in have][:3]
+    text = " ".join(str(t.get(k) or "") for k in ("title", "plan", "need"))
+    return [k for k, rx in NOTE_TAGS if rx.search(text)][:3]
+
+
+def with_tags(t: dict) -> dict:
+    """给标注补上 tags（副本）；别的任务原样返回。"""
+    return dict(t, tags=note_tags(t)) if t.get("note") else t
+
+
 def _paper_dict(paper) -> dict:
     """add / add_note 的 paper 参数：{id, name, path}（meetings.paper_entry 那样的）→ 任务上记的三个字段。"""
     if isinstance(paper, dict) and paper.get("id"):
@@ -330,10 +363,11 @@ class Board:
 
     def tasks(self) -> list[dict]:
         """每条的副本。软件意见一律带上 app=True：工人看过原文才说"这条是在反馈软件"的那种（is_app_task 认得、自己没标），
-        以前计数算软件、修改清单（MeetingSummary TodoList 只认 app / kind）却把它放进论文那一节（2026-11-15 联调）。"""
+        以前计数算软件、修改清单（MeetingSummary TodoList 只认 app / kind）却把它放进论文那一节（2026-11-15 联调）。
+        标注带上 tags（note_tags）。"""
         with self._lock:
             self.reload()
-            return [dict(t, app=True) if not t.get("app") and is_app_task(t) else dict(t)
+            return [with_tags(dict(t, app=True) if not t.get("app") and is_app_task(t) else dict(t))
                     for t in sorted(self._tasks, key=lambda x: x["idx"])]
 
     def counts(self) -> dict:

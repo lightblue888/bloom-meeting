@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """bloom 中继的小服务 (只监听 127.0.0.1:8787, Caddy 反代):
 
-1. 发 LiveKit token:  GET /token?room=<id>&name=<名字>   只发给正在开的会 (403 否则), 身份一律 guest
-   返回 {"token": <LiveKit access token>, "url": <wss 地址>, ...}
+1. 发 LiveKit token:  GET /token?room=<id>&name=<名字>[&claim=<钥匙>]   只发给正在开的会 (403 否则), 身份一律 guest
+   返回 {"token": <LiveKit access token>, "url": <wss 地址>, "claim": <钥匙>, ...}
+   名字一场会里归第一个用它的浏览器: 以后再用这个名字要带上当时给的钥匙, 别人用 409 name_taken (共同主持人按名字定,
+   不能让人顶替); 主持人、AI 的名字和 bloom-host / bloom-student 访客都不能用。
 2. 访客看会 (论文 + 实时逐字稿):
    - Bloom 桌面端推:  POST /push/<room>/state       JSON: 标题、是否在开、参会人、字幕用的最近几句 (captions)
                                                      (整份逐字稿 lines / 半句 partial 推上来也丢掉; captions 只在开会时有,
@@ -64,7 +66,12 @@ MAX_INBOX = 100
 MAX_UPLOADS = 4                       # 一个房间同时排着的上传最多几份 (主持人那边每秒取走)
 RESULT_TTL = 120
 UPLOAD_TTL = 600
-MAX_ROOMS = 100                       # 最多记这么多个房间, 超了丢最久没动的 (丢了的旧链接就显示"链接无效")
+MAX_RESULTS = 200                     # 一个房间同时留着的结果最多几份 (2 分钟就删)
+MAX_RESULT_BODY = 1024 * 1024         # 一份结果最多 1 MB (都是小 JSON)
+MAX_ROOMS = 100                       # 最多记这么多个房间, 超了丢最久没动的、没在开的 (丢了的旧链接就显示"链接无效"); 在开的会不丢
+CLAIMS_MAX = 2000                     # 一个房间最多认领这么多个名字 (见 _claim)
+CLAIMS_PER_IP = 20                    # 一个 IP 在一个房间里最多认领这么多个新名字 (同一个 Wi-Fi 下几个人共用一个 IP, 够用)
+INFLIGHT_MAX = 300 * 1024 * 1024      # 同时在收的请求体加起来最多这么多 (几十个人一起传 50 MB 也撑不爆内存)
 MAX_ASSETS = 80
 HOST_STALE = 120                      # 主持人那边这么久没联系 (推送 / have 每 20 秒一次) 就当这场会已经结束
 LK_HTTP = "http://127.0.0.1:7880"     # 本机 LiveKit 的 HTTP 口 (散会时删房间, 把还在里面的人请出去)
@@ -92,7 +99,16 @@ PUB_MAX_BODY = 12 * 1024 * 1024                              # 通行码的推�
 PUB_ROOMS_PER_DEV = 4                                        # 一台电脑最多占几个房间 (换房间号会占新的)
 PUB_REG_PER_IP = 10                                          # 一个 IP 一天最多领几个通行码
 PUB_REG_ALL = 300                                            # 所有人一小时最多领几个
+PUB_MAX_ROOMS = int(env.get("BLOOM_MAX_ROOMS") or 1000)      # 公共中继最多记这么多个房间
+PUB_ROOM_BYTES = int(env.get("BLOOM_ROOM_BYTES") or 160 * 1024 * 1024)    # 一个房间在内存里最多占这么多 (论文、图、逐字稿、上传、结果)
+PUB_ALL_BYTES = int(env.get("BLOOM_MAX_BYTES") or 1536 * 1024 * 1024)     # 所有房间加起来最多这么多, 满了新推的回 503
+if PUBLIC:
+    MAX_ROOMS = PUB_MAX_ROOMS
+CLAIMS_PER_IP = int(env.get("BLOOM_CLAIMS_PER_IP") or CLAIMS_PER_IP)
 DEV_STORE = os.path.join(os.path.dirname(STORE), "devices.json")
+OWNER_STORE = os.path.join(os.path.dirname(STORE), "owners.json")
+OWNERS = {}                                                  # room -> device: 房间从内存里丢掉以后也还是它的, 别人领不走
+OWNERS_MAX = 50000
 DEVICES = {}                                                 # device -> {"h": sha256(secret), "at": 领的时间}
 DEV_LOCK = threading.Lock()
 REG_IP = {}                                                  # ip -> [这一天从几时算起, 个数]
@@ -118,6 +134,26 @@ def _dev_save():
         os.replace(tmp, DEV_STORE)
     except OSError as ex:
         print(f"save devices: {ex}", file=sys.stderr)
+
+
+def _owners_load():
+    try:
+        with open(OWNER_STORE, encoding="utf-8") as f:
+            d = json.load(f)
+        if isinstance(d, dict):
+            OWNERS.update({k: v for k, v in d.items() if isinstance(k, str) and isinstance(v, str)})
+    except (OSError, ValueError):
+        pass
+
+
+def _owner_keep(room, dev):
+    """房间从内存里丢掉时记下它是谁的 (调用方持锁)。记太多了扔最早的。"""
+    if not dev:
+        return
+    OWNERS.pop(room, None)
+    OWNERS[room] = dev
+    while len(OWNERS) > OWNERS_MAX:
+        OWNERS.pop(next(iter(OWNERS)))
 
 
 def _reg_allow(ip):
@@ -161,6 +197,75 @@ LOCK = threading.Lock()
 NO_DISK = ("captions", "transcript", "partial", "board", "brain", "focus")   # 会议内容只在内存里: 中继重启就没了, 桌面端补推
 DIRTY = threading.Event()
 ROOMS = {}   # room -> {"state": dict|None, "sv": int, "paper": bytes|None, "pv": int, "assets": {name: (ctype, bytes)}, "touched": float}
+INFLIGHT = [0]                        # 正在收的请求体一共多少字节 (见 INFLIGHT_MAX)
+INFLIGHT_LOCK = threading.Lock()
+
+
+def _take(n):
+    with INFLIGHT_LOCK:
+        if INFLIGHT[0] + n > INFLIGHT_MAX:
+            return False
+        INFLIGHT[0] += n
+        return True
+
+
+def _give(n):
+    with INFLIGHT_LOCK:
+        INFLIGHT[0] = max(0, INFLIGHT[0] - n)
+
+
+def _size(r):
+    """这个房间在内存里大概占多少字节 (调用方持锁)。"""
+    if not r:
+        return 0
+    n = r.get("state_n", 0) + len(r.get("paper") or b"") + len(r.get("lines") or b"")
+    n += sum(len(b) for _c, b in r.get("assets", {}).values())
+    n += sum(len(u[1]) for u in r.get("uploads", {}).values())
+    n += sum(v[2] for v in r.get("results", {}).values() if len(v) > 2)
+    return n
+
+
+def _fits(r, old, new):
+    """公共中继: 房间里 old 字节的东西换成 new 字节以后, 这个房间、所有房间加起来还在上限里吗 (调用方持锁)。
+    放得下 None, 否则错误码 (room_full / busy)。自己搭的中继只有自己推, 不限。"""
+    if not PUBLIC:
+        return None
+    if _size(r) - old + new > PUB_ROOM_BYTES:
+        return "room_full"
+    if sum(_size(x) for x in ROOMS.values()) - old + new > PUB_ALL_BYTES:
+        return "busy"
+    return None
+
+
+def _name_key(s):
+    """名字怎么算同一个: 和 Bloom 那边认共同主持人的规矩一样 (zuhui/roles.py 的 _key: 空白并成一个、不分大小写)。"""
+    return " ".join(str(s or "").split()).lower()
+
+
+def _claim(r, name, key, ip=""):
+    """名字认领 (调用方持锁): 一场会里第一次用这个名字的浏览器拿到一把钥匙 (访客页存着), 以后再用这个名字领 token
+    要带上它; 别人拿同一个名字领不到 (共同主持人是按名字定的, 不然谁都能顶替)。主持人、AI 的名字访客不能用。
+    返回 (钥匙, None) 或 (None, 错误码 name_taken / full)。"""
+    nk = _name_key(name)
+    people = [p for p in ((r.get("state") or {}).get("participants") or []) if isinstance(p, dict)]
+    for p in people:
+        if p.get("rank") in ("host", "assistant") and _name_key(p.get("name")) == nk:
+            return None, "name_taken"
+    claims = r.setdefault("claims", {})
+    h = claims.get(nk)
+    if h is not None:
+        if key and hmac.compare_digest(h, hashlib.sha256(key.encode()).hexdigest()):
+            return key, None
+        return None, "name_taken"
+    # 认领过的名字不让出来 (让出来就能被人刷掉再顶替共同主持人): 总数有上限, 一个 IP 在一个房间里新认领的名字也有上限
+    per_ip = r.setdefault("claim_ip", {})
+    if len(claims) >= CLAIMS_MAX or (PUBLIC and per_ip.get(ip, 0) >= CLAIMS_PER_IP):   # 自己的中继: 一个实验室共用一个 IP 也不卡
+        return None, "full"
+    per_ip[ip] = per_ip.get(ip, 0) + 1
+    key = secrets.token_urlsafe(18)
+    claims[nk] = hashlib.sha256(key.encode()).hexdigest()
+    DIRTY.set()
+    return key, None
 
 
 NAME_MAX = 32          # 访客的名字最多这么多字（和访客页输入框一样）
@@ -194,10 +299,16 @@ def _sweep(r):
 
 
 def _room(room, create=False):
+    """调用方持锁。create: 没有就建; 房间数到上限时丢最久没动的、没在开的那个 (它是谁的记进 OWNERS);
+    全都在开就建不了, 返回 None。"""
     r = ROOMS.get(room)
     if r is None and create:
         if len(ROOMS) >= MAX_ROOMS:
-            oldest = min(ROOMS, key=lambda k: ROOMS[k]["touched"])
+            idle = [k for k, x in ROOMS.items() if not _live(x)]
+            if not idle:
+                return None
+            oldest = min(idle, key=lambda k: ROOMS[k]["touched"])
+            _owner_keep(oldest, ROOMS[oldest].get("owner"))
             ROOMS.pop(oldest, None)
         r = ROOMS[room] = {"state": None, "sv": 0, "paper": None, "pv": 0, "assets": {}, "touched": time.time(), "host_seen": 0.0,
                            "inbox": [], "results": {}, "uploads": {}}
@@ -222,9 +333,12 @@ def _load():
                 av[name] = (ctype, base64.b64decode(b64))
             except Exception:
                 pass
+        claims = d.get("claims") if isinstance(d.get("claims"), dict) else {}
         ROOMS[room] = {"state": d.get("state"), "sv": int(d.get("sv") or 1), "paper": None, "pv": 0, "assets": av,
                        "touched": float(d.get("touched") or time.time()), "host_seen": float(d.get("host_seen") or 0),
-                       "inbox": [], "results": {}, "uploads": {}, "owner": d.get("owner")}
+                       "inbox": [], "results": {}, "uploads": {}, "owner": d.get("owner"),
+                       "claims": {k: v for k, v in claims.items() if isinstance(k, str) and isinstance(v, str)},
+                       "state_n": len(json.dumps(d.get("state"), ensure_ascii=False).encode("utf-8"))}
 
 
 def _saver():
@@ -238,12 +352,18 @@ def _saver():
                 data = {room: {"state": None if r["state"] is None else {k: v for k, v in r["state"].items() if k not in NO_DISK},   # 字幕不落盘
                                "sv": r["sv"], "touched": r["touched"], "host_seen": r.get("host_seen", 0),
                                "av": {k: [c, base64.b64encode(b).decode()] for k, (c, b) in r["assets"].items() if k.startswith("av-")},
-                               "owner": r.get("owner")}       # 公共中继: 房间刚被领走、还没推状态时 state 是 None
+                               "owner": r.get("owner"),       # 公共中继: 房间刚被领走、还没推状态时 state 是 None
+                               "claims": dict(r.get("claims") or {})}   # 认领过的名字 (只存哈希): 中继重启后别人照样顶替不了
                         for room, r in ROOMS.items() if r["state"] is not None or r.get("owner")}
+                owners = dict(OWNERS)
             tmp = STORE + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False)
             os.replace(tmp, STORE)
+            if owners or os.path.exists(OWNER_STORE):
+                with open(OWNER_STORE + ".tmp", "w", encoding="utf-8") as f:
+                    json.dump(owners, f)
+                os.replace(OWNER_STORE + ".tmp", OWNER_STORE)
         except Exception as ex:
             print(f"save rooms: {ex!r}", file=sys.stderr)
 
@@ -264,7 +384,8 @@ def _end_state(r):
 def _is_cohost(r, name):
     """这个访客在主持人推来的参会人名单里是不是共同主持人。调用方持锁。"""
     people = ((r or {}).get("state") or {}).get("participants") or []
-    return any(isinstance(p, dict) and p.get("name") == name and p.get("rank") == "cohost" for p in people)
+    nk = _name_key(name)
+    return any(isinstance(p, dict) and _name_key(p.get("name")) == nk and p.get("rank") == "cohost" for p in people)
 
 
 def _live(r):
@@ -388,6 +509,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", cache)
         self.send_header("X-Robots-Tag", "noindex, nofollow")
         self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -400,6 +522,7 @@ class Handler(BaseHTTPRequestHandler):
     def _authed(self, room):
         """主持人那边: LiveKit 密钥签的 JWT (自己的中继); 公共中继还认通行码, 房间谁先用就归谁。"""
         self._via_device = False
+        self._auth_busy = False
         h = self.headers.get("Authorization") or ""
         if h.startswith("Device ") and PUBLIC:
             dev = self._device(h[7:])
@@ -407,18 +530,34 @@ class Handler(BaseHTTPRequestHandler):
                 return False
             with LOCK:
                 r = ROOMS.get(room)
-                owner = (r or {}).get("owner")
+                owner = (r or {}).get("owner") or OWNERS.get(room)   # 挤出内存的房间也还是原来那台电脑的
                 if owner != dev:
                     if owner is not None or (r is not None and r["state"] is not None):
                         return False                   # 别的电脑的房间 / 以前用密钥开的房间
                     mine = [k for k, x in ROOMS.items() if x.get("owner") == dev]
-                    if len(mine) >= PUB_ROOMS_PER_DEV:  # 占得太多: 把最久没用的那个让出来
-                        old = min(mine, key=lambda k: ROOMS[k]["touched"])
-                        if _live(ROOMS[old]):
-                            return False
-                        ROOMS.pop(old, None)
+                    gone = [k for k, d in OWNERS.items() if d == dev and k not in ROOMS]
+                    if len(mine) + len(gone) >= PUB_ROOMS_PER_DEV:   # 占得太多: 把最久没用的那个让出来
+                        if gone:
+                            OWNERS.pop(gone[0], None)
+                        else:
+                            old = min(mine, key=lambda k: ROOMS[k]["touched"])
+                            if _live(ROOMS[old]):
+                                return False
+                            ROOMS.pop(old, None)
                     r = _room(room, create=True)
+                    if r is None:                      # 房间数满了、都在开: 稍后再来
+                        self._auth_busy = True
+                        return False
                     r["owner"] = dev
+                    OWNERS.pop(room, None)
+                    DIRTY.set()
+                elif r is None:                        # 自己的房间被挤出内存了: 重新建起来, 还是它的
+                    r = _room(room, create=True)
+                    if r is None:
+                        self._auth_busy = True
+                        return False
+                    r["owner"] = dev
+                    OWNERS.pop(room, None)
                     DIRTY.set()
             self._via_device = True
             return True
@@ -457,11 +596,32 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return str(c.get("name") or c.get("sub") or "").strip() or None
 
-    def _body(self):
-        n = int(self.headers.get("Content-Length") or 0)
-        if n < 0 or n > (PUB_MAX_BODY if getattr(self, "_via_device", False) else MAX_BODY):
+    def _body(self, limit=None):
+        """请求体; 太大 None (self._busy=False), 同时在收的太多 None (self._busy=True, 回 503 稍后再来)。"""
+        self._busy = False
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
             return None
-        return self.rfile.read(n) if n else b""
+        if limit is None:
+            limit = PUB_MAX_BODY if getattr(self, "_via_device", False) else MAX_BODY
+        if n < 0 or n > limit:
+            return None
+        if not n:
+            return b""
+        if not _take(n):
+            self._busy = True
+            return None
+        try:
+            return self.rfile.read(n)
+        finally:
+            _give(n)
+
+    def _deny(self):
+        """_authed 没过: 房间数满了 503, 别的 401。"""
+        if getattr(self, "_auth_busy", False):
+            return self._json(503, {"error": "busy"})
+        return self._json(401, {"error": "unauthorized"})
 
     # ---------- GET ----------
     def do_GET(self):
@@ -484,7 +644,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._view(parts[1], parts[2:], urllib.parse.parse_qs(u.query))
         if len(parts) == 3 and parts[0] == "push" and parts[2] == "inbox" and ROOM_RE.match(parts[1]):
             if not self._authed(parts[1]):
-                return self._json(401, {"error": "unauthorized"})
+                return self._deny()
             with LOCK:
                 r = _room(parts[1])
                 acts = list((r or {}).get("inbox") or [])
@@ -494,7 +654,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"acts": acts})
         if len(parts) == 4 and parts[0] == "push" and parts[2] == "upload" and ROOM_RE.match(parts[1]):
             if not self._authed(parts[1]):
-                return self._json(401, {"error": "unauthorized"})
+                return self._deny()
             with LOCK:
                 r = _room(parts[1])
                 up = (r or {}).get("uploads", {}).pop(parts[3], None)
@@ -505,14 +665,14 @@ class Handler(BaseHTTPRequestHandler):
                               {"X-Bloom-Name": urllib.parse.quote(name), "X-Bloom-By": urllib.parse.quote(by)})
         if len(parts) == 3 and parts[0] == "push" and parts[2] == "participants" and ROOM_RE.match(parts[1]):
             if not self._authed(parts[1]):
-                return self._json(401, {"error": "unauthorized"})
+                return self._deny()
             try:
                 return self._json(200, {"participants": _participants(parts[1])})
             except Exception as ex:
                 return self._json(502, {"error": f"livekit: {ex}"[:160]})
         if len(parts) == 3 and parts[0] == "push" and parts[2] == "have" and ROOM_RE.match(parts[1]):
             if not self._authed(parts[1]):
-                return self._json(401, {"error": "unauthorized"})
+                return self._deny()
             with LOCK:
                 r = _room(parts[1])
                 if r is not None:
@@ -531,6 +691,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": f"room 最多 64 个字、name 最多 {NAME_MAX} 个字"})
         if not ROOM_RE.match(room):
             return self._json(400, {"error": "房间号不对"})
+        if _name_key(name) in HOST_IDS:            # 主持人那边语音桥的两路身份: 访客用了会把主持人的语音挤掉
+            return self._json(409, {"error": "name_taken"})
         with LOCK:
             live = _live(_room(room))
         if not live:                               # 只有正在开的会能进: 旧链接 / 还没开的会都拿不到 token
@@ -541,9 +703,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(429, {"error": "这场会人满了"})
             except Exception:
                 pass
+        with LOCK:                                 # 这个名字在这场会里是不是已经有人用了 (见 _claim)
+            r = _room(room)
+            key, err = _claim(r, name, q.get("claim", [""])[0].strip()[:64], self._ip()) if r else (None, "gone")
+        if err:
+            return self._json(409 if err == "name_taken" else 429 if err == "full" else 403, {"error": err})
         role = "guest"                             # 身份由主持人在 Bloom 里定, 链接里写什么都不算
         token = make_token(room, name, role)
-        return self._json(200, {"token": token, "url": WS_URL, "room": room, "identity": name, "role": role, "ttl": TTL})
+        return self._json(200, {"token": token, "url": WS_URL, "room": room, "identity": name, "role": role, "ttl": TTL,
+                                "claim": key})
 
     def _view(self, room, rest, q):
         with LOCK:
@@ -573,7 +741,8 @@ class Handler(BaseHTTPRequestHandler):
                 a = r["assets"].get(rest[1])
                 if a:
                     ctype, data = a
-                    extra = {"Content-Security-Policy": "sandbox"} if ctype == "text/html" else None
+                    # 网页和 SVG 直接打开时会跑里面的脚本: 一律关进沙盒（<img> 里显示不受影响），别人推的图碰不到中继这个网址
+                    extra = {"Content-Security-Policy": "sandbox"} if ctype in ("text/html", "image/svg+xml") else None
                     # 名字里带内容哈希的图（桌面端 view._guest_asset_name：fig1-3f2a9c1b7d.png；头像 av-<哈希>）：同名就是同一份，
                     # 手机缓存一天，来回切论文、每次改稿换新版不用再下一遍；别的照旧不缓存
                     hashed = bool(HASHED_RE.search(rest[1]))
@@ -597,7 +766,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"device": did, "secret": sec, "ws": WS_URL})
         if len(parts) == 3 and parts[0] == "push" and parts[2] == "join" and ROOM_RE.match(parts[1]):
             if not self._authed(parts[1]):
-                return self._json(401, {"error": "unauthorized"})
+                return self._deny()
             try:
                 obj = json.loads((self._body() or b"{}").decode("utf-8"))
             except ValueError:
@@ -618,8 +787,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._guest_act(parts[1], parts[2], urllib.parse.parse_qs(u.query))
         if len(parts) == 4 and parts[0] == "push" and parts[2] == "result" and ROOM_RE.match(parts[1]):
             if not self._authed(parts[1]):
-                return self._json(401, {"error": "unauthorized"})
-            body = self._body()
+                return self._deny()
+            body = self._body(limit=MAX_RESULT_BODY)
+            if body is None:
+                return self._json(503 if self._busy else 413, {"error": "busy" if self._busy else "too large"})
             try:
                 obj = json.loads((body or b"{}").decode("utf-8"))
             except ValueError:
@@ -629,19 +800,37 @@ class Handler(BaseHTTPRequestHandler):
                 if r is None:
                     return self._json(404, {"error": "no room"})
                 _sweep(r)
-                r["results"][parts[3][:64]] = (obj, time.time())
+                rid = parts[3][:64]
+                old = r["results"].pop(rid, None)
+                while len(r["results"]) >= MAX_RESULTS:        # 留着的太多: 扔最早的
+                    r["results"].pop(next(iter(r["results"])))
+                err = _fits(r, 0, len(body))
+                if err:
+                    if old:
+                        r["results"][rid] = old
+                    return self._json(503 if err == "busy" else 413, {"error": err})
+                r["results"][rid] = (obj, time.time(), len(body))
             return self._json(200, {"ok": True})
         if len(parts) < 3 or parts[0] != "push" or not ROOM_RE.match(parts[1]):
             return self._json(404, {"error": "not found"})
         room, what = parts[1], parts[2]
         if not self._authed(room):
-            return self._json(401, {"error": "unauthorized"})
+            return self._deny()
         body = self._body()
         if body is None:
-            return self._json(413, {"error": "too large"})
+            return self._json(503 if self._busy else 413, {"error": "busy" if self._busy else "too large"})
         with LOCK:
             r = _room(room, create=True)
+            if r is None:                          # 房间数满了、都在开
+                return self._json(503, {"error": "busy"})
             r["host_seen"] = time.time()
+            # 公共中继: 一个房间、所有房间加起来在内存里都有上限 (换掉的那份先减掉)
+            old = {"state": r.get("state_n", 0), "lines": len(r.get("lines") or b""), "paper": len(r.get("paper") or b""),
+                   "asset": len((r["assets"].get(parts[3]) or ("", b""))[1]) if len(parts) == 4 else 0}.get(what)
+            if old is not None:
+                err = _fits(r, old, len(body))
+                if err:
+                    return self._json(503 if err == "busy" else 413, {"error": err})
             if what == "state":
                 try:
                     st = json.loads(body.decode("utf-8"))
@@ -655,6 +844,7 @@ class Handler(BaseHTTPRequestHandler):
                 st.pop("lines", None)                  # 旧字段；新版逐字稿在 transcript 里 (访客和主持人看到的一样)
                 st["pushed_at"] = time.time()
                 r["state"] = st
+                r["state_n"] = len(body)
                 r["sv"] += 1
                 DIRTY.set()
                 return self._json(200, {"ok": True, "sv": r["sv"], "pv": r["pv"]})
@@ -699,7 +889,21 @@ class Handler(BaseHTTPRequestHandler):
         limit = MAX_UPLOAD if what == "upload" else 256 * 1024
         if n < 0 or n > limit:
             return self._json(413, {"error": "too large"})
-        body = self.rfile.read(n) if n else b""
+        with LOCK:                                 # 收 50 MB 之前先看收不收得下: 会没在开、排满了就不收
+            r = _room(room)
+            if not _live(r):
+                return self._json(409, {"error": "会议没在开"})
+            if what == "upload" and len(r["uploads"]) >= MAX_UPLOADS:
+                return self._json(429, {"error": "传得太快了, 稍等再传"})
+            err = _fits(r, 0, n) if what == "upload" else None
+        if err:
+            return self._json(503 if err == "busy" else 413, {"error": err})
+        if n and not _take(n):
+            return self._json(503, {"error": "busy"})
+        try:
+            body = self.rfile.read(n) if n else b""
+        finally:
+            _give(n)
         aid = uuid.uuid4().hex[:16]
         if what == "upload":
             name = os.path.basename(str(q.get("name", [""])[0]).replace("\\", "/")).strip()[:120]
@@ -725,6 +929,9 @@ class Handler(BaseHTTPRequestHandler):
             if what == "upload":
                 if len(r["uploads"]) >= MAX_UPLOADS:
                     return self._json(429, {"error": "传得太快了, 稍等再传"})
+                err = _fits(r, 0, len(body))
+                if err:
+                    return self._json(503 if err == "busy" else 413, {"error": err})
                 r["uploads"][aid] = (act["body"]["name"], body, by, time.time())
             if len(r["inbox"]) >= MAX_INBOX:
                 return self._json(429, {"error": "太快了"})
@@ -778,6 +985,7 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     _load()
     _dev_load()
+    _owners_load()
     threading.Thread(target=_saver, daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", int(os.environ.get("BLOOM_PORT") or 8787)), Handler)
     srv.daemon_threads = True

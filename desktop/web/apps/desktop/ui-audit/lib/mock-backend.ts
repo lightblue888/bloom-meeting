@@ -10,7 +10,10 @@ import type { BrowserContext, Route } from '@playwright/test';
 import { clone, NOW_S, type World } from '../fixtures/world';
 
 const HERE = import.meta.dirname;
-const PAPER = readFileSync(resolve(HERE, '../fixtures/paper.html'), 'utf8');
+// promo stills (UI_AUDIT_PROMO=1, lib/audit.ts) go public: the sample paper's real name becomes a made-up one
+const PAPER = ((s) => (process.env.UI_AUDIT_PROMO === '1' ? s.replace(/FooBench/g, 'TimeFlow').replace(/Interactive Behaviou?r Prediction/gi, 'Long-Horizon Forecasting') : s))(
+  readFileSync(resolve(HERE, '../fixtures/paper.html'), 'utf8'),
+);
 const FAKE_LK = readFileSync(resolve(HERE, 'fake-livekit.js'), 'utf8');
 const VIDEO = (() => {
   try {

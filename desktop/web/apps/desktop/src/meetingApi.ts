@@ -249,6 +249,8 @@ export interface Task {
   /** for a note: how to change the paper after the meeting, and what has to be done first (data, regressions) */
   plan?: string | null;
   need?: string | null;
+  /** for a note: what kind of work it waits for (zuhui/board.py NOTE_TAGS), drawn as chips: rerun, data, figure, lit, discuss */
+  tags?: string[] | null;
   /** 'annotate': a note whose plan is still being written */
   mode?: string | null;
   resolved?: boolean;

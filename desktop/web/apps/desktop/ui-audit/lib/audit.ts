@@ -16,8 +16,13 @@ const INPAGE = resolve(import.meta.dirname, 'inpage.js');
 /** UI_AUDIT_MOBILE=1: a phone pass instead (390×844, touch, a phone browser's user agent) — for the guest page,
  *  which people open from the invite link on their phones: npx playwright test -c ui-audit/playwright.config.ts --grep guest */
 export const MOBILE = process.env.UI_AUDIT_MOBILE === '1';
+/** UI_AUDIT_PROMO=1: stills for a promo video — dark only, 1600×900 at 2× (3200×1800 shots), and the fixtures' real
+ *  paper name swapped for a made-up one (the shots go public) */
+export const PROMO = process.env.UI_AUDIT_PROMO === '1';
 const PHONE = { w: 390, h: 844 };
-export const SIZES = MOBILE
+export const SIZES = PROMO && !MOBILE
+  ? [{ w: 1600, h: 900 }]
+  : MOBILE
   ? [PHONE]
   : [
       { w: 1024, h: 640 },
@@ -25,8 +30,20 @@ export const SIZES = MOBILE
       { w: 1600, h: 900 },
       { w: 1920, h: 1080 },
     ];
-export const THEMES = ['dark', 'light'] as const;
-export type Theme = (typeof THEMES)[number];
+const ALL_THEMES = ['dark', 'light'] as const;
+export type Theme = (typeof ALL_THEMES)[number];
+export const THEMES: readonly Theme[] = PROMO ? ['dark'] : ALL_THEMES;
+/** promo stills: the real paper name in the fixtures → a made-up one, everywhere in the world */
+export const PROMO_NAME: [RegExp, string] = [/FooBench/g, 'TimeFlow'];
+const PROMO_TITLE: [RegExp, string] = [/Interactive Behaviou?r Prediction/gi, 'Long-Horizon Forecasting'];
+function scrubPromo(x: unknown): unknown {
+  if (typeof x === 'string') return x.replace(PROMO_NAME[0], PROMO_NAME[1]).replace(PROMO_TITLE[0], PROMO_TITLE[1]);
+  if (Array.isArray(x)) { for (let i = 0; i < x.length; i++) x[i] = scrubPromo(x[i]); return x; }
+  if (x && typeof x === 'object' && !(x instanceof Uint8Array)) {
+    for (const k of Object.keys(x as Record<string, unknown>)) (x as Record<string, unknown>)[k] = scrubPromo((x as Record<string, unknown>)[k]);
+  }
+  return x;
+}
 /** axe runs once per theme at this size (contrast doesn't change with the window) */
 export const AXE_SIZE = MOBILE ? '390x844' : '1280x800';
 /** the transitions are replayed at these sizes, dark theme */
@@ -69,9 +86,10 @@ const rel = (p: string) => p.slice(resolve(OUT, '..').length + 1).replace(/\\/g,
 export async function open(browser: Browser, origin: string, screen: Screen, lang: Lang, theme: Theme, size: { w: number; h: number }): Promise<Opened> {
   const world = baseWorld(lang, !!screen.stress);
   screen.world?.(world);
+  if (PROMO) scrubPromo(world);
   const context = await browser.newContext({
     viewport: { width: size.w, height: size.h },
-    deviceScaleFactor: 1,
+    deviceScaleFactor: PROMO ? (MOBILE ? 3 : 2) : 1,
     ...(MOBILE
       ? {
           isMobile: true,

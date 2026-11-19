@@ -304,6 +304,47 @@ def _convert(src: Path, ext: str, folder: Path, work: Path, in_place: bool, cb) 
     return dst, stats
 
 
+ZIP_PART_MAX = 300 * 1024 * 1024     # Word / PPT 里一个部件解开最多这么大（正文 XML 一般几 MB，大的是视频）
+ZIP_XML_MAX = 256 * 1024 * 1024      # 所有 XML 部件解开加起来
+ZIP_ALL_MAX = 1024 * 1024 * 1024     # 整份解开
+ZIP_PARTS_MAX = 20000
+
+
+def _zip_precheck(src: Path) -> None:
+    """Word / PPT 是 zip：转换前先一块块解一遍数大小（不留在内存里，顺带校验 CRC，头里写小了的也逃不掉）。
+    压缩炸弹（几百 KB 解开几十 GB，访客能传进来）直接挡掉，不让转换把内存吃光。不是 zip 的交给后面照旧报错。"""
+    import zipfile
+    try:
+        z = zipfile.ZipFile(src)
+    except (zipfile.BadZipFile, OSError):
+        return
+    bad = ValueError(f"文件解压后过大：{src.name}")
+    with z:
+        infos = z.infolist()
+        if len(infos) > ZIP_PARTS_MAX:
+            raise bad
+        total = xml = 0
+        for info in infos:
+            if info.is_dir():
+                continue
+            is_xml = info.filename.lower().endswith((".xml", ".rels"))
+            got = 0
+            try:
+                with z.open(info) as f:
+                    while True:
+                        chunk = f.read(1 << 20)
+                        if not chunk:
+                            break
+                        got += len(chunk)
+                        if (got > ZIP_PART_MAX or total + got > ZIP_ALL_MAX
+                                or (is_xml and xml + got > ZIP_XML_MAX)):
+                            raise bad
+            except (zipfile.BadZipFile, NotImplementedError, RuntimeError, EOFError, OSError) as e:
+                raise ValueError(f"文件已损坏：{src.name}") from e
+            total += got
+            xml += got if is_xml else 0
+
+
 def import_file(src: str | Path, progress=None) -> dict:
     """progress：可选回调，收到 {"busy","name","stage","done","total","text","elapsed"}（PDF 转换时每半秒左右一次）。"""
     src = Path(src).resolve()
@@ -319,6 +360,8 @@ def import_file(src: str | Path, progress=None) -> dict:
         raise ValueError(f"这个文件是空的：{src.name}")
     if ext == ".pdf":
         _pdf_precheck(src)
+    if ext in (".docx", ".pptx"):
+        _zip_precheck(src)
     _report(progress, busy=True, name=src.stem, stage="开始", done=0, total=0, text=f"导入 {src.name}",
             t0=time.time(), error=None)
     try:

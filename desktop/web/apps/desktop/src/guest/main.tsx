@@ -8,6 +8,9 @@ import '../components/main-window.css';
 import '../components/meeting.css';
 import './guest.css';
 import { GuestApp } from './GuestApp';
+import { trackKeyboardNav } from '../kbnav';
+
+trackKeyboardNav();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

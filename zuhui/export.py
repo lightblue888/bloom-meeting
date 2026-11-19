@@ -67,6 +67,11 @@ WORDS = {
     "done_in_meeting": ("会上已改", "Edited in the meeting"),
     "plan": ("怎么改 {a}", "Change: {a}"),
     "need": ("要补 {a}", "Needs: {a}"),
+    "tag_rerun": ("要重新跑实验", "Rerun experiments"),
+    "tag_data": ("要补数据", "Needs new data"),
+    "tag_figure": ("要重画图表", "Redo figures or tables"),
+    "tag_lit": ("要查文献", "Check the literature"),
+    "tag_discuss": ("要再讨论", "Needs discussion"),
     "writing": ("整理中", "Working on it"),
     "other": ("其他", "Other"),
     "app": ("软件", "App"),
@@ -318,6 +323,10 @@ def todos_blocks(g: dict, lang: str, head: bool = True) -> list:
                 sub.append(tr("plan", lang, a=_one(x.get("plan"))))
             elif x.get("status") != "done":
                 sub.append(tr("writing", lang))
+            from .board import note_tags            # 标注的标签：要重新跑实验、要补数据……（界面上那排胶囊）
+            tags = [tr("tag_" + k, lang) for k in note_tags(x)]
+            if tags:
+                sub.append((", " if lang == "en" else "、").join(tags))
             need = _one(x.get("need"))
             rows.append({"text": _one(x.get("title")) + ((f" ({need})" if lang == "en" else f"（{need}）") if need else ""),
                          "done": str(x.get("id")) in ticked, "sub": sub})
@@ -622,7 +631,8 @@ var tex=(p.textContent||'').trim();if(!/\\[a-zA-Z]+|[_^]/.test(tex))return;p.cla
 Array.prototype.forEach.call(docs.querySelectorAll('.para:not(.mono), .sect, table.dtable td, table.dtable th'),function(p){
 if(p.querySelector('ins, del')||!/(^|[^\\$])\$[^$\n]+\$/.test(p.textContent||''))return;inl.push(p);});
 var all=maths.concat(inl);
-window.MathJax={tex:{tags:'ams',displayMath:[['\\[','\\]']],inlineMath:[['\\(','\\)'],['$','$']],processEscapes:true},svg:{fontCache:'global'},
+window.MathJax={tex:{tags:'ams',displayMath:[['\\[','\\]']],inlineMath:[['\\(','\\)'],['$','$']],processEscapes:true,
+packages:{'[-]':['html','require']},macros:{href:['{#2}',2],class:['{#2}',2],style:['{#2}',2],cssId:['{#2}',2],data:['{#2}',2]}},svg:{fontCache:'global'},
 startup:{typeset:false,ready:function(){MathJax.startup.defaultReady();if(!all.length)return;MathJax.typesetPromise(all).catch(function(){
 var q=Promise.resolve();all.forEach(function(el){q=q.then(function(){return MathJax.typesetPromise([el]);}).catch(function(){});});});}}};
 })();</script>"""

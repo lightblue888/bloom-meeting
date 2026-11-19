@@ -1627,7 +1627,10 @@ body.mw-resizing .mt-diff {
 }
 .mt-swap > span {
   grid-area: 1 / 1;
-  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
 }
 .mt-swap > .is-off {
   visibility: hidden;
@@ -2777,6 +2780,16 @@ mark.mt-hl {
   border: 1px solid color-mix(in srgb, #d99a2b 45%, transparent); }
 .mt-todo-tag.is-edit { color: #4f86ff; border-color: color-mix(in srgb, #4f86ff 45%, transparent); }
 .mt-todo.is-edit { cursor: default; }
+/* a note's chips (NoteTags): its state (会后改 / 已处理) and the kinds of work it waits for. They wrap; the card and
+   the row keep their width */
+.mt-ntags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.mt-todo > .mt-ntags { grid-column: 2; margin-top: 4px; }
+.mt-ntag { font-size: 11.5px; line-height: 18px; padding: 1px 9px; border-radius: 999px; white-space: nowrap;
+  color: color-mix(in srgb, var(--mute) 60%, var(--ink)); background: color-mix(in srgb, var(--mute) 14%, transparent); }
+.mt-ntag.is-st { color: #e0a43a; background: rgba(217, 154, 43, 0.16); }
+.mt-ntag.is-ok { color: #6cc483; background: rgba(22, 163, 74, 0.16); }
+html:root[data-theme="light"] .mt-ntag.is-st { color: #7a4f05; }
+html:root[data-theme="light"] .mt-ntag.is-ok { color: #166534; }
 
 
 /* ------------------------------------------------------------ 改会议名: the title is a button that becomes a field.

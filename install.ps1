@@ -17,12 +17,18 @@
 #
 # Options (environment variables, since `irm | iex` takes no arguments):
 #   BLOOM_DIR      where the backend goes            (default %LOCALAPPDATA%\bloom-meeting)
-#   BLOOM_REF      branch or tag to install          (default main)
+#   BLOOM_REF      branch or tag to install          (default the latest release's tag, the same as the desktop app;
+#                                                     main when there is no release)
 #   BLOOM_SOURCE   a local .zip of the repository    (instead of downloading; for testing)
 #   BLOOM_NO_APP   1 = skip the desktop app          (backend only)
 #   BLOOM_REPO     owner/name of the repository      (default lightblue888/bloom-meeting; a fork)
 #   BLOOM_API      the GitHub API base               (default https://api.github.com; a mirror)
 #   GITHUB_TOKEN   a token, if the repository is private
+#   BLOOM_RESTART  1 = close the running Bloom (the desktop app and its backend) before the files are replaced, and
+#                  open it again at the end (the app's own "Update" button runs this script so)
+#   BLOOM_LOG      a file: everything this script prints goes there too (for a run in a hidden window)
+#
+# The installed tag is written to <BLOOM_DIR>\app\.bloom-version: the backend compares it with the latest release.
 #
 # Everything runs inside one script block: nothing it sets (error handling, variables, functions) stays in your
 # PowerShell window, and its temporary folder goes away even when a step fails.
@@ -39,10 +45,20 @@ $ProgressPreference = 'SilentlyContinue'
 $Repo = if ($env:BLOOM_REPO) { $env:BLOOM_REPO } else { 'lightblue888/bloom-meeting' }
 $Api = if ($env:BLOOM_API) { $env:BLOOM_API.TrimEnd('/') } else { 'https://api.github.com' }
 $Dir = if ($env:BLOOM_DIR) { $env:BLOOM_DIR } else { Join-Path $env:LOCALAPPDATA 'bloom-meeting' }
-$Ref = if ($env:BLOOM_REF) { $env:BLOOM_REF } else { 'main' }
 $App = Join-Path $Dir 'app'
+$Restart = $env:BLOOM_RESTART -eq '1'
+$Log = $env:BLOOM_LOG
 $Tmp = Join-Path ([IO.Path]::GetTempPath()) ('bloom-install-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force -Path $Tmp | Out-Null
+# a run in a hidden window (the app's update): what it prints goes to $Log as well, a new file each run
+$Logging = $false
+if ($Log) {
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Log) | Out-Null
+        Start-Transcript -LiteralPath $Log -Force | Out-Null
+        $Logging = $true
+    } catch { Write-Host ('  [!] no log: ' + $_.Exception.Message) -ForegroundColor Yellow }
+}
 # the desktop app's home (its config, the speech models, and the tools it puts in bin): $BLURT_HOME, else ~/.blurt
 $BlurtHome = if ($env:BLURT_HOME) { $env:BLURT_HOME } else { Join-Path $env:USERPROFILE '.blurt' }
 $BlurtBin = Join-Path $BlurtHome 'bin'
@@ -208,6 +224,74 @@ function Expand-FFmpeg([string]$zip, [string]$dir) {
         }
     } finally { $z.Dispose() }
 }
+# BLOOM_RESTART: close the running Bloom before its files are replaced. The desktop app first (its watchdog would start
+# the backend again), then the backend: every process whose program or command line is in $App\.venv (uv's python.exe
+# there starts the real interpreter as its child, which runs "zuhui serve"), with all their children. Not this script
+# itself: when the app's Update button started it, it is one of the backend's children.
+# (a hashtable, not $script: variables: under `irm | iex` the script scope is the PowerShell window itself)
+$Was = @{ Exe = $null; Stopped = $false }
+function Stop-Bloom {
+    $venv = (Join-Path $App '.venv').TrimEnd('\') + '\'
+    $all = @(Get-CimInstance Win32_Process)
+    $byId = @{}
+    foreach ($p in $all) { $byId[[int]$p.ProcessId] = $p }
+    $kids = @{}
+    foreach ($p in $all) {
+        $pp = [int]$p.ParentProcessId
+        $par = $byId[$pp]
+        # a child started after its parent (a stale parent id can point at a newer, unrelated process)
+        if ($par -and (-not $par.CreationDate -or -not $p.CreationDate -or $p.CreationDate -ge $par.CreationDate)) {
+            if (-not $kids.ContainsKey($pp)) { $kids[$pp] = New-Object Collections.Generic.List[int] }
+            $kids[$pp].Add([int]$p.ProcessId)
+        }
+    }
+    $apps = @($all | Where-Object { $_.Name -eq 'bloom.exe' -or $_.Name -eq 'blurt.exe' })
+    $backend = @($all | Where-Object {
+        $exe = [string]$_.ExecutablePath; $cl = [string]$_.CommandLine
+        $exe.StartsWith($venv, [StringComparison]::OrdinalIgnoreCase) -or $cl.IndexOf($venv, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+        ($cl -match 'zuhui\s+serve' -and $cl.IndexOf($App, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+    })
+    $order = New-Object Collections.Generic.List[int]
+    $seen = @{}
+    $queue = New-Object Collections.Generic.Queue[int]
+    foreach ($p in @($apps) + @($backend)) { $queue.Enqueue([int]$p.ProcessId) }
+    while ($queue.Count) {
+        $id = $queue.Dequeue()
+        if ($seen.ContainsKey($id) -or $id -eq $PID) { continue }
+        $seen[$id] = $true
+        $order.Add($id)
+        if ($kids.ContainsKey($id)) { foreach ($k in $kids[$id]) { $queue.Enqueue($k) } }
+    }
+    if (-not $order.Count) { return }
+    Say '\u5173\u95ed\u6b63\u5728\u8fd0\u884c\u7684 Bloom...' 'Closing Bloom...'
+    $first = $apps | Where-Object { $_.ExecutablePath } | Select-Object -First 1
+    if ($first) { $Was.Exe = [string]$first.ExecutablePath }
+    foreach ($id in $order) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }
+    $Was.Stopped = $true
+    Wait-Process -Id @($order) -Timeout 20 -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1                       # the files they had open are let go
+    Ok 'Bloom closed'
+}
+# the desktop app NSIS installed for this user (Tauri, installMode currentUser): its uninstall entry
+# HKCU\...\Uninstall\Bloom has InstallLocation (quoted) and MainBinaryName; the default folder is %LOCALAPPDATA%\Bloom
+function Find-Bloom {
+    $u = Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Bloom' -ErrorAction SilentlyContinue
+    $cands = New-Object Collections.Generic.List[string]
+    if ($u -and $u.InstallLocation) {
+        $bin = if ($u.MainBinaryName) { [string]$u.MainBinaryName } else { 'bloom.exe' }
+        $cands.Add((Join-Path ([string]$u.InstallLocation).Trim('"') $bin))
+    }
+    $cands.Add((Join-Path $env:LOCALAPPDATA 'Bloom\bloom.exe'))
+    if ($Was.Exe) { $cands.Add($Was.Exe) }
+    foreach ($c in $cands) { if ($c -and (Test-Path -LiteralPath $c)) { return $c } }
+    return $null
+}
+function Open-Bloom {
+    $exe = Find-Bloom
+    if (-not $exe) { Warn 'bloom.exe not found: open Bloom from the Start menu'; return }
+    Say '\u91cd\u65b0\u6253\u5f00 Bloom...' 'Opening Bloom...'
+    try { Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) | Out-Null; Ok "Bloom ($exe)" } catch { Warn ('opening Bloom failed: ' + $_.Exception.Message) }
+}
 
 try {
 Write-Host ''
@@ -254,6 +338,14 @@ if (-not (Test-FFmpeg $ff)) {
 if (Test-FFmpeg $ff) { Ok "ffmpeg ($ff)" } else { Warn 'ffmpeg is missing or cannot record a window (needs FFmpeg 8+ with ffplay): winget install Gyan.FFmpeg' }
 
 # ---------------------------------------------------------------- 2. the backend
+# the latest release, asked once: its tag is the backend's version (unless BLOOM_REF says otherwise) and its setup.exe
+# the desktop app's, so the two always match. No release (or GitHub not reachable): the backend from main
+$rel = $null
+$relErr = $null
+if (-not $env:BLOOM_REF -or $env:BLOOM_NO_APP -ne '1') {
+    try { $rel = Invoke-RestMethod -Uri "$Api/repos/$Repo/releases/latest" -Headers (Headers 'application/vnd.github+json') } catch { $relErr = $_.Exception.Message }
+}
+$Ref = if ($env:BLOOM_REF) { $env:BLOOM_REF } elseif ($rel -and $rel.tag_name) { [string]$rel.tag_name } else { 'main' }
 $zip = Join-Path $Tmp 'src.zip'
 if ($env:BLOOM_SOURCE) {
     Copy-Item -LiteralPath $env:BLOOM_SOURCE -Destination $zip
@@ -265,9 +357,11 @@ $unz = Join-Path $Tmp 'src'
 Expand-Archive -LiteralPath $zip -DestinationPath $unz -Force
 $top = Get-ChildItem -LiteralPath $unz -Directory | Select-Object -First 1
 $srcRoot = if ((Test-Path (Join-Path $unz 'pyproject.toml'))) { $unz } else { $top.FullName }
+if ($Restart) { Stop-Bloom }
 New-Item -ItemType Directory -Force -Path $App | Out-Null
-# update in place: your config.json and the Python environment stay
-Native { robocopy $srcRoot $App /MIR /XD .venv /XF config.json /NFL /NDL /NJH /NJS /NP } | Out-Null
+# update in place: your config.json and the Python environment stay; so does .bloom-version until the end (an update
+# that stops halfway still says the old version)
+Native { robocopy $srcRoot $App /MIR /XD .venv /XF config.json .bloom-version /NFL /NDL /NJH /NJS /NP } | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "copying the files failed (robocopy $LASTEXITCODE)" }
 Ok "Bloom -> $App"
 
@@ -298,7 +392,7 @@ if (-not (Test-Path $cfg)) {
 # ---------------------------------------------------------------- 3. the desktop app
 if ($env:BLOOM_NO_APP -ne '1') {
     Say '\u4e0b\u8f7d\u684c\u9762\u7aef...' 'Downloading the desktop app...'
-    $rel = Invoke-RestMethod -Uri "$Api/repos/$Repo/releases/latest" -Headers (Headers 'application/vnd.github+json')
+    if (-not $rel) { throw "the latest release of $Repo could not be read: $relErr" }
     $asset = $rel.assets | Where-Object { $_.name -like '*setup.exe' } | Select-Object -First 1
     if (-not $asset) { throw "no *setup.exe in release $($rel.tag_name)" }
     $exe = Join-Path $Tmp $asset.name
@@ -373,18 +467,38 @@ if (Test-Path -LiteralPath (Join-Path $scripts 'transcribe.py')) {
 }
 
 # ---------------------------------------------------------------- done
+# which version this is: the app compares it with the latest release (zuhui/updates.py). Written last, so an update that
+# stopped halfway still says the old one
+[IO.File]::WriteAllText((Join-Path $App '.bloom-version'), $Ref, (New-Object Text.UTF8Encoding $false))
+Ok "version $Ref"
 Refresh-Path
 Write-Host ''
-if (Get-Process -Name bloom, blurt -ErrorAction SilentlyContinue) {
-    # an update while Bloom runs: the running one still has the old backend
-    Say 'Bloom \u6b63\u5f00\u7740\uff1a\u4ece\u901a\u77e5\u533a\u9000\u51fa\u540e\u91cd\u65b0\u6253\u5f00\uff0c\u66f4\u65b0\u624d\u751f\u6548\u3002' 'Bloom is running: quit it from the notification area and open it again to use the update.'
+if ($Restart) {
+    Open-Bloom
+    $Was.Stopped = $false
+    Write-Host ''
+    Say '\u88c5\u597d\u4e86\u3002' 'Done.'
+    Write-Host ''
+} else {
+    if (Get-Process -Name bloom, blurt -ErrorAction SilentlyContinue) {
+        # an update while Bloom runs: the running one still has the old backend
+        Say 'Bloom \u6b63\u5f00\u7740\uff1a\u4ece\u901a\u77e5\u533a\u9000\u51fa\u540e\u91cd\u65b0\u6253\u5f00\uff0c\u66f4\u65b0\u624d\u751f\u6548\u3002' 'Bloom is running: quit it from the notification area and open it again to use the update.'
+        Write-Host ''
+    }
+    Say '\u7b2c\u4e00\u6b21\u6253\u5f00 Bloom \u65f6\uff0c\u5728 \u8bbe\u7f6e \u2192 \u901a\u7528 \u2192 \u6a21\u578b\u6765\u6e90 \u91cc\u9009\u670d\u52a1\u5546\u3001\u586b API key\u3002' 'First time: open Bloom, then Settings > General > Model source, pick a provider and paste an API key.'
+    Write-Host ''
+    Say '\u88c5\u597d\u4e86\u3002\u5f00\u59cb\u83dc\u5355\u91cc\u6253\u5f00 Bloom\uff0c\u628a\u8bba\u6587\u62d6\u8fdb\u53bb\uff0c\u70b9\u300c\u5f00\u4f1a\u300d\u3002' 'Done. Open Bloom from the Start menu, drop a paper in, and start a meeting.'
     Write-Host ''
 }
-Say '\u7b2c\u4e00\u6b21\u6253\u5f00 Bloom \u65f6\uff0c\u5728 \u8bbe\u7f6e \u2192 \u901a\u7528 \u2192 \u6a21\u578b\u6765\u6e90 \u91cc\u9009\u670d\u52a1\u5546\u3001\u586b API key\u3002' 'First time: open Bloom, then Settings > General > Model source, pick a provider and paste an API key.'
-Write-Host ''
-Say '\u88c5\u597d\u4e86\u3002\u5f00\u59cb\u83dc\u5355\u91cc\u6253\u5f00 Bloom\uff0c\u628a\u8bba\u6587\u62d6\u8fdb\u53bb\uff0c\u70b9\u300c\u5f00\u4f1a\u300d\u3002' 'Done. Open Bloom from the Start menu, drop a paper in, and start a meeting.'
-Write-Host ''
+} catch {
+    # BLOOM_RESTART: Bloom was closed for this; it comes back (the old version, or as far as the update got). Then, for
+    # the log, the reason as its last line (the app shows it: "update failed: ...")
+    $failed = $_
+    if ($Restart -and $Was.Stopped) { $Was.Stopped = $false; Open-Bloom }
+    if ($Logging) { Write-Host ('  [x] ' + $failed.Exception.Message) -ForegroundColor Red }
+    throw $failed
 } finally {
     Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
+    if ($Logging) { try { Stop-Transcript | Out-Null } catch { } }
 }
 }

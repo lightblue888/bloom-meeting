@@ -7,7 +7,8 @@
 // three people, a transcript, a task board, six past meetings, a DeepSeek model source.
 import type { Page } from '@playwright/test';
 import { ended, firstRun, fresh, idle, isoAgo, NOW_S, processing, STRESS, withCarry, withComments, withVersions, type Lang, type World } from './fixtures/world';
-import type { Summary } from '../src/meetingApi';
+import type { Summary, UpdateStatus } from '../src/meetingApi';
+import type { UpdWorld } from './lib/mock-backend';
 
 export interface Ctx {
   page: Page;
@@ -63,6 +64,14 @@ export interface Screen {
 }
 
 // ------------------------------------------------------------------------------------------------ helpers
+/** 大厅：有新版本（GET /api/update，lib/mock-backend.ts）。失败的原因是更新日志的最后一行，算照原样显示的内容
+ *  （太长时省略号） */
+const withUpdate = (u: Partial<UpdateStatus>) => (w: World): World => {
+  idle(w);
+  (w as UpdWorld).update = { state: 'available', current: 'v0.6.1', latest: 'v0.6.2', busy: null, ...u };
+  if (u.error) w.userStrings.push(u.error);
+  return w;
+};
 const goHistory = async (c: Ctx) => {
   await c.page.getByTestId('nav-history').click();
   await c.page.getByTestId('history-preview').waitFor();
@@ -482,6 +491,38 @@ export const SCREENS: Screen[] = [
         expect: ['.lb-list-box *', '.lb-pager-n', '.lb-pager *'],
       },
     ],
+  },
+  // "准备情况"那一行的新版本（zuhui/updates.py）：有新版 → 正在更新，以及更新失败
+  {
+    name: 'lobby-update',
+    what: 'Lobby: a newer version is out (新版本 0.6.2 + 更新 between 准备情况 and 设置)',
+    page: 'main',
+    world: withUpdate({ state: 'available' }),
+    ready: '[data-testid="lobby-update-go"]',
+    transitions: [
+      {
+        name: 'click 更新 (→ 正在更新; nothing beside it moves)',
+        act: async (c) => {
+          await c.page.getByTestId('lobby-update-go').click();
+          await c.page.locator('.lb-upd .mw-spinner').waitFor();
+        },
+        expect: ['.lb-upd', '.lb-upd *'],
+      },
+    ],
+  },
+  {
+    name: 'lobby-updating',
+    what: 'Lobby while the update runs (正在更新; Bloom closes and opens again by itself)',
+    page: 'main',
+    world: withUpdate({ state: 'updating' }),
+    ready: '.lb-upd .mw-spinner',
+  },
+  {
+    name: 'lobby-update-failed',
+    what: 'Lobby after a failed update: 更新失败：<the update log’s last line> + 重试, long reason cut with "…"',
+    page: 'main',
+    world: withUpdate({ state: 'failed', error: 'the desktop installer exited with 2: C:\\Users\\maya\\AppData\\Local\\Bloom\\bloom.exe is in use' }),
+    ready: '[data-testid="lobby-update-go"]',
   },
   {
     name: 'meeting-live',

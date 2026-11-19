@@ -905,6 +905,17 @@ export interface Invite {
   error?: string | null;
 }
 
+/** GET /api/update（zuhui/updates.py）：只有 install.ps1 装的才查，从源码跑的是 "dev"。current / latest 是 release 的
+ *  tag（"v0.6.2"）。error：代码（download、launch、timeout、failed）或者更新日志的最后一行。busy：在开会、上一场的
+ *  会后整理还没完，这时不能更新 */
+export interface UpdateStatus {
+  state: 'dev' | 'none' | 'available' | 'updating' | 'failed';
+  current: string | null;
+  latest: string | null;
+  error?: string;
+  busy?: 'live' | 'processing' | null;
+}
+
 /** a meeting's title without the date older meetings carried in it ("FooBench 论文合稿 · 11月11日 05:03") */
 export function cleanTitle(title: string | null | undefined): string {
   return (title ?? '').replace(/\s*·\s*\d{1,2}月\d{1,2}日\s*\d{1,2}:\d{2}\s*$/, '').trim();
@@ -1200,6 +1211,20 @@ export const meetingApi = {
     const j = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string; job?: SummaryJob };
     if (!r.ok || !j.ok || !j.job) throw new Error(j.error || 'failed');
     return j.job;
+  },
+  /** 大厅：有没有新版本（zuhui/updates.py）。从源码跑的后端回 state "dev" */
+  update: () => get<UpdateStatus>('/api/update', 4000),
+  /** 后台跑新版本的 install.ps1（Bloom 会关掉，装完自己打开）。出错时 message 是代码（live、processing、none、dev） */
+  startUpdate: async (): Promise<UpdateStatus> => {
+    const r = await fetch(`${ZUHUI_BASE}/api/update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: '{}',
+      signal: AbortSignal.timeout(20000),
+    });
+    const j = (await r.json().catch(() => ({}))) as Partial<UpdateStatus> & { ok?: boolean; error?: string };
+    if (!r.ok || !j.ok || !j.state) throw new Error(j.error || `HTTP ${r.status}`);
+    return j as UpdateStatus;
   },
   /** the lobby: what the last meetings on the paper on the desk left undone (ticked ones are not listed) */
   carry: () => get<{ paper: string | null; items: CarryItem[] }>('/api/carry'),

@@ -7,13 +7,16 @@
 # 装什么：LiveKit（语音）、Caddy（HTTPS，自动申请证书）、Bloom 的中继小服务（token_server.py）和访客页。
 # 没给域名就用 <公网IP>.sslip.io（不用买域名，证书照样自动申请）。最后打印一行连接码，
 # 粘到 Bloom 的 设置 → 通用 → 邀请 里就行。再运行一次就是更新（密钥不变，连接码不变）。
+# 装好后每小时查一次 GitHub 上的新发布，有新版就自动换上中继小服务和访客页（有会在开时不换，换上起不来会换回旧的）。
+# 不要自动更新：加 --no-auto-update，或者 sudo systemctl disable --now bloom-update.timer。
 #
 # 选项：
-#   --domain D     用自己的域名（先把 D 的 A 记录指到这台服务器）
-#   --email E      申请证书时留的邮箱（可以不填）
-#   --repo R       代码仓库 owner/name（默认 lightblue888/bloom-meeting）
-#   --ref REF      分支或标签（默认 main）
-#   --dry-run      只打印要做的事，什么都不改
+#   --domain D          用自己的域名（先把 D 的 A 记录指到这台服务器）
+#   --email E           申请证书时留的邮箱（可以不填）
+#   --repo R            代码仓库 owner/name（默认 lightblue888/bloom-meeting）
+#   --ref REF           分支或标签（默认 main）
+#   --no-auto-update    不装自动更新的定时器
+#   --dry-run           只打印要做的事，什么都不改
 # 环境变量 GITHUB_TOKEN：仓库是私有的时候用。
 #
 # 服务器的安全组 / 防火墙要放行：TCP 80、443、7881，UDP 50000-60000（云厂商控制台里的安全组得自己开）。
@@ -24,14 +27,16 @@ EMAIL=""
 REPO="lightblue888/bloom-meeting"
 REF="main"
 DRY=0
+AUTO=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --domain) DOMAIN="${2:-}"; shift 2 ;;
     --email) EMAIL="${2:-}"; shift 2 ;;
     --repo) REPO="${2:-}"; shift 2 ;;
     --ref) REF="${2:-}"; shift 2 ;;
+    --no-auto-update) AUTO=0; shift ;;
     --dry-run) DRY=1; shift ;;
-    -h|--help) sed -n '2,20p' "$0" 2>/dev/null || true; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0" 2>/dev/null || true; exit 0 ;;
     *) echo "不认识的选项：$1" >&2; exit 2 ;;
   esac
 done
@@ -52,7 +57,7 @@ run() { if [ "$DRY" = 1 ]; then printf '    + %s\n' "$*"; else "$@"; fi; }
 # 写文件：put 路径 权限 < 内容
 put() {
   local path="$1" mode="$2" tmp
-  if [ "$DRY" = 1 ]; then printf '    + 写 %s (%s)\n' "$path" "$mode"; sed 's/^/      | /' | grep -v 'SECRET=\|^      |   [A-Za-z0-9]*: ' || true; return; fi
+  if [ "$DRY" = 1 ]; then printf '    + 写 %s (%s)\n' "$path" "$mode"; sed 's/^/      | /' | grep -v 'SECRET=\|TOKEN=\|^      |   [A-Za-z0-9]*: ' || true; return; fi
   tmp="$(mktemp)"; cat >"$tmp"; install -D -m "$mode" "$tmp" "$path"; rm -f "$tmp"
 }
 gh_get() {   # gh_get <url> <输出文件>：带上 GITHUB_TOKEN（私有仓库）
@@ -150,29 +155,34 @@ say "中继服务和访客页"
 RAW="https://raw.githubusercontent.com/$REPO/$REF"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo .)"
 run mkdir -p "$BLOOM" "$WWW"
-if [ -f "$HERE/token_server.py" ]; then
-  run install -m 644 "$HERE/token_server.py" "$BLOOM/token_server.py"
-  ok "token_server.py（本地那份）"
-else
-  run gh_get "$RAW/relay/token_server.py" "$BLOOM/token_server.py"
-  ok "token_server.py（$REPO@$REF）"
-fi
-# 访客页：发版时打好的 bloom-guest.zip（访客页 g/ 和 livekit-client.umd.min.js），取最新一版
+for f in token_server.py bloom_update.py; do        # bloom_update.py：自动更新
+  if [ -f "$HERE/$f" ]; then
+    run install -m 644 "$HERE/$f" "$BLOOM/$f"
+    ok "$f（本地那份）"
+  else
+    run gh_get "$RAW/relay/$f" "$BLOOM/$f"
+    ok "$f（$REPO@$REF）"
+  fi
+done
+# 访客页：发版时打好的 bloom-guest.zip（访客页 g/ 和 livekit-client.umd.min.js），取最新一版；它的版本号写进 VERSION，自动更新拿它比
 API="https://api.github.com/repos/$REPO/releases/latest"
 if [ "$DRY" = 1 ]; then
-  printf '    + 从 %s 取 bloom-guest.zip，解到 %s\n' "$API" "$WWW"
+  printf '    + 从 %s 取 bloom-guest.zip，解到 %s，版本号写进 %s/VERSION\n' "$API" "$WWW" "$BLOOM"
 else
   TMPD="$(mktemp -d)"
   auth=(); [ -n "${GITHUB_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GITHUB_TOKEN")
-  ASSET="$(curl -fsSL "${auth[@]}" "$API" | python3 -c 'import json,sys
-for a in json.load(sys.stdin).get("assets", []):
-    if a.get("name") == "bloom-guest.zip": print(a["url"]); break')" || true
+  REL="$(curl -fsSL "${auth[@]}" "$API" | python3 -c 'import json,sys
+r = json.load(sys.stdin)
+url = next((a["url"] for a in r.get("assets", []) if a.get("name") == "bloom-guest.zip"), "")
+print(r.get("tag_name") or "", url)')" || true
+  TAG="${REL%% *}"; ASSET="${REL#* }"
   [ -n "$ASSET" ] || die "最新的发布里没有 bloom-guest.zip（仓库 $REPO；私有仓库要设 GITHUB_TOKEN）"
   curl -fsSL --retry 3 "${auth[@]}" -H "Accept: application/octet-stream" "$ASSET" -o "$TMPD/guest.zip"
   rm -rf "$WWW/g"
   unzip -qo "$TMPD/guest.zip" -d "$WWW"
   rm -rf "$TMPD"
-  ok "访客页 → $WWW"
+  printf '%s\n' "$TAG" | put "$BLOOM/VERSION" 644
+  ok "访客页 → $WWW（${TAG:-版本号未知}）"
 fi
 put /etc/systemd/system/bloom-token.service 644 <<'EOF'
 [Unit]
@@ -185,6 +195,42 @@ Restart=always
 [Install]
 WantedBy=multi-user.target
 EOF
+# 自动更新：bloom_update.py 每小时查一次最新的发布，和 VERSION 不一样就换上（怎么换见它开头的说明）
+UPD_TOKEN="${GITHUB_TOKEN:-}"
+[ -n "$UPD_TOKEN" ] || UPD_TOKEN="$(sed -n 's/^GITHUB_TOKEN=//p' "$BLOOM/update.env" 2>/dev/null | head -1 || true)"   # 再跑一次没设也沿用
+put "$BLOOM/update.env" 600 <<EOF
+BLOOM_REPO=$REPO
+${UPD_TOKEN:+GITHUB_TOKEN=$UPD_TOKEN}
+EOF
+put /etc/systemd/system/bloom-update.service 644 <<'EOF'
+[Unit]
+Description=Bloom relay auto-update (bloom_update.py)
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/bloom/bloom_update.py
+TimeoutStartSec=15min
+EOF
+if [ "$AUTO" = 1 ]; then
+  put /etc/systemd/system/bloom-update.timer 644 <<'EOF'
+[Unit]
+Description=Bloom relay auto-update, hourly
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=15min
+Persistent=true
+[Install]
+WantedBy=timers.target
+EOF
+  ok "自动更新：每小时查一次"
+else
+  if [ -f /etc/systemd/system/bloom-update.timer ]; then   # 以前装过：关掉
+    run systemctl disable --now bloom-update.timer || true
+    run rm -f /etc/systemd/system/bloom-update.timer
+  fi
+  ok "不装自动更新（要手动更新：sudo python3 $BLOOM/bloom_update.py）"
+fi
 
 # ---------------------------------------------------------------- 6. Caddy（HTTPS）
 say "HTTPS（Caddy）"
@@ -238,6 +284,9 @@ run systemctl daemon-reload
 run systemctl enable --now livekit bloom-token caddy
 run systemctl restart livekit bloom-token
 run systemctl reload caddy
+if [ "$AUTO" = 1 ]; then
+  run systemctl enable --now bloom-update.timer
+fi
 
 # ---------------------------------------------------------------- 8. 检查
 say "检查"
@@ -262,3 +311,6 @@ CODE="bloom1.$(printf '{"url":"https://%s/","key":"%s","secret":"%s"}' "$DOMAIN"
 printf '\n\033[32m装好了。\033[0m 把下面这行连接码粘到 Bloom 的 设置 → 通用 → 邀请：\n\n%s\n\n' "$CODE"
 printf '云服务器的安全组记得放行 TCP 80、443、7881 和 UDP 50000-60000。\n'
 printf '连接码里有密钥，别发给别人。再运行一次本脚本就是更新，连接码不变。\n'
+if [ "$AUTO" = 1 ]; then
+  printf '每小时自动检查新版本，有会在开时不换。关掉：sudo systemctl disable --now bloom-update.timer\n'
+fi

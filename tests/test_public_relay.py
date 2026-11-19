@@ -101,7 +101,7 @@ class PublicRelayTest(unittest.TestCase):
 
     def test_devices_and_rooms(self):
         b = self.base
-        self.assertEqual(_req("GET", b + "/healthz")[1], {"ok": True, "public": True})
+        self.assertEqual(_req("GET", b + "/healthz")[1], {"ok": True, "public": True, "live": 0})   # live：在开的会（自动更新看它）
         c1, d1 = _req("POST", b + "/dev/register", {})
         c2, d2 = _req("POST", b + "/dev/register", {})
         self.assertEqual((c1, c2), (200, 200))

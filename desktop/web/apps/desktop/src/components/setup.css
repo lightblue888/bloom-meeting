@@ -416,6 +416,46 @@
   min-height: 0;
   font-size: 12.5px;
 }
+/* 新版本：在"准备情况"和"设置"中间占住这一行剩下的宽度，有没有字都一样宽，旁边的东西不动；字太长时省略号 */
+.lb-upd {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+  height: 20px;
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--mute);
+}
+.lb-upd.has::after {
+  content: '';
+  flex: none;
+  width: 1px;
+  height: 12px;
+  margin-left: 2px;
+  background: var(--line-2);
+}
+.lb-upd-t {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lb-upd-t.is-err {
+  color: var(--err);
+}
+.app .lb-side-h .lb-upd-b {
+  flex: none;
+  min-width: 3.6em;
+  color: var(--brand-ink);
+  text-align: center;
+  justify-content: center;
+}
+.app .lb-side-h .lb-upd-b:disabled {
+  color: var(--faint);
+}
 .lb-inv {
   margin-top: auto;
   padding-top: 16px;

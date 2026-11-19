@@ -3975,6 +3975,10 @@ class Viewer:
                 elif p == "/api/storage":          # 设置 → 存储：占了多少、各是什么、能清什么（zuhui/storage.py）
                     from . import storage
                     self._json(storage.scan(viewer))
+                elif p == "/api/update":           # 大厅：有没有新版本、正在更新、更新失败（zuhui/updates.py；从源码跑的一律 dev）
+                    from . import updates
+                    out, code = updates.http_get(viewer)
+                    self._json(out, code)
                 elif p == "/api/mic/stream":       # 静音没有、谁在出声：会议页上的静音标记和头像外的亮圈
                     self._mic_stream()
                 elif p == "/api/paper":
@@ -4308,6 +4312,10 @@ class Viewer:
                 if p.startswith("/api/storage/"):  # 设置 → 存储：清录屏 / 自动删除 / 不用的模型 / 临时文件（zuhui/storage.py）
                     from . import storage
                     out, code = storage.post(viewer, p, body)
+                    return self._json(out, code)
+                if p == "/api/update":         # 大厅里点了「更新」：开会中、会后整理没做完 409；否则后台跑新版的 install.ps1（zuhui/updates.py）
+                    from . import updates
+                    out, code = updates.http_post(viewer, body)
                     return self._json(out, code)
                 if p == "/api/profile/avatar":  # 设置里换头像 {"data": data: 地址或 base64}，移除 {"remove": true}
                     from . import host_profile

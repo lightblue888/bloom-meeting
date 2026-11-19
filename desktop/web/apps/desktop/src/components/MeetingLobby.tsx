@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type ReactNode } from 'react';
 import { Icon } from '@blurt/icons';
 import { i18n, t } from '../i18n';
-import { cleanTitle, fmtDay, fmtDuration, fmtWhen, meetingApi, type CarryItem, type Current, type Invite, type MeetingBrief } from '../meetingApi';
+import { cleanTitle, fmtDay, fmtDuration, fmtWhen, meetingApi, type CarryItem, type Current, type Invite, type MeetingBrief, type UpdateStatus } from '../meetingApi';
 import { nav } from '../nav';
 import { relayApi, setupApi } from '../setupApi';
 import { useReadiness, type Readiness } from './readiness';
@@ -229,6 +229,7 @@ export function MeetingLobby({ cur, paperName, busy, importText, notice, title, 
             <section aria-labelledby="lb-ready-h">
               <div className="lb-side-h">
                 <h2 id="lb-ready-h" className="lb-kicker">{t('lobby.ready')}</h2>
+                <UpdateLine active={active} />
                 <button className="link" onClick={() => nav({ to: 'settings' })}>{t('lobby.settings')}</button>
               </div>
               <Status r={r} />
@@ -403,6 +404,81 @@ function Status({ r }: { r: Readiness }) {
         <span className="lb-trunc">{say ?? voice}</span>,
         r.voiceEngine === undefined ? 'wait' : 'ok',
         r.voiceEngine ? <button className="link" onClick={() => void test()}>{t('lobby.voice_test')}</button> : <button className="link" onClick={() => nav({ to: 'settings', link: 'speech' })}>{t('lobby.change')}</button>)}
+    </div>
+  );
+}
+
+/** /api/update 回的错误代码（别的是更新日志的最后一行，照原样显示） */
+const UPDATE_ERRORS = ['download', 'launch', 'timeout', 'failed', 'live', 'processing', 'none'];
+const updateError = (e: string | null | undefined) => {
+  const c = e || 'failed';
+  return t('lobby.update.failed', { a: UPDATE_ERRORS.includes(c) ? t(`lobby.update.err.${c}`) : c });
+};
+
+/** 新版本（zuhui/updates.py）：在"准备情况"这一行、标题和"设置"中间。这一格不管有没有字都占住这一行剩下的宽度，
+ *  旁边的东西不动。有新版：新版本 0.6.2 + 更新；点了：正在更新（Bloom 会关掉，装完自己打开）；失败：更新失败：原因 + 重试。
+ *  从源码跑的（dev）、没有新版、开会中：什么都不显示 */
+function UpdateLine({ active }: { active: boolean }) {
+  const [st, setSt] = useState<UpdateStatus | null>(null);
+  const [sending, setSending] = useState(false);
+  const [said, setSaid] = useState<string | null>(null);
+  const saidTimer = useRef<number | undefined>(undefined);
+  const updating = st?.state === 'updating';
+  useEffect(() => {
+    if (!active) return;
+    let alive = true;
+    const load = () => meetingApi.update().then((x) => alive && setSt(x), () => {});
+    void load();
+    // 后端在后台线程里查 GitHub：第一次的结果几秒后才有，5 秒后再问一次；正在更新时问得勤一些
+    const first = window.setTimeout(load, 5000);
+    const h = window.setInterval(load, updating ? 5000 : 60_000);
+    return () => {
+      alive = false;
+      clearTimeout(first);
+      clearInterval(h);
+    };
+  }, [active, updating]);
+  useEffect(() => () => window.clearTimeout(saidTimer.current), []);
+  const go = async () => {
+    setSending(true);
+    setSaid(null);
+    try {
+      setSt(await meetingApi.startUpdate());
+    } catch (e) {
+      // 被拒了（刚开了会、会后整理没完）：在同一格里显示几秒
+      setSaid(updateError(String((e as Error)?.message ?? e)));
+      window.clearTimeout(saidTimer.current);
+      saidTimer.current = window.setTimeout(() => setSaid(null), 4000);
+    } finally {
+      setSending(false);
+    }
+  };
+  const ver = (v: string | null | undefined) => (v ?? '').replace(/^v(?=\d)/, '');
+  const shown = !!st && st.busy !== 'live' && (st.state === 'available' || st.state === 'updating' || st.state === 'failed');
+  let body: ReactNode = null;
+  if (shown && (updating || sending)) {
+    body = (
+      <>
+        <span className="mw-spinner sm" aria-hidden="true" />
+        <span className="lb-upd-t">{t('lobby.update.running')}</span>
+      </>
+    );
+  } else if (shown) {
+    const failed = st!.state === 'failed';
+    const text = said ?? (failed ? updateError(st!.error) : t('lobby.update.new', { a: ver(st!.latest) }));
+    const wait = st!.busy === 'processing';
+    body = (
+      <>
+        <span className={`lb-upd-t ${failed || said ? 'is-err' : ''}`} title={text}>{text}</span>
+        <button className="link lb-upd-b" disabled={wait} title={wait ? t('lobby.update.err.processing') : undefined} onClick={() => void go()} data-testid="lobby-update-go">
+          {t(failed ? 'lobby.update.retry' : 'lobby.update.go')}
+        </button>
+      </>
+    );
+  }
+  return (
+    <div className={`lb-upd ${body ? 'has' : ''}`} aria-live="polite" data-testid="lobby-update">
+      {body}
     </div>
   );
 }

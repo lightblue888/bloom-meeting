@@ -40,6 +40,7 @@
 4. 访客诊断:            POST /view/<room>/diag   访客页报语音断开 / 重连 / 切后台这些事 (sendBeacon, JSON, <=1 KB)
    每条在 journal 里记一行 "diag room=.. id=.. ev=.. why=.. ua=..", 按 IP 限速, 不记 token。
    看:  sudo journalctl -u bloom-token -o short-iso --since today | grep ' diag'
+6. GET /healthz -> {"ok": true, "public": .., "live": 在开的会有几场}   自动更新 (bloom_update.py) 看 live, 有会在开就不重启 (见 _live_count)
 密钥从 /opt/bloom/livekit.env 读 (LIVEKIT_API_KEY / LIVEKIT_API_SECRET / LIVEKIT_URL)。
 """
 import base64, hashlib, hmac, json, os, re, secrets, sys, threading, time, uuid, urllib.parse
@@ -74,6 +75,7 @@ CLAIMS_PER_IP = 20                    # 一个 IP 在一个房间里最多认领
 INFLIGHT_MAX = 300 * 1024 * 1024      # 同时在收的请求体加起来最多这么多 (几十个人一起传 50 MB 也撑不爆内存)
 MAX_ASSETS = 80
 HOST_STALE = 120                      # 主持人那边这么久没联系 (推送 / have 每 20 秒一次) 就当这场会已经结束
+LIVE_WINDOW = 15 * 60                 # /healthz 的 live 只算这么久内主持人那边联系过的会 (见 _live_count)
 LK_HTTP = "http://127.0.0.1:7880"     # 本机 LiveKit 的 HTTP 口 (散会时删房间, 把还在里面的人请出去)
 ASSET_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml", "text/html"}
 STORE = os.path.join(os.environ.get("STATE_DIRECTORY") or "/var/lib/bloom", "rooms.json")   # systemd StateDirectory=bloom
@@ -400,6 +402,18 @@ def _live(r):
     return True
 
 
+def _live_count():
+    """/healthz 里的 live: 在开的会有几场, 自动更新 (bloom_update.py) 看到大于 0 就不重启中继。调用方持锁。
+    算: 主持人推的状态是在开 (state.live), 而且主持人那边 LIVE_WINDOW (15 分钟) 内联系过 (host_seen: 推送、have、inbox)。
+    主持人那边重启、断网一会儿也还算在开; 主持人再也不回来的房间最多挡 15 分钟 (访客或别的请求碰到它时,
+    _live() 过了 HOST_STALE 就把它标成结束, 那之后也不算)。
+    不看 touched: 访客开着旧链接轮询、没开会但打开了邀请的 Bloom (每分钟问一次 have, 状态是"未开始") 都会刷新它。
+    不调 _live(): 它会顺手把房间标成结束, 查健康不该改东西。"""
+    now = time.time()
+    return sum(1 for r in ROOMS.values()
+               if (r.get("state") or {}).get("live") and now - r.get("host_seen", 0) <= LIVE_WINDOW)
+
+
 def _kick(room):
     """散会: 删掉 LiveKit 上的这个房间, 还连着的人都会被断开。失败不要紧 (房间空了 LiveKit 自己也会收)。"""
     def run():
@@ -628,7 +642,9 @@ class Handler(BaseHTTPRequestHandler):
         u = urllib.parse.urlsplit(self.path)
         parts = [urllib.parse.unquote(p) for p in u.path.split("/") if p]
         if u.path == "/healthz":
-            return self._json(200, {"ok": True, "public": PUBLIC})
+            with LOCK:
+                live = _live_count()
+            return self._json(200, {"ok": True, "public": PUBLIC, "live": live})
         if u.path == "/token":
             return self._token(urllib.parse.parse_qs(u.query))
         if len(parts) == 4 and parts[0] == "view" and parts[2] == "result" and ROOM_RE.match(parts[1]):

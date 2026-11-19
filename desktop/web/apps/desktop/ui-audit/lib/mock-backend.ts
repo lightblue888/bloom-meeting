@@ -8,6 +8,7 @@ import { resolve } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import type { BrowserContext, Route } from '@playwright/test';
 import { clone, NOW_S, type World } from '../fixtures/world';
+import type { UpdateStatus } from '../../src/meetingApi';
 
 const HERE = import.meta.dirname;
 // promo stills (UI_AUDIT_PROMO=1, lib/audit.ts) go public: the sample paper's real name becomes a made-up one
@@ -90,6 +91,9 @@ const html = (route: Route, body: string) => route.fulfill({ status: 200, conten
 function paperPage(w: World) {
   return PAPER.replace('<script>', `<script>history.replaceState(null, '', location.pathname + '?st=' + encodeURIComponent(${JSON.stringify(JSON.stringify(w.paper))}));</script><script>`);
 }
+
+/** 带大厅新版本状态的 world（screens.ts 的 withUpdate）；fixtures/world.ts 里没有这一项 */
+export type UpdWorld = World & { update?: UpdateStatus };
 
 /** the brain as the push channel sends it: "now" is the audit's frozen clock */
 const brainNow = (w: World) => (w.current.brain ? { ...clone(w.current.brain), now: NOW_S } : null);
@@ -251,6 +255,18 @@ async function zuhui(route: Route, w: World, rec: Recorder) {
       return json(route, { paper: w.current.paper?.name ?? null, items: clone(w.carry) });
     case 'POST /api/carry':
       return json(route, { ok: true, id: (body as { id?: string }).id ?? '', done: !!(body as { done?: boolean }).done });
+    // 大厅的新版本（zuhui/updates.py）。world 里没有 update：当作从源码跑的（dev），什么都不显示。
+    // 点「更新」后一直是"正在更新"（真的会关掉 Bloom 再打开）
+    case 'GET /api/update':
+      return json(route, clone((w as UpdWorld).update ?? { state: 'dev', current: null, latest: null, busy: null }));
+    case 'POST /api/update': {
+      const u = (w as UpdWorld).update;
+      if (!u || u.state === 'dev') return json(route, { ok: false, error: 'dev' }, 400);
+      if (u.busy) return json(route, { ok: false, error: u.busy }, 409);
+      if (u.state !== 'available' && u.state !== 'failed') return json(route, { ok: false, error: 'none' }, 409);
+      Object.assign(u, { state: 'updating', error: undefined });
+      return json(route, { ok: true, ...clone(u) });
+    }
     // 回顾 → 提问 (300 characters at most): the world's answer, or its error
     case 'POST /api/past/ask': {
       const q = String((body as { question?: string }).question ?? '').trim();

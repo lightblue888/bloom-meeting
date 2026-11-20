@@ -200,6 +200,11 @@ async function zuhui(route: Route, w: World, rec: Recorder) {
       return json(route, { ok: true, paper: { ...clone(w.current.paper), added: true } });
     case 'POST /api/paper/switch':
       return json(route, { ok: true, paper: clone(w.current.paper) });
+    // the lobby's 移除: no paper on the desk, the next meeting keeps only the transcript (mode "chat")
+    case 'POST /api/paper/clear':
+      if (w.current.meeting?.state === 'live') return json(route, { ok: false, error: 'live' }, 409);
+      Object.assign(w.current, { paper: null, papers: [], active_paper: null, mode: 'chat' });
+      return json(route, { ok: true });
     case 'POST /api/meeting/end':
       return json(route, { ok: true });
     case 'GET /api/setup':
@@ -476,6 +481,17 @@ async function relay(route: Route, w: World, rec: Recorder) {
       r.state.bookmarks = [...(r.state.bookmarks ?? []), mk];
       res.bookmark = mk;
       r.sv += 1;
+    }
+    // a co-host's typed question: the host's Bloom takes it as said (zuhui/app.py ask_typed → handle): a line of the
+    // co-host's in the transcript, marked typed, there at the next relay poll
+    if (a.path === '/api/ask' && r.state) {
+      const q = String(a.body?.text ?? '').trim();
+      const by = (r.state.participants ?? []).find((p) => p.rank === 'cohost' && p.role === 'guest')?.name ?? 'guest';
+      if (q) {
+        r.transcript.push({ t: '20:31', sec: 1231, who: 'guest', name: by, text: q, typed: true });
+        r.state.lv = String(Number(r.state.lv ?? 0) + 1);
+        r.sv += 1;
+      }
     }
     r.lastAct = res;
     return json(route, { id: 'act-1' });

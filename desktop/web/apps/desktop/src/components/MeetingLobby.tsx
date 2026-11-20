@@ -1,7 +1,8 @@
 // 会议 before a meeting: the lobby. One panel for the next meeting: on the left its name (large, editable in place),
 // the paper on the desk (its size and when it was changed, so it's clearly the right one and the right version), and
-// 开始会议, which stays off until what a meeting needs is there (a model source, the transcription model, a paper) and
-// says what's missing with the fix right beside it; on the right, past a hairline, where everything stands (the two
+// 开始会议, which stays off until what a meeting needs is there (the transcription model; with a paper, a model source
+// too) and says what's missing with the fix right beside it. No paper is not missing: that meeting keeps only the
+// transcript (mode "chat", the AI stays out); on the right, past a hairline, where everything stands (the two
 // models, transcription, microphone, voice) and the invite link. Below, the recent meetings (a click opens one in 回顾). Beside them, on a second tab of the same card, what the last
 // meetings on this paper left undone (their to-dos, notes, edits nobody accepted): ticked here, saved with the meeting
 // it came from; the meeting about to start carries the rest. The meeting page itself (MeetingLayout) comes up once the
@@ -21,7 +22,7 @@ interface DropProps {
   onDrop: (e: DragEvent) => void;
 }
 
-export function MeetingLobby({ cur, paperName, busy, importText, notice, title, onTitle, onStart, onPickPaper, dropProps, over, active, onHistory }: {
+export function MeetingLobby({ cur, paperName, busy, importText, notice, title, onTitle, onStart, onPickPaper, onClearPaper, dropProps, over, active, onHistory }: {
   cur: Current | null;
   /** the paper just imported, before the next poll says so */
   paperName: string | null;
@@ -32,6 +33,8 @@ export function MeetingLobby({ cur, paperName, busy, importText, notice, title, 
   onTitle: (title: string) => void;
   onStart: () => void;
   onPickPaper: () => void;
+  /** 移除: no paper for the next meeting (then it keeps only the transcript); null while that can't be done */
+  onClearPaper?: (() => void) | null;
   dropProps: DropProps;
   over: boolean;
   active: boolean;
@@ -40,9 +43,14 @@ export function MeetingLobby({ cur, paperName, busy, importText, notice, title, 
 }) {
   const r = useReadiness(active);
   const paper = cur?.paper?.exists ? cur.paper : null;
-  const hasPaper = !!paper || !!paperName;
-  const name = paperName ?? paper?.name ?? '';
-  const needs: ('provider' | 'asr' | 'paper')[] = [...r.blockers, ...(hasPaper ? [] : ['paper' as const])];
+  // the chosen paper's file is gone (moved, renamed, deleted): not "no paper" — started now, the meeting would keep only
+  // the transcript while you think the AI is there to edit (2026-11-19 e2e). Its name stays, 开始会议 waits for 更换 / 移除
+  const missing = !paper && !!cur?.paper?.path && !cur.paper.exists;
+  const hasPaper = !!paper || !!paperName || missing;
+  const name = paperName ?? paper?.name ?? (missing ? cur?.paper?.name : '') ?? '';
+  // no paper is not missing: the meeting then keeps only the transcript and the AI stays out, so it needs no model
+  // source either (2026-11-19, the user). A paper whose file is gone is: said beside 开始会议 too, with 更换
+  const needs: NeedKind[] = [...(missing ? (['paper'] as const) : []), ...r.blockers.filter((b) => hasPaper || b !== 'provider')];
   const canStart = !needs.length && busy !== 'start' && busy !== 'paper';
   const lang = i18n().lang;
 
@@ -116,10 +124,10 @@ export function MeetingLobby({ cur, paperName, busy, importText, notice, title, 
   const openN = (carry ?? []).filter((x) => !ticked.has(x.id)).length;
 
   // as many rows as fit in the window's height (the page itself never scrolls at its usual size): recent meetings
-  // at most 8, left-over items as many as fit, the rest on the next page
+  // as many as fit (全部 has the rest), left-over items as many as fit, the rest on the next page
   const listBox = useRef<HTMLDivElement>(null);
   const [boxH, setBoxH] = useState(LIST_TOP + 5 * ROW_H);
-  const fit = Math.max(1, Math.min(8, Math.floor((boxH - LIST_TOP) / ROW_H)));
+  const fit = Math.max(1, Math.floor((boxH - LIST_TOP) / ROW_H));
   const rows = Math.max(1, Math.floor((boxH - LIST_TOP) / CARRY_ROW_H));
   const measure = useCallback(() => {
     const el = listBox.current;
@@ -186,29 +194,44 @@ export function MeetingLobby({ cur, paperName, busy, importText, notice, title, 
                     <div className="lb-paper-meta lb-fixed-line">{importText ?? ''}</div>
                   </div>
                 </div>
-              ) : hasPaper ? (
-                <div className="lb-paper" data-testid="lobby-paper">
+              ) : (
+                // the same row with a paper or without one (then the meeting keeps only the transcript): 选择 and 更换
+                // share one button at the row's end, as wide as the longer word; 移除 and 历史版本 come in to its left
+                <div className={`lb-paper ${hasPaper ? '' : 'is-none'}`} data-testid={hasPaper ? 'lobby-paper' : 'lobby-no-paper'}>
+                  {/* without a paper the two lines keep their room (empty) and 未选择 sits over them, centred: the row is
+                      as high either way, so 开始会议 under it never moves */}
                   <div className="lb-paper-text">
-                    <div className="lb-paper-name" title={name}>{name}</div>
-                    <div className="lb-paper-meta">
-                      {[
-                        paper?.words ? t('lobby.words', { a: i18n().formatNumber(paper.words, { notation: 'compact', maximumFractionDigits: 1 }) }) : null,
-                        paper?.modified ? t('lobby.changed', { a: fmtWhen(paper.modified.replace(' ', 'T'), lang) }) : null,
-                      ]
-                        .filter(Boolean)
-                        .join(' · ')}
+                    <div className="lb-paper-name" title={hasPaper ? name : undefined} aria-hidden={!hasPaper || undefined}>{hasPaper ? name : ' '}</div>
+                    <div className={`lb-paper-meta ${missing ? 'is-err' : ''}`} aria-hidden={!hasPaper || undefined} data-testid={missing ? 'lobby-paper-missing' : undefined}>
+                      {missing
+                        ? t('lobby.paper_missing')
+                        : hasPaper
+                        ? [
+                            paper?.words ? t('lobby.words', { a: i18n().formatNumber(paper.words, { notation: 'compact', maximumFractionDigits: 1 }) }) : null,
+                            paper?.modified ? t('lobby.changed', { a: fmtWhen(paper.modified.replace(' ', 'T'), lang) }) : null,
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')
+                        : ''}
                     </div>
+                    {!hasPaper && <div className="lb-paper-none">{t('lobby.paper_none')}</div>}
                   </div>
                   <span className="lb-paper-acts">
-                    {onHistory && <button className="link" onClick={onHistory} data-testid="lobby-paper-history">{t('meeting.paper.history')}</button>}
-                    <button className="lb-paper-change" onClick={onPickPaper} data-testid="lobby-change-paper">{t('lobby.change')}</button>
+                    {/* the short word here (English "History"): with 移除 beside it the paper's line keeps its room at 1024 px */}
+                    {hasPaper && !missing && onHistory && <button className="link" onClick={onHistory} data-testid="lobby-paper-history">{t('lobby.paper_history')}</button>}
+                    {hasPaper && (
+                      <button className="link" onClick={onClearPaper ?? undefined} disabled={!onClearPaper || busy === 'start'} data-testid="lobby-clear-paper">
+                        {t('lobby.paper_clear')}
+                      </button>
+                    )}
+                    <button className="lb-paper-change" onClick={onPickPaper} data-testid={hasPaper ? 'lobby-change-paper' : 'lobby-pick-paper'}>
+                      <span className="lb-swap">
+                        <span className={hasPaper ? '' : 'is-off'} aria-hidden={!hasPaper || undefined}>{t('lobby.change')}</span>
+                        <span className={hasPaper ? 'is-off' : ''} aria-hidden={hasPaper || undefined}>{t('lobby.fix.paper')}</span>
+                      </span>
+                    </button>
                   </span>
                 </div>
-              ) : (
-                <button className="lb-drop" onClick={onPickPaper} data-testid="lobby-pick-paper">
-                  <span className="lb-drop-t">{t('lobby.drop')}</span>
-                  <span className="lb-drop-s">{t('lobby.formats')}</span>
-                </button>
               )}
             </div>
             <div className="lb-start-row">
@@ -232,7 +255,7 @@ export function MeetingLobby({ cur, paperName, busy, importText, notice, title, 
                 <UpdateLine active={active} />
                 <button className="link" onClick={() => nav({ to: 'settings' })}>{t('lobby.settings')}</button>
               </div>
-              <Status r={r} />
+              <Status r={r} hasPaper={hasPaper} />
             </section>
             <section className="lb-inv" aria-labelledby="lb-inv-h">
               <InviteLine invite={invite} onChange={reloadInvite} />
@@ -267,11 +290,12 @@ export function MeetingLobby({ cur, paperName, busy, importText, notice, title, 
                 )}
           </div>
           <div className="lb-list-box" ref={listBox}>
+          {/* nothing (yet) in the list: said in the middle of the empty box, not stuck under the tabs */}
           {view === 'carry' ? (
             carry === null ? (
-              <div className="lb-empty">…</div>
+              <div className="lb-empty lb-list-empty">…</div>
             ) : !carry.length ? (
-              <div className="lb-empty">{t('lobby.carry_none')}</div>
+              <div className="lb-empty lb-list-empty">{t('lobby.carry_none')}</div>
             ) : (
               <ul className="lb-list" data-testid="lobby-carry">
                 {carry.slice(pg * rows, pg * rows + rows).map((it) => {
@@ -296,9 +320,9 @@ export function MeetingLobby({ cur, paperName, busy, importText, notice, title, 
               </ul>
             )
           ) : recent === null ? (
-            <div className="lb-empty">…</div>
+            <div className="lb-empty lb-list-empty">…</div>
           ) : !recent.length ? (
-            <div className="lb-empty">{t('lobby.none')}</div>
+            <div className="lb-empty lb-list-empty">{t('lobby.none')}</div>
           ) : (
             <ul className="lb-list">
               {recent.slice(0, fit).map((m) => (
@@ -329,8 +353,19 @@ export function MeetingLobby({ cur, paperName, busy, importText, notice, title, 
   );
 }
 
-/** what keeps 开始会议 off, each with its fix */
-function Need({ n, r, onPickPaper }: { n: 'provider' | 'asr' | 'paper'; r: Readiness; onPickPaper: () => void }) {
+type NeedKind = 'paper' | 'provider' | 'asr';
+
+/** what keeps 开始会议 off, each with its fix: the same red as its 准备情况 row, the same link as 更换 there */
+function Need({ n, r, onPickPaper }: { n: NeedKind; r: Readiness; onPickPaper: () => void }) {
+  if (n === 'paper') {
+    return (
+      <span className="lb-need" data-testid="lobby-need-paper">
+        <Icon name="warning" size={13} />
+        <span>{t('lobby.paper_missing')}</span>
+        <button className="link" onClick={onPickPaper}>{t('lobby.change')}</button>
+      </span>
+    );
+  }
   if (n === 'asr' && r.speech.dl) {
     // coming down: the model's name, a bar and the percent, on the one line the need had
     const dl = r.speech.dl;
@@ -350,7 +385,6 @@ function Need({ n, r, onPickPaper }: { n: 'provider' | 'asr' | 'paper'; r: Readi
       <span>{t(`lobby.need.${n}`)}</span>
       {n === 'provider' && <button className="link" onClick={() => nav({ to: 'settings', link: 'general/source' })}>{t('lobby.fix.provider')}</button>}
       {n === 'asr' && sel && <button className="link" onClick={() => void r.speech.download(sel)}>{t('lobby.fix.asr')}</button>}
-      {n === 'paper' && <button className="link" onClick={onPickPaper}>{t('lobby.fix.paper')}</button>}
     </span>
   );
 }
@@ -362,7 +396,7 @@ const CARRY_ROW_H = 37;
 /** the list's top margin (setup.css .lb-list) */
 const LIST_TOP = 8;
 
-function Status({ r }: { r: Readiness }) {
+function Status({ r, hasPaper }: { r: Readiness; hasPaper: boolean }) {
   const [say, setSay] = useState<string | null>(null);
   const test = async () => {
     setSay(t('lobby.voice_testing'));
@@ -374,7 +408,9 @@ function Status({ r }: { r: Readiness }) {
     }
   };
   const pv = r.provider;
-  const row = (label: string, value: ReactNode, state: 'ok' | 'warn' | 'block' | 'wait', act?: ReactNode) => (
+  // no model source: in the way only with a paper (red); without one that meeting needs no model (grey, 2026-11-20)
+  const model = !pv ? 'wait' : pv.kind === 'unset' ? (hasPaper ? 'block' : 'off') : 'ok';
+  const row = (label: string, value: ReactNode, state: 'ok' | 'warn' | 'block' | 'off' | 'wait', act?: ReactNode) => (
     <div className={`lb-st is-${state}`}>
       <span className="lb-st-dot" aria-hidden="true" />
       <span className="lb-st-l">{label}</span>
@@ -388,14 +424,15 @@ function Status({ r }: { r: Readiness }) {
       {/* two models: the quick one answers in the meeting, the stronger one edits the paper (Settings → Model source) */}
       {row(t('lobby.st.fast'),
         <span className="lb-trunc" title={r.modelFast ?? undefined}>{!pv ? '…' : pv.kind === 'unset' ? t('ob.unset') : r.modelFast ?? (pv.label || '…')}</span>,
-        !pv ? 'wait' : pv.kind === 'unset' ? 'block' : 'ok',
+        model,
         <button className="link" onClick={() => nav({ to: 'settings', link: 'general/source' })}>{t('lobby.change')}</button>)}
       {row(t('lobby.st.main'),
         <span className="lb-trunc" title={r.model ?? undefined}>{!pv ? '…' : pv.kind === 'unset' ? t('ob.unset') : r.model ?? (pv.label || '…')}</span>,
-        !pv ? 'wait' : pv.kind === 'unset' ? 'block' : 'ok')}
+        model)}
+      {/* coming down: not red (nothing to fix), as its line beside 开始会议 */}
       {row(t('lobby.st.asr'),
         <span className="lb-trunc">{r.asr === 'ok' ? r.asrName : r.asr === 'downloading' ? t('ob.downloading') : r.asr === 'missing' ? t('ob.not_downloaded') : '…'}</span>,
-        r.asr === 'ok' ? 'ok' : r.asr === 'unknown' ? 'wait' : 'block',
+        r.asr === 'ok' ? 'ok' : r.asr === 'missing' ? 'block' : 'wait',
         <button className="link" onClick={() => nav({ to: 'settings', link: 'speech' })}>{t('lobby.change')}</button>)}
       {row(t('lobby.st.mic'),
         <span className="lb-trunc" title={r.mic?.mic || ''}>{r.mic?.mic || (!r.mic || r.mic.probing ? '…' : t('ob.mic_none'))}</span>,
@@ -408,12 +445,14 @@ function Status({ r }: { r: Readiness }) {
   );
 }
 
-/** /api/update 回的错误代码（别的是更新日志的最后一行，照原样显示） */
+/** /api/update 回的错误代码。别的是安装日志的最后一行（多半是英文原句）：界面上写"未知"，原句放在悬停里 */
 const UPDATE_ERRORS = ['download', 'launch', 'timeout', 'failed', 'live', 'processing', 'none'];
 const updateError = (e: string | null | undefined) => {
   const c = e || 'failed';
-  return t('lobby.update.failed', { a: UPDATE_ERRORS.includes(c) ? t(`lobby.update.err.${c}`) : c });
+  return t('lobby.update.failed', { a: t(`lobby.update.err.${UPDATE_ERRORS.includes(c) ? c : 'failed'}`) });
 };
+/** the raw reason, for the hover: only when it isn't one of the codes above */
+const updateRaw = (e: string | null | undefined) => (e && !UPDATE_ERRORS.includes(e) ? e : undefined);
 
 /** 新版本（zuhui/updates.py）：在"准备情况"这一行、标题和"设置"中间。这一格不管有没有字都占住这一行剩下的宽度，
  *  旁边的东西不动。有新版：新版本 0.6.2 + 更新；点了：正在更新（Bloom 会关掉，装完自己打开）；失败：更新失败：原因 + 重试。
@@ -455,8 +494,12 @@ function UpdateLine({ active }: { active: boolean }) {
   };
   const ver = (v: string | null | undefined) => (v ?? '').replace(/^v(?=\d)/, '');
   const shown = !!st && st.busy !== 'live' && (st.state === 'available' || st.state === 'updating' || st.state === 'failed');
+  // a capsule in the row's own height (2026-11-20, the user: "更新的那个提醒 好小啊"): the version in the accent colour and a
+  // solid 更新; blue while it updates, red when it failed
   let body: ReactNode = null;
+  let kind = '';
   if (shown && (updating || sending)) {
+    kind = 'is-busy';
     body = (
       <>
         <span className="mw-spinner sm" aria-hidden="true" />
@@ -467,18 +510,19 @@ function UpdateLine({ active }: { active: boolean }) {
     const failed = st!.state === 'failed';
     const text = said ?? (failed ? updateError(st!.error) : t('lobby.update.new', { a: ver(st!.latest) }));
     const wait = st!.busy === 'processing';
+    kind = failed || said ? 'is-err' : 'is-new';
     body = (
       <>
-        <span className={`lb-upd-t ${failed || said ? 'is-err' : ''}`} title={text}>{text}</span>
-        <button className="link lb-upd-b" disabled={wait} title={wait ? t('lobby.update.err.processing') : undefined} onClick={() => void go()} data-testid="lobby-update-go">
+        <span className="lb-upd-t" title={(!said && failed && updateRaw(st!.error)) || text}>{text}</span>
+        <button className="lb-upd-b" disabled={wait} title={wait ? t('lobby.update.err.processing') : undefined} onClick={() => void go()} data-testid="lobby-update-go">
           {t(failed ? 'lobby.update.retry' : 'lobby.update.go')}
         </button>
       </>
     );
   }
   return (
-    <div className={`lb-upd ${body ? 'has' : ''}`} aria-live="polite" data-testid="lobby-update">
-      {body}
+    <div className="lb-upd" aria-live="polite" data-testid="lobby-update">
+      {body && <span className={`lb-upd-chip ${kind}`}>{body}</span>}
     </div>
   );
 }

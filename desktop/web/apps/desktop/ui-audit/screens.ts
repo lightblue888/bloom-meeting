@@ -6,7 +6,7 @@
 // transitions run at SHIFT_SIZES. `world` starts as fixtures/world.ts baseWorld(lang, stress): a live meeting with
 // three people, a transcript, a task board, six past meetings, a DeepSeek model source.
 import type { Page } from '@playwright/test';
-import { ended, firstRun, fresh, idle, isoAgo, NOW_S, processing, STRESS, withCarry, withComments, withVersions, type Lang, type World } from './fixtures/world';
+import { chatLive, chatPast, ended, firstRun, fresh, idle, isoAgo, noPaper, NOW_S, paperMissing, processing, STRESS, withCarry, withComments, withVersions, type Lang, type World } from './fixtures/world';
 import type { Summary, UpdateStatus } from '../src/meetingApi';
 import type { UpdWorld } from './lib/mock-backend';
 
@@ -337,6 +337,64 @@ const toolTransitions: Transition[] = [
   },
 ];
 
+/** a meeting without a paper: what comes and goes on its one column must not move anything else */
+const chatTransitions: Transition[] = [
+  {
+    name: 'new transcript line',
+    act: async (c) => {
+      c.world.current.transcript.push({ t: '20:31', sec: 1231, who: 'teacher', text: c.T('下周把实验数据整理好发群里。', "Next week, put the experiment data in the group chat.") });
+      c.world.current.partial = { text: c.T('还有', 'And'), t: '20:33' };
+      await c.waitPoll();
+    },
+    expect: ['.mt-right-n', '[data-testid="transcript"] *'],
+  },
+  {
+    name: 'mark this moment (a note card over the box; the mark joins the transcript)',
+    act: async (c) => {
+      await c.page.getByTestId('bookmark').click();
+      await c.page.getByTestId('bookmark-note').waitFor();
+      await c.waitPoll();
+    },
+    expect: ['[data-testid="bookmark-note"]', '[data-testid="bookmark-note"] *', '[data-testid="transcript"] *', '.mt-right-n'],
+  },
+  {
+    name: 'co-host reminder appears',
+    act: async (c) => {
+      await c.page.keyboard.press('Escape');
+      const g = c.world.current.participants!.find((p) => p.role === 'guest');
+      c.world.current.role_suggest = [{ name: g?.name ?? 'Emma' }];
+      await c.waitPoll();
+    },
+    expect: ['[data-testid="role-suggest"]', '[data-testid="bookmark-note"]'],
+  },
+  {
+    name: 'nobody has spoken for 10 minutes (the reminder floats)',
+    act: async (c) => {
+      c.world.current.quiet_s = 620;
+      await c.waitPoll();
+    },
+    expect: ['[data-testid="quiet-note"]', '[data-testid="quiet-note"] *'],
+  },
+  {
+    name: 'error notice appears',
+    act: async (c) => {
+      await c.page.getByTestId('meeting-end').click();
+    },
+    expect: ['.mt-notice'],
+    note: 'outside the app 散会 answers "only in the app": the notice shows in the reminders\' slot at the page\'s foot',
+  },
+  {
+    name: 'meeting ends',
+    act: async (c) => {
+      c.world.current.meeting = { ...c.world.current.meeting!, state: 'ended', ended: isoAgo(0) };
+      c.world.current.partial = null;
+      await c.waitPoll();
+    },
+    expect: ['.mt-head-acts', '.mt-acts-slot', '.mt-meta', '.mt-state', '.mt-notice', '[data-testid="transcript"] *', '[data-testid="quiet-note"]', '.mt-compose *'],
+    note: '散会 turns into 新会议; the box stays, switched off',
+  },
+];
+
 // ------------------------------------------------------------------------------------------------ THE LIST
 export const SCREENS: Screen[] = [
   // ---------------------------------------------------------------- 会议 (the meeting page)
@@ -392,15 +450,15 @@ export const SCREENS: Screen[] = [
         name: 'download the speech model (need → progress)',
         act: async (c) => {
           await c.page.locator('.lb-need button.link', { hasText: c.T('下载', 'Download') }).click();
-          await c.page.getByTestId('model-progress').first().waitFor();
+          await c.page.locator('.lb-need.is-dl').first().waitFor();
         },
-        expect: ['.lb-need', '.lb-needs', '.lb-st', '[data-testid="model-progress"]'],
+        expect: ['.lb-need', '.lb-needs', '.lb-st', '.lb-need.is-dl *'],
         note: 'the "missing" line under 开始会议 turns into a progress bar',
       },
       {
         name: 'speech model ready (its need goes away)',
         act: async (c) => {
-          await c.page.getByTestId('model-progress').first().waitFor({ state: 'detached', timeout: 15_000 });
+          await c.page.locator('.lb-need.is-dl').first().waitFor({ state: 'detached', timeout: 15_000 });
         },
         expect: ['.lb-needs', '.lb-need', '.lb-st'],
       },
@@ -434,7 +492,67 @@ export const SCREENS: Screen[] = [
         expect: ['[data-testid="toast"]'],
         note: 'the failure floats at the foot of the window; nothing on the lobby moves',
       },
+      {
+        name: 'remove the paper (back to 未选择; 开始会议 stays on)',
+        act: async (c) => {
+          await c.page.getByTestId('lobby-clear-paper').click();
+          await c.page.getByTestId('lobby-no-paper').waitFor();
+          await c.page.locator('[data-testid="lobby-start"]:not([disabled])').waitFor();
+        },
+        expect: ['.lb-paper', '.lb-paper *', '[data-testid="lobby-title"]', '[data-testid="toast"]'],
+        note: 'the paper row keeps its height; 选择 takes 更换\u2019s place at the row\u2019s end (one button, as wide as the longer word)',
+      },
     ],
+  },
+  {
+    name: 'lobby-no-paper',
+    what: 'Lobby with no paper picked: 未选择 + 选择 in the paper row, 开始会议 on (that meeting keeps only the transcript)',
+    page: 'main',
+    world: noPaper,
+    go: async (c) => {
+      await c.page.getByTestId('lobby-no-paper').waitFor();
+    },
+    ready: '[data-testid="lobby-start"]:not([disabled])',
+    transitions: [
+      {
+        name: 'a paper comes in (未选择 → its name; nothing else moves)',
+        act: async (c) => {
+          const T = c.T;
+          const name = 'FooBench.md';
+          Object.assign(c.world.current, {
+            mode: 'paper',
+            paper: { path: `C:\\Users\\maya\\Documents\\${name}`, name, exists: true, kind: 'md', words: 8231, id: 'p1', modified: '2026-11-18 09:40:12', bytes: 61234 },
+            papers: [{ id: 'p1', name }, { id: 'p2', name: T('申报书.docx', 'proposal.docx') }],
+            active_paper: 'p1',
+          });
+          await c.waitPoll();
+          await c.page.getByTestId('lobby-paper').waitFor();
+        },
+        expect: ['.lb-paper', '.lb-paper *', '[data-testid="lobby-title"]'],
+        note: 'the row keeps its height: the name and its line come in, 移除 and 历史版本 to the left of 更换',
+      },
+    ],
+  },
+  {
+    name: 'lobby-paper-missing',
+    what: 'Lobby whose chosen paper file is gone: its name, 文件找不到了 in the warning colour, 开始会议 off, 更换 and 移除',
+    page: 'main',
+    world: paperMissing,
+    go: async (c) => {
+      await c.page.getByTestId('lobby-paper-missing').waitFor();
+    },
+    ready: '[data-testid="lobby-start"][disabled]',
+  },
+  {
+    name: 'lobby-no-paper-stress',
+    what: 'Lobby with no paper picked, longest names, 40 past meetings',
+    page: 'main',
+    stress: true,
+    world: noPaper,
+    go: async (c) => {
+      await c.page.getByTestId('lobby-no-paper').waitFor();
+    },
+    ready: '[data-testid="lobby-start"]:not([disabled])',
   },
   {
     name: 'lobby-stress',
@@ -696,6 +814,23 @@ export const SCREENS: Screen[] = [
       await c.waitPoll();
     },
     ready: '[data-testid="meeting-new"]',
+  },
+  // ---------------------------------------------------------------- a meeting without a paper (mode "chat")
+  {
+    name: 'meeting-chat',
+    what: 'In a meeting without a paper: the transcript is the page; no AI among the people, no AI strip, 标记 in the top bar',
+    page: 'main',
+    world: chatLive,
+    ready: '.mt-root.is-chat .mt-head [data-testid="bookmark"]',
+    transitions: chatTransitions,
+  },
+  {
+    name: 'meeting-chat-stress',
+    what: 'In a meeting without a paper, longest names, 14 people, a very long line',
+    page: 'main',
+    stress: true,
+    world: chatLive,
+    ready: '.mt-root.is-chat .mt-head [data-testid="bookmark"]',
   },
   // ---------------------------------------------------------------- 会中交互 (第 3 批): the box, what floats
   {
@@ -1073,6 +1208,32 @@ export const SCREENS: Screen[] = [
     },
     ready: '[data-testid="meeting-tab-todos"][aria-selected="true"]',
   },
+  {
+    name: 'review-chat',
+    what: 'An opened past meeting held without a paper: 纪要 and 录屏 only (no 修订对比), no AI among the people',
+    page: 'main',
+    world: chatPast,
+    go: openMeeting,
+    ready: '.mt-hlayer:not(.is-off) [data-testid="meeting-tab-notes"]',
+    transitions: [
+      {
+        name: 'switch to the notes',
+        act: async (c) => {
+          await c.page.locator('.mt-hlayer:not(.is-off) [data-testid="meeting-tab-notes"]').click();
+          await c.page.locator('.mt-hlayer:not(.is-off) .mt-sum-title').first().waitFor();
+        },
+        expect: ['.mt-layer', '.mt-layer *', '.mt-bar *', '[data-testid="transcript"] *'],
+      },
+    ],
+  },
+  {
+    name: 'review-chat-preview',
+    what: '回顾 list with a meeting held without a paper selected (its notes and transcript in the preview)',
+    page: 'main',
+    world: chatPast,
+    go: goHistory,
+    ready: '[data-testid="history-preview"] .mt-hp-body',
+  },
   // ---------------------------------------------------------------- 回顾 → 编辑 (第 7 批): the transcript by hand
   {
     name: 'review-transcript-edit',
@@ -1101,32 +1262,6 @@ export const SCREENS: Screen[] = [
         expect: ['[data-testid="transcript-line"]'],
       },
       {
-        name: 'open 替换 (the box floats over the lines)',
-        act: async (c) => {
-          await c.page.locator('.mt-hlayer:not(.is-off) [data-testid="tredit-replace"]').click();
-          await c.page.locator('.mt-hlayer:not(.is-off) [data-testid="tredit-pop"]').waitFor();
-        },
-        expect: ['[data-testid="tredit-pop"]', '[data-testid="tredit-pop"] *', '[data-testid="tredit-replace"]'],
-      },
-      {
-        name: 'type a word to find (the count shows in its room)',
-        act: async (c) => {
-          await c.page.locator('.mt-hlayer:not(.is-off) [data-testid="tredit-find"]').fill('TimeGAN');
-          await c.page.locator('.mt-hlayer:not(.is-off) [data-testid="tredit-with"]').fill('TimeGAN-v2');
-          await c.settle(200);
-        },
-        expect: ['[data-testid="tredit-pop"] input', '[data-testid="tredit-msg"]', '[data-testid="tredit-hot"]'],
-      },
-      {
-        name: 'replace all (a toast; the box closes)',
-        act: async (c) => {
-          await c.page.locator('.mt-hlayer:not(.is-off) [data-testid="tredit-go"]').click();
-          await c.page.getByTestId('toast').waitFor();
-        },
-        expect: ['[data-testid="tredit-pop"]', '[data-testid="toast"]', '[data-testid="transcript"] *', '[data-testid="tredit-undo"]', '.mt-hlist *'],
-        byDesign: 'the replaced words change the lines that had them (TimeGAN → TimeGAN-v2 can wrap a line); 撤销 turns on',
-      },
-      {
         name: 'click a guest’s name (the field over it)',
         act: async (c) => {
           await c.page.locator('.mt-hlayer:not(.is-off) [data-testid="tredit-who"]').first().click();
@@ -1149,22 +1284,8 @@ export const SCREENS: Screen[] = [
     ready: '.mt-hlayer:not(.is-off) [data-testid="tredit-line"]',
   },
   {
-    name: 'review-transcript-replace',
-    what: '替换 open: find / replace with / add to custom words, the count, a failure in the same room',
-    page: 'main',
-    world: (w) => {
-      w.details['m-001'].edits = { n: 2, last: { op: 'replace', find: '欧佩斯', repl: 'Opus' } };
-    },
-    go: async (c) => {
-      await openMeeting(c);
-      await c.page.locator('.mt-hlayer:not(.is-off) [data-testid="tredit-replace"]').click();
-      await c.page.locator('.mt-hlayer:not(.is-off) [data-testid="tredit-find"]').fill(c.T('没有这个词', 'not there'));
-    },
-    ready: '.mt-hlayer:not(.is-off) [data-testid="tredit-pop"]',
-  },
-  {
     name: 'review-transcript-busy',
-    what: 'A past meeting still being processed: 撤销 / 替换 / 编辑 shown greyed (nothing moves when they turn on)',
+    what: 'A past meeting still being processed: 撤销 / 编辑 shown greyed (nothing moves when they turn on)',
     page: 'main',
     world: (w) => {
       w.details['m-001'].processing = true;
@@ -1289,11 +1410,13 @@ export const SCREENS: Screen[] = [
   },
   {
     name: 'settings-fresh-install',
-    what: 'Fresh install: the lobby’s "set up a model" fix → Settings at Model source (none picked)',
+    // with no paper the lobby lists no "set up a model" need (that meeting keeps only the transcript): the way in is the
+    // 准备情况 row of the model, 未设置 (a grey dot without a paper), and its 更换
+    what: 'Fresh install: the 准备情况 model row (未设置) → 更换 → Settings at Model source (none picked)',
     page: 'main',
     world: fresh,
     go: async (c) => {
-      await c.page.locator('.lb-need button.link', { hasText: c.T('去设置', 'Set up') }).click();
+      await c.page.locator('[data-testid="lobby-status"] .lb-st', { hasText: c.T('对话模型', 'Chat model') }).locator('button.link').click();
       await c.page.getByTestId('settings').waitFor();
     },
     ready: '[data-testid="provider-key"]',
@@ -1355,7 +1478,7 @@ export const SCREENS: Screen[] = [
         name: 'pick 直接改 (the button keeps its width)',
         act: async (c) => {
           await c.page.locator('[data-setting="general.paper_docx"] .st-popup-btn').click();
-          await c.page.locator('.mw-menu [role="menuitemcheckbox"]', { hasText: c.T('直接改', 'Edit directly') }).click();
+          await c.page.locator('.mw-menu [role="menuitemcheckbox"]', { hasText: c.T('直接修改', 'Edit directly') }).click();
           await c.settle(300);
         },
         expect: ['[data-setting="general.paper_docx"] .st-popup-btn *', '.mw-menu'],
@@ -1630,13 +1753,45 @@ export const SCREENS: Screen[] = [
         expect: ['[data-testid="ask-input"]', '[data-testid="ask-send"] *'],
       },
       {
-        name: 'send it (through the relay to the host, the box clears)',
+        name: 'send it (through the relay to the host, the box clears, the question joins the transcript marked typed)',
         act: async (c) => {
+          const typed = await c.page.locator('[data-testid="transcript"] .mt-typed').count();
           await c.page.getByTestId('ask-send').click();
           await c.page.waitForFunction(() => (document.querySelector('[data-testid="ask-input"]') as HTMLTextAreaElement | null)?.value === '');
+          await c.page.waitForFunction((n) => document.querySelectorAll('[data-testid="transcript"] .mt-typed').length > n, typed, { timeout: 10_000 });
           await c.settle(400);
         },
-        expect: ['[data-testid="ask-input"]', '[data-testid="ask-send"] *'],
+        expect: ['[data-testid="ask-input"]', '[data-testid="ask-send"] *', '[data-testid="transcript"] *', '.mt-right-n'],
+      },
+      {
+        name: 'the meeting ends while inside (编辑 goes; the views and the bar stay put)',
+        act: async (c) => {
+          Object.assign(c.world.relay.state!, { live: false, ended: isoAgo(0) });
+          await c.bumpRelay();
+        },
+        expect: ['.mt-head-acts', '[data-testid="claude-now"] *', '.mt-meta', '.mt-state', '.mt-notice', '.g-toasts', '[data-testid="transcript"] *', '.mt-compose *', '[data-testid="paper-edit"]'],
+      },
+    ],
+  },
+  {
+    // 2026-11-19 on a phone: only the host, the AI and you — the people are chips (avatars only on a phone), not the stack
+    name: 'guest-three-people',
+    what: 'A co-host with only the host and the AI in the meeting; the meeting ends',
+    page: 'guest',
+    world: (w) => {
+      asCohost(w);
+      w.relay.state!.participants = (w.relay.state!.participants ?? []).filter((p) => p.rank === 'host' || p.rank === 'cohost' || p.id === 'claude');
+    },
+    go: joinGuest,
+    ready: '[data-testid="ask-input"]',
+    transitions: [
+      {
+        name: 'the meeting ends while inside',
+        act: async (c) => {
+          Object.assign(c.world.relay.state!, { live: false, ended: isoAgo(0) });
+          await c.bumpRelay();
+        },
+        expect: ['.mt-head-acts', '[data-testid="claude-now"] *', '.mt-meta', '.mt-state', '.mt-notice', '.g-toasts', '[data-testid="transcript"] *', '.mt-compose *', '[data-testid="paper-edit"]'],
       },
     ],
   },
@@ -1669,5 +1824,52 @@ export const SCREENS: Screen[] = [
     stress: true,
     go: joinGuest,
     ready: '[data-testid="claude-now"]',
+  },
+  // a meeting without a paper: no paper page, no 论文 / 逐字稿 tabs on a phone, no AI, 标记 only
+  {
+    name: 'guest-chat',
+    what: 'Guest inside a meeting without a paper: the transcript alone (on a phone too), 标记 only',
+    page: 'guest',
+    world: chatLive,
+    go: joinGuest,
+    ready: '.mt-cols.is-chat [data-testid="bookmark"]',
+    transitions: [
+      {
+        name: 'new line from the relay',
+        act: async (c) => {
+          c.world.relay.transcript.push({ t: '20:31', sec: 1231, who: 'teacher', text: c.T('好，下一个话题。', "OK, next topic.") });
+          await c.bumpRelay(true);
+        },
+        expect: ['.mt-right-n', '[data-testid="transcript"] *'],
+      },
+      {
+        name: 'meeting ends while inside',
+        act: async (c) => {
+          Object.assign(c.world.relay.state!, { live: false, ended: isoAgo(0) });
+          await c.bumpRelay();
+        },
+        expect: ['.mt-head-acts', '.mt-meta', '.mt-state', '.mt-notice', '.g-toasts', '[data-testid="transcript"] *', '.mt-compose *'],
+      },
+    ],
+  },
+  {
+    name: 'guest-chat-cohost',
+    what: 'A co-host inside a meeting without a paper: 标记 only (nobody types to the AI there)',
+    page: 'guest',
+    world: (w) => {
+      chatLive(w);
+      asCohost(w);
+    },
+    go: joinGuest,
+    ready: '.mt-cols.is-chat [data-testid="bookmark"]',
+  },
+  {
+    name: 'guest-chat-stress',
+    what: 'Guest inside a meeting without a paper, longest names, 14 people, a very long line',
+    page: 'guest',
+    stress: true,
+    world: chatLive,
+    go: joinGuest,
+    ready: '.mt-cols.is-chat [data-testid="bookmark"]',
   },
 ];

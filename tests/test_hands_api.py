@@ -160,11 +160,11 @@ class EditFlow(Base):
         self.assertEqual(t["result"], "在 1 引言第一段把“容易漏改”改成了“常有遗漏”。无。")
         self.assertFalse(t.get("note"))
         prog = t["progress"]
-        self.assertEqual(prog["step"], "改完了")
+        self.assertEqual(prog["step"], "已完成")
         self.assertEqual(prog["edits"], 1)
         self.assertIn("读论文", prog["log"])
         self.assertTrue(any("改第 1 处" in s for s in prog["log"]), prog["log"])
-        self.assertIn("检查改动", prog["log"])
+        self.assertIn("检查修改", prog["log"])
         ch = json.loads((HOME / "changes" / f"{t['id']}.json").read_text(encoding="utf-8"))
         self.assertTrue(ch["changed"])
         self.assertTrue(ch["ins"])
@@ -203,8 +203,8 @@ class EditFlow(Base):
         self.assertIn("出现了 2 次", Fake.seen[1]["body"]["messages"][2]["content"])
         self.assertEqual(t["status"], "done")
         self.assertTrue(t.get("note") and t.get("unchanged"))           # 和 Claude 那一路"正文没动"一样：记进修改清单
-        self.assertTrue(t["result"].startswith("没改成，正文没动，记进修改清单："), t["result"])
-        self.assertEqual(t["progress"]["step"], "没改成")
+        self.assertTrue(t["result"].startswith("修改失败，已加入修改清单："), t["result"])
+        self.assertEqual(t["progress"]["step"], "修改失败")
         ch = json.loads((HOME / "changes" / f"{t['id']}.json").read_text(encoding="utf-8"))
         self.assertFalse(ch["changed"])
 
@@ -221,7 +221,7 @@ class EditFlow(Base):
         self.assertEqual(t["need"], note["need"])
         self.assertEqual(t["section"], "3 实验")
         self.assertEqual(t["focus"]["text"], note["anchor"])
-        self.assertEqual(t["result"], "会上改不了，正文没动，记进修改清单")
+        self.assertEqual(t["result"], "会中无法修改，已加入修改清单")
         self.assertEqual(t["progress"]["step"], "标注了")
 
     def test_not_changed_reports_why(self):
@@ -236,7 +236,7 @@ class EditFlow(Base):
         t = self.run_task("先别改，记一下表二要补样本期", "表二补样本期", note_job=True)
         self.assertEqual(self.paper.read_bytes(), self.raw)
         self.assertEqual(t["status"], "done")
-        self.assertEqual(t["result"], "只记下了，没改论文")
+        self.assertEqual(t["result"], "已记录，未修改论文")
         self.assertEqual(t["plan"], "表 2 补一列 2015–2023 样本期")
         self.assertIsNone(t.get("need"))
         self.assertIn("准确率为 92.7%", Fake.seen[0]["body"]["messages"][0]["content"])
@@ -247,7 +247,7 @@ class EditFlow(Base):
         t = self.run_task("第一段压短", "压短")
         self.assertEqual(t["status"], "failed")
         self.assertIn("401", t["error"])
-        self.assertEqual(t["progress"]["step"], "没改成")
+        self.assertEqual(t["progress"]["step"], "修改失败")
         self.assertEqual(self.paper.read_bytes(), self.raw)
 
 
@@ -318,12 +318,12 @@ class NotSetUp(Base):
         self.assertEqual(provider.mode(), "none")
         t = self.run_task("第一段压短", "压短")
         self.assertEqual(t["status"], "failed")
-        self.assertEqual(t["error"], "还没设置模型来源（设置 → 通用 → 模型来源）")
-        self.assertEqual(t["progress"]["step"], "没改成")
+        self.assertEqual(t["error"], "未设置模型来源")
+        self.assertEqual(t["progress"]["step"], "修改失败")
         self.assertEqual(self.hands.ask_paper("x", None, ""), ("", hands_api.UNSET))
         self.assertEqual(self.hands.ask_screen("x", None, None, ""), ("", hands_api.UNSET))
         n = self.run_task("记一下", "记一下", note_job=True)
-        self.assertEqual((n["status"], n["result"], n.get("plan")), ("done", "只记下了，没改论文", None))
+        self.assertEqual((n["status"], n["result"], n.get("plan")), ("done", "已记录，未修改论文", None))
         self.assertEqual(Fake.seen, [])                                  # 一个请求都没发
         self.assertEqual(self.paper.read_bytes(), self.raw)
 
@@ -342,7 +342,7 @@ class ClaudeModeUntouched(Base):
         t = self.run_task("第一段压短", "压短")
         self.assertEqual(len(calls), 1)
         self.assertIn("--tools", calls[0])
-        self.assertEqual((t["status"], t["result"], t["progress"]["step"]), ("done", "改好了。无。", "改完了"))
+        self.assertEqual((t["status"], t["result"], t["progress"]["step"]), ("done", "改好了。无。", "已完成"))
         self.assertEqual(Fake.seen, [])
 
 

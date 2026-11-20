@@ -145,17 +145,17 @@ def _pdf_precheck(src: Path) -> None:
     try:
         doc = fitz.open(str(src))
     except Exception:
-        raise ValueError(f"这个 PDF 打不开（文件坏了，或者不是 PDF）：{src.name}")
+        raise ValueError(f"PDF 文件已损坏：{src.name}")
     try:
         if doc.needs_pass:
-            raise ValueError(f"这个 PDF 加了密码，打不开：{src.name}。先去掉密码再拖进来。")
+            raise ValueError(f"PDF 已加密：{src.name}")
         chars = 0
         for page in doc:
             chars += len(re.sub(r"\s", "", page.get_text("text") or ""))
             if chars >= 200:
                 return
         if chars < 20:
-            raise ValueError(f"这份 PDF 里抽不出文字（多半是扫描件）：{src.name}。先用 OCR 转成文字版再拖进来。")
+            raise ValueError(f"PDF 中没有文字（可能是扫描件）：{src.name}")
     finally:
         doc.close()
 
@@ -242,7 +242,7 @@ def _convert(src: Path, ext: str, folder: Path, work: Path, in_place: bool, cb) 
     from .components import pandoc as _find_pandoc         # 随后端装的 pypandoc-binary 优先，没有再找系统的
     pandoc = _find_pandoc() if ext == ".docx" else None
     if ext == ".docx" and not pandoc:
-        raise RuntimeError("没有 pandoc，转不了 .docx")
+        raise RuntimeError("缺少 pandoc，无法导入 Word")
     # 1) 以前放在源文件旁边、开会改过的那份（PPT 没有这回事：旁边同名的 .md 是你自己的）
     legacy = folder / (src.stem + ".md")
     if ext != ".pptx" and in_place and legacy.exists() and legacy.stat().st_mtime >= src.stat().st_mtime \
@@ -279,15 +279,15 @@ def _convert(src: Path, ext: str, folder: Path, work: Path, in_place: bool, cb) 
             try:
                 md, stats = pdfconv.convert_pdf(src, stage, progress=lambda **kw: _report(cb, **kw))
             except pdfconv.ConvertError as e:
-                _report(cb, stage="PyMuPDF", text="MinerU 没转成，改用纯文本抽取")
+                _report(cb, stage="PyMuPDF", text="识别失败，改为提取纯文本")
                 shutil.rmtree(stage / "figures", ignore_errors=True)
                 md, stats = _pdf_text(src), {"engine": "pymupdf", "warning": str(e)[:300]}
         elif ext == ".pptx":
             from . import pptx_conv
-            _report(cb, stage="pptx", text="转 PPT")
+            _report(cb, stage="pptx", text="正在转换 PPT")
             md, stats = pptx_conv.convert_pptx(src, stage)
         else:
-            _report(cb, stage="pandoc", text="pandoc 转 Word")
+            _report(cb, stage="pandoc", text="正在转换 Word")
             md, stats = pdfconv.convert_docx(src, stage, pandoc)
         stats["secs"] = round(time.time() - t0, 1)
         pdfconv.install(stage, md, dst)
@@ -350,19 +350,19 @@ def import_file(src: str | Path, progress=None) -> dict:
     src = Path(src).resolve()
     # 先把拿不来当论文的挡掉（报给用户看的话要说人话），再动任何文件
     if not src.exists():
-        raise FileNotFoundError(f"找不到这个文件：{src}")
+        raise FileNotFoundError(f"文件不存在：{src.name}")
     if src.is_dir():
-        raise ValueError(f"这是一个文件夹，不是论文文件：{src.name}")
+        raise ValueError(f"不支持导入文件夹：{src.name}")
     ext = src.suffix.lower()
     if ext not in TEXT_EXT | {".tex", ".pdf", ".docx", ".pptx"}:
         raise ValueError(f"不支持的文件类型：{ext or '（没有扩展名）'}（支持 pdf / md / tex / docx / pptx / txt）")
     if src.stat().st_size == 0:
-        raise ValueError(f"这个文件是空的：{src.name}")
+        raise ValueError(f"文件为空：{src.name}")
     if ext == ".pdf":
         _pdf_precheck(src)
     if ext in (".docx", ".pptx"):
         _zip_precheck(src)
-    _report(progress, busy=True, name=src.stem, stage="开始", done=0, total=0, text=f"导入 {src.name}",
+    _report(progress, busy=True, name=src.stem, stage="开始", done=0, total=0, text=f"正在导入 {src.name}",
             t0=time.time(), error=None)
     try:
         return _import(src, ext, progress)
@@ -386,7 +386,7 @@ def _import(src: Path, ext: str, progress) -> dict:
         text, enc = _decode(src.read_bytes())
         if not text.strip():
             shutil.rmtree(keep, ignore_errors=True)
-            raise ValueError(f"这个文件里没有文字：{src.name}")
+            raise ValueError(f"文件中没有文字：{src.name}")
         if enc != "utf-8-sig":
             # 不是 UTF-8（多半是 GBK）：转成 UTF-8 存一份，学生改这份，原文件不动
             dst = work / (src.stem + ".utf8" + (".tex" if ext == ".tex" else ".md"))
@@ -411,7 +411,7 @@ def _import(src: Path, ext: str, progress) -> dict:
             body = re.sub(r"<!--.*?-->|^#.*$|^\[image: [^\]]*\]$", "", dst.read_text(encoding="utf-8", errors="replace"), flags=re.M)
             if len(re.sub(r"\s", "", body)) < 20:
                 shutil.rmtree(keep, ignore_errors=True)
-                raise ValueError(f"这份 PDF 里抽不出文字（多半是扫描件）：{src.name}。先用 OCR 转成文字版再拖进来。")
+                raise ValueError(f"PDF 中没有文字（可能是扫描件）：{src.name}")
         kind = "pdf" if ext == ".pdf" else "pptx" if ext == ".pptx" else "docx"
     else:
         raise ValueError(f"不支持的文件类型：{ext}（支持 pdf / md / tex / docx / pptx / txt）")

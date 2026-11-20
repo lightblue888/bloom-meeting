@@ -45,7 +45,7 @@ API key 存在本机的 `~/.zuhui/provider.json`，设置页上只显示最后�
 | `transcript.live.jsonl` | 开会时屏幕上显示的那一版 |
 | `transcript.clean.jsonl` | 整理后的版本，去掉了说错改口、重复，`i` 是对应原始版的第几行 |
 | `cleanup.json` | 整理时删改了哪些，每一条都能在回顾里恢复 |
-| `transcript.edits.json` | 在回顾里手改逐字稿的记录：改字、整场替换、改说话人 |
+| `transcript.edits.json` | 在回顾里手改逐字稿的记录：改字、改说话人 |
 | `retranscribe.json` | 散会后重新转写的统计 |
 | `summary.json` / `summary.md` | 纪要，一份结构化的，一份 Markdown |
 | `board.json` | 修改清单：每条的标题、当时说的话（`remark`）、改了什么（`result`）、状态 |

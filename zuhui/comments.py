@@ -231,9 +231,9 @@ TEXT = {
     "send": ("发送", "Send"), "cancel": ("取消", "Cancel"), "reply": ("回复", "Reply"),
     "resolve": ("解决", "Resolve"), "reopen": ("重新打开", "Reopen"), "resolved": ("已解决", "Resolved"),
     "del": ("删除", "Delete"), "send_fail": ("发送失败：", "Send failed: "), "del_fail": ("删除失败：", "Delete failed: "),
-    "e_too_long": ("超过 500 字", "over 500 characters"), "e_empty": ("是空的", "it's empty"),
-    "e_not_live": ("会议没在开", "the meeting isn't on"), "e_cohost_only": ("只有主持人和共同主持人能删", "only the host and co-hosts can delete"),
-    "e_not_found": ("这条已经删了", "it was deleted"), "e_full": ("批注太多了", "too many comments"),
+    "e_too_long": ("超过 500 字", "over 500 characters"), "e_empty": ("内容为空", "empty"),
+    "e_not_live": ("会议已结束", "the meeting has ended"), "e_cohost_only": ("仅主持人和共同主持人可删除", "only the host and co-hosts can delete"),
+    "e_not_found": ("批注已删除", "comment deleted"), "e_full": ("批注数量已达上限", "comment limit reached"),
     "e_failed": ("请重试", "try again"),
 }
 

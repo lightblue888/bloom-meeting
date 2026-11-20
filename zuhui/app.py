@@ -25,11 +25,11 @@ from . import dialog_rules as _rules
 from .board import Board
 from .draft_match import same_meaning
 from .config import (CURRENT_PAPER, assistant_name, MODEL_OPTIONS, STATE, load, model_current, model_label, paper_path, paper_title,
-                     set_model)
+                     set_model, is_no_paper)
 from .ears import Ears, Utterance, quick_kind, replay as ears_replay
 from .fast import FastBrain
 from .hands import Hands
-from .meetings import Meetings, join_spoken as _cat, paper_entry, papers_of
+from .meetings import Meetings, join_spoken as _cat, mode_of, paper_entry, papers_of
 from .meetings import add_open_paper, load_open_papers, save_open_papers
 from .mouth import Mouth
 from .paper import Paper
@@ -537,6 +537,7 @@ class Meeting:
             except Exception as e:
                 print(f"语音桥没起来：{e!r}", flush=True)
         self.fast = FastBrain(self.cfg, self.paper, self.board)
+        self.fast.skip_warm = self._chat_now          # 没有论文的会（只记逐字稿）：AI 不说话，不用先起对话模型
         self.hands = Hands(self.cfg, self.board, self._on_task_done, paper_path(self.cfg), dry=dry)
         self.meetings = Meetings()
         # 往期会议（zuhui/past.py）：会上 AI 的固定前缀里放同一篇论文最近几场的要点，问到以前时附上检索到的往期片段
@@ -676,16 +677,18 @@ class Meeting:
     # ---------- 会议生命周期 ----------
     def on_meeting_started(self, session: str):
         """口喷鸡开始录屏 = 开会：新建会议、清任务板、以当前镜像为原文基线。
-        后端崩过又起来、接上的还是同一段录音：接着开原来那场，任务板和原文基线都不动。"""
-        self._gpu_up()                           # 配音服务、接话分类器没在跑就后台载入（点开会按钮时一般已经在载了）
+        后端崩过又起来、接上的还是同一段录音：接着开原来那场，任务板和原文基线都不动。
+        没选论文：开的是没有论文的会（mode=chat）：只记逐字稿，AI 不接话；不带论文、不存论文版本、不带上次遗留。"""
         if session and session in self._ended_sessions():
             # 这段录屏的会已经按散会按钮散了，只是录屏还在收尾（或者后端重启后耳朵又接上它）：不再开一场新会
             self.log("meeting", state="已散会的录屏", text=f"这段录屏的会已经散了，不再开新会：{session}")
             return
         resumed = self.meetings.resume(session)
+        self._gpu_up()                           # 配音服务、接话分类器没在跑就后台载入（没有论文的会不载）
         if resumed:
             _usage_begin(self.meetings.root / resumed["id"])
             self.log("meeting", state="接着开", text=resumed.get("title") or session)
+            self._seen_guests = self._guests_saved(resumed["id"])   # 重启前进来过的人（走了的也在）
             self._papers_changed(papers_of(resumed))   # 崩之前摊开的那几篇（屏幕上那篇已由 current_paper.json 接上）
             self._bridge_on()
             return
@@ -705,21 +708,26 @@ class Meeting:
         if self.viewer:
             self.viewer.ensure_base(rebase=True)
             self.viewer._sig = None
-        # 开会前新增过的几篇整张单子带进会（屏幕上那篇照旧在屏幕上）；每篇都以现在的稿子为原文
-        here, papers = self._meeting_papers()
-        m = self.meetings.start(session=session, title=self.paper.title, lang="en" if self._en() else "zh",
-                                papers=papers, active=here["id"])
-        try:                                     # 第 6 批：每篇论文开会前的样子存一份（论文的历次版本，zuhui/paper_versions.py）
-            from . import paper_versions
-            paper_versions.snapshot_meeting(m, "before")
-        except Exception as e:
-            self.log("fast_error", error=self._L(f"开会前的论文版本没存上：{e!r}", f"saving the paper's version failed: {e!r}"))
-        _usage_begin(self.meetings.root / m["id"])  # 用 API 时：这场会的 token 用量记进会议目录（zuhui/usage.py）
-        try:                                     # 上次遗留：还没勾掉的抄进这场会（AI 知道这些，散会纪要写出落实了没有）
-            from . import past
-            past.snapshot_in(self.meetings, m["id"], past.carry(self.meetings, here, exclude=m["id"]))
-        except Exception as e:
-            self.log("fast_error", error=self._L(f"上次遗留没带进来：{e!r}", f"carrying last meeting's items failed: {e!r}"))
+        lang = "en" if self._en() else "zh"
+        if is_no_paper(self.paper.path):
+            # 没选论文：没有论文的会。会名用默认的"组会 · 日期"，不带论文、不存论文版本、不带上次遗留（不和哪篇论文的往期串起来）
+            m = self.meetings.start(session=session, title=None, lang=lang, papers=[], active=None, mode="chat")
+            _usage_begin(self.meetings.root / m["id"])
+        else:
+            # 开会前新增过的几篇整张单子带进会（屏幕上那篇照旧在屏幕上）；每篇都以现在的稿子为原文
+            here, papers = self._meeting_papers()
+            m = self.meetings.start(session=session, title=self.paper.title, lang=lang, papers=papers, active=here["id"])
+            try:                                     # 第 6 批：每篇论文开会前的样子存一份（论文的历次版本，zuhui/paper_versions.py）
+                from . import paper_versions
+                paper_versions.snapshot_meeting(m, "before")
+            except Exception as e:
+                self.log("fast_error", error=self._L(f"开会前的论文版本没存上：{e!r}", f"saving the paper's version failed: {e!r}"))
+            _usage_begin(self.meetings.root / m["id"])  # 用 API 时：这场会的 token 用量记进会议目录（zuhui/usage.py）
+            try:                                     # 上次遗留：还没勾掉的抄进这场会（AI 知道这些，散会纪要写出落实了没有）
+                from . import past
+                past.snapshot_in(self.meetings, m["id"], past.carry(self.meetings, here, exclude=m["id"]))
+            except Exception as e:
+                self.log("fast_error", error=self._L(f"上次遗留没带进来：{e!r}", f"carrying last meeting's items failed: {e!r}"))
         self.anchor.clear()
         self._past_cache = None
         threading.Thread(target=self._past_warm, name="past-index", daemon=True).start()
@@ -783,6 +791,12 @@ class Meeting:
             self._p_wait = []
             self.meetings.set_partial(None)
             self.anchor.clear()
+            people = None
+            if self.viewer:                      # 参会人和身份要在 end() 之前定：end() 里 roles.end() 会清掉这场的共同主持人
+                try:
+                    people = self._people_at_end()
+                except Exception as e:
+                    self.log("fast_error", error=self._L(f"存参会人失败：{e!r}", f"saving participants failed: {e!r}"))
             m = self.meetings.end(board_tasks=self.board.tasks())
             if not m:
                 return None
@@ -795,14 +809,14 @@ class Meeting:
             self.log("meeting", state="散会", text=f"{sess or ''}（{why}）")
             if self.bridge is not None:                  # 散会：离开语音房间（访客那边会看到"已结束"）
                 threading.Thread(target=self.bridge.stop, name="bridge-stop", daemon=True).start()
-            if self.viewer:                      # 这场会上都有谁：你、Claude，和中途通过链接进来过的人
-                try:
-                    people = self.viewer.participants(guests=False) + list(getattr(self, "_seen_guests", {}).values())
-                    self.meetings.save_participants(m["id"], people)
-                except Exception as e:
-                    self.log("fast_error", error=self._L(f"存参会人失败：{e!r}", f"saving participants failed: {e!r}"))
+            if people is not None:               # 这场会上都有谁：你、Claude，和中途通过链接进来过的人
+                if mode_of(m) == "chat":         # 没有论文的会：AI 没参加
+                    people = [p for p in people if p.get("id") != "claude"]
+                self.meetings.save_participants(m["id"], people)
         # 后台收尾：等刚才那句停下、修订对比快照、等录屏收尾 → 整场重转写 → 整理 → 纪要（zuhui/aftermeeting.py）
         threading.Thread(target=self._watch_post, args=(post, sess, m, talk), name="post-meeting", daemon=True).start()
+        if mode_of(m) == "chat":                  # 没有论文的会：没有要写回的论文
+            return m
         try:   # 从 Word 转来的论文：等后台改完，在原 .docx 旁边另存「（会上修订）.docx」（zuhui/docx_writeback.py）
             from . import docx_writeback
             docx_writeback.after_meeting(self, m)
@@ -840,11 +854,40 @@ class Meeting:
         没开会时（2026-11-15 起）：也是加进摊开的论文单子，之前那几篇留在单子上、能切回去（_add_paper_idle），
         开会时整张单子带进会。一次只加一篇（几个请求同时来时排队）；加完记下来，后端重启后还是这一篇、这张单子。"""
         with self._paper_lock:
-            if self.meetings.current():
+            cur = self.meetings.current()
+            if cur and mode_of(cur) == "chat":
+                # 没有论文的会：这场只记逐字稿，开着会不能加论文（散会后在大厅里选）
+                raise RuntimeError(self._L("此会议不能添加论文", "Papers can't be added to this meeting"))
+            if cur:
                 return self._add_paper_live(path)
             if self.board.counts().get("working"):
-                raise RuntimeError(self._L("AI 还在改上一篇，改完再换", "The AI is still editing, add it when that's done"))
+                raise RuntimeError(self._L("AI 正在修改论文，请稍后切换", "The AI is editing the paper. Try again later"))
             return self._add_paper_idle(path)
+
+    def clear_paper(self) -> dict:
+        """大厅里点「移除」（POST /api/paper/clear）：现在没有论文了，摊开的单子也清空。之后开会就是没有论文的会。
+        重新选 / 拖一篇论文（set_paper）就恢复成有论文。开着会不能移除。"""
+        with self._paper_lock:
+            if self.meetings.current():
+                raise RuntimeError(self._L("会议中无法移除论文", "Can't remove the paper during a meeting"))
+            if self.board.counts().get("working"):
+                raise RuntimeError(self._L("AI 正在修改论文，请稍后移除", "The AI is editing the paper. Remove it later"))
+            from .config import clear_paper
+            clear_paper()
+            save_open_papers([], None)
+            p = paper_path(self.cfg)
+            self.paper = Paper(p, "")
+            self.fast.paper = self.paper
+            self.fast._recall = None
+            self.fast.focus = None
+            self.hands.paper_file = p
+            self._last_focus = None
+            self._past_cache = None
+            if self.viewer is not None:
+                self.viewer.clear_paper()
+            self._papers_changed([])
+            self.log("ready", text=self._L("移除了论文：之后开的会只记逐字稿", "paper removed: the next meeting only keeps the transcript"))
+            return {"ok": True}
 
     # ---------- 没开会时摊开的论文单子（"新增"一篇不换掉上一篇，2026-11-15） ----------
     def _open_list(self) -> list[dict]:
@@ -892,7 +935,7 @@ class Meeting:
         """没开会时把单子上的一篇摆到屏幕上。new=True（刚新增）以现在的稿子为原文；False（切回单子上的）原文基线不动。"""
         p = Path(entry["path"])
         if not p.is_file():
-            raise RuntimeError(self._L(f"找不到这篇论文的文件了 {p.name}", f"The paper's file is gone ({p.name})"))
+            raise RuntimeError(self._L(f"文件不存在：{p.name}", f"File not found: {p.name}"))
         name = str(entry.get("name") or p.stem)
         switched = not self._same_path(p, self.paper.path)
         if switched or new:
@@ -1044,14 +1087,14 @@ class Meeting:
                 papers = self._open_list()
                 entry = next((p for p in papers if p["id"] == str(pid or "")), None)
                 if entry is None:
-                    raise ValueError(self._L("摊开的论文里没有这篇", "This paper is not open"))
+                    raise ValueError(self._L("论文未打开", "This paper is not open"))
                 if self.board.counts().get("working"):
-                    raise RuntimeError(self._L("AI 还在改上一篇，改完再换", "The AI is still editing, switch when that's done"))
+                    raise RuntimeError(self._L("AI 正在修改论文，请稍后切换", "The AI is editing the paper. Switch later"))
                 return self._show_idle(entry, papers, new=False)
             papers = papers_of(cur) or [self._paper_now()]
             entry = next((p for p in papers if p["id"] == str(pid or "")), None)
             if entry is None:
-                raise ValueError(self._L("这场会上没有这篇", "This paper is not in the meeting"))
+                raise ValueError(self._L("本场会议中没有此论文", "This paper is not in the meeting"))
             return self._activate(entry, papers, new=False)
 
     def _activate(self, entry: dict, papers: list[dict], new: bool) -> dict:
@@ -1060,7 +1103,7 @@ class Meeting:
         （工人按任务上记的 paper_path 改）。逐字稿上记一行"切到 某篇"。"""
         p = Path(entry["path"])
         if not p.is_file():
-            raise RuntimeError(self._L(f"找不到这篇论文的文件了 {p.name}", f"The paper's file is gone ({p.name})"))
+            raise RuntimeError(self._L(f"文件不存在：{p.name}", f"File not found: {p.name}"))
         name = str(entry.get("name") or p.stem)
         switched = not self._same_path(p, self.paper.path)
         if switched:
@@ -1083,7 +1126,7 @@ class Meeting:
         self._papers_changed(papers)
         if switched:
             # 逐字稿上的系统行（who=system，不署任何人的名字；拼多人讨论时也不算谁说的，见 _discussion）
-            self.meetings.add_line("system", self._L(f"切到 {name}", f"Switched to {name}"), tag="#paper")
+            self.meetings.add_line("system", self._L(f"已切换到 {name}", f"Switched to {name}"), tag="#paper")
             threading.Thread(target=self.fast.warm, name="fast-warm-paper", daemon=True).start()
             # 术语表：这篇以前建过就直接换上（建一次要问一次模型、8 秒多），没建过才建
             threading.Thread(target=self._switch_lexicon, name="lexicon", daemon=True).start()
@@ -1119,6 +1162,7 @@ class Meeting:
                 from .view import Viewer
                 self.viewer = Viewer(self.cfg, board=self.board, meetings=self.meetings)
                 self.viewer.on_paper = self.set_paper
+                self.viewer.on_clear_paper = self.clear_paper     # 大厅里点「移除」：之后开的会没有论文
                 self.viewer.on_switch_paper = self.switch_paper   # 会中切到摊开过的另一篇
                 self.viewer.on_renamed = self._on_renamed         # 改了会议名：散会收尾进度上的名字跟着改
                 self.viewer.on_edit = self._on_paper_edited
@@ -1294,16 +1338,57 @@ class Meeting:
             self._build_lexicon()
 
     def _note_guests(self) -> None:
-        """开会时记下通过邀请链接进来过的人（散会后存进这场会）。"""
-        if not (self.viewer and self.meetings.current()):
+        """开会时记下通过邀请链接进来过的人（散会后存进这场会）。有新来的人就先存一份进会议目录（participants.json，
+        散会时再按最后的身份重写）：后端中途重启、接着开同一场时从那里接上，重启前来过又走了的人散会后也还在名单上。"""
+        cur = self.meetings.current() if self.viewer else None
+        if not cur:
             return
         seen = getattr(self, "_seen_guests", None)
         if seen is None:
             seen = self._seen_guests = {}
-        for g in self.viewer.participants()[2:]:
+        new = False
+        everyone = self.viewer.participants()
+        for g in everyone[2:]:
             if g.get("id") not in seen:
                 seen[g["id"]] = g
+                new = True
                 self.log("guest", text=self._L(f"{g.get('name')} 通过邀请链接进来了", f"{g.get('name')} joined via the invite link"))
+        if not seen:
+            return
+        people = self._people_now(everyone)
+        if mode_of(cur) == "chat":
+            people = [p for p in people if p.get("id") != "claude"]
+        sig = (cur["id"], tuple((p.get("id"), p.get("name"), p.get("rank")) for p in people))
+        if new or sig != getattr(self, "_people_sig", None):   # 来了新人、有人被设成 / 改回共同主持人：存一份
+            self._people_sig = sig
+            self.meetings.save_participants(cur["id"], people)
+
+    def _people_now(self, everyone: list[dict] | None = None) -> list[dict]:
+        """这场会上都有谁：你、AI，和这场会里通过链接进来过的每个人（中途走了的也算）。访客的身份按现在的算
+        （中途设成共同主持人、又改回参会者的，按最后那次）：以前存的是他刚进会那一刻的身份，散会后共同主持人都成了参会者。
+        everyone：刚取的 viewer.participants()（省得再取一遍）。"""
+        everyone = self.viewer.participants() if everyone is None else everyone
+        here = {g.get("id"): g for g in everyone[2:]}
+        out = [dict(p) for p in everyone[:2]]
+        for gid, g in (getattr(self, "_seen_guests", None) or {}).items():
+            p = dict(here.get(gid) or g)
+            p["rank"] = "cohost" if roles.is_cohost(p.get("name")) else "participant"
+            out.append(p)
+        return out
+
+    def _people_at_end(self) -> list[dict]:
+        """散会时存的参会人（_people_now）。要在 meetings.end() 之前调：end() 里的 roles.end() 会把这场的共同主持人清掉。"""
+        self._note_guests()                          # 刚进来、还没记上的人
+        return self._people_now()
+
+    def _guests_saved(self, mid: str) -> dict:
+        """接着开同一场（后端重启过）：开会时存下的访客（participants.json），{id: 记录}。"""
+        try:
+            people = json.loads((self.meetings.root / str(mid) / "participants.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return {str(p["id"]): p for p in people if isinstance(people, list) and isinstance(p, dict)
+                and p.get("id") and p.get("id") not in ("me", "claude")}
 
     def _on_paper_edited(self) -> None:
         """你在对比页里手改了一段：重读论文，检索索引下次重建，整篇论文的缓存重新热一下。"""
@@ -1494,9 +1579,21 @@ class Meeting:
                  fixed=st.get("fixed"), still_bad=st.get("still_bad"))
 
     # ---------- 显卡上的两样：开会时载入，散会空闲后释放 ----------
+    def _chat_now(self) -> bool:
+        """这场会（没开会时：现在开会的话）是没有论文的会：只记逐字稿，AI 不接话、不出声。"""
+        ms = getattr(self, "meetings", None)
+        cur = ms.current() if ms is not None else None
+        if cur:
+            return mode_of(cur) == "chat"
+        paper = getattr(self, "paper", None)
+        return paper is None or is_no_paper(paper.path)
+
     def _gpu_up(self) -> None:
         """要开会了（点开会按钮 / 录屏开始）：配音服务、接话分类器没在跑就后台载入，都不等。
-        配音服务冷启动约 20 秒，一般在第一次要 Claude 出声之前就好了；没好之前要说的话用备用嗓子顶上。"""
+        配音服务冷启动约 20 秒，一般在第一次要 Claude 出声之前就好了；没好之前要说的话用备用嗓子顶上。
+        没有论文的会（AI 不出声）：都不载，显存留着。"""
+        if self._chat_now():
+            return
         self._gpu_want = time.time()
         try:
             if not self.mouth.ensure_server():
@@ -1508,7 +1605,7 @@ class Meeting:
             pass                                 # 模拟会换了嘴（没有服务），不管
         try:
             from . import addr
-            addr.get(self.cfg)                   # 开了才载（addr.enabled），按会议语言挑中文 / 英文那个
+            addr.get(self.cfg, fresh=True)       # 开了才载（addr.enabled），按会议语言挑中文 / 英文那个；上次没起来的重新试
         except Exception as e:
             self.log("addr", error=repr(e)[:200])
 
@@ -2490,10 +2587,10 @@ class Meeting:
         if part not in MODEL_OPTIONS:
             raise ValueError(f"不认识的模型类别：{part}")
         if not self._may_switch(by):
-            raise PermissionError("只有主持人和共同主持人能换模型")
+            raise PermissionError("仅主持人和共同主持人可切换模型")
         from . import provider
         if provider.mode() == "api":
-            raise ValueError(self._L("用 API 时型号在 设置 → 通用 → 模型来源 里换", "With an API key, models are set in Settings → General → Model source"))
+            raise ValueError(self._L("请在 设置 → 通用 → 模型来源 中更改型号", "Change the model in Settings → General → Model source"))
         old = model_current(self.cfg).get(part)
         if part == "dialog":                         # 换之前先试一次：连不上就不换（第 2 轮乱测：换成没钱的 Flash，整场聋了）
             from .config import normalize_model
@@ -2502,7 +2599,7 @@ class Meeting:
                 why = self.fast.probe(want)
                 if why:
                     self.log("models", text=self._L(f"{part}: 想换成 {want}，连不上（{why}），没换", f"{part}: tried {want}, unreachable ({why}), not switched"), by=by or "界面")
-                    raise ConnectionError(f"{model_label(part, want)} 现在连不上（{why}），先用着 {model_label(part, old)}")
+                    raise ConnectionError(f"{model_label(part, want)} 连接失败（{why}），仍使用 {model_label(part, old)}")
         mid = set_model(self.cfg, part, value)
         self.log("models", text=f"{part}: {old} → {mid}", by=by or "界面")
         if part == "dialog" and mid != old:          # 新模型的前缀缓存先热一下，下一句不用等
@@ -2643,6 +2740,10 @@ class Meeting:
             self._last_guest_t = time.time()
         if len(_bare(u.text)) >= 4:
             self._spoke[guest] = time.time()
+        if self._chat_now():
+            # 没有论文的会：只记逐字稿（上面已经记了），AI 不接话——不调模型、不放提前录好的句子、不查、不截图、
+            # 不记任务、不动静音。打字发的、叫了 AI 名字的也一样（这种会多半是给别的程序读逐字稿用的）
+            return
         # 多人在聊：这句是不是冲学生说的（见 _address_level）。两个人的会照旧什么都接
         unmuted = False
         if getattr(self, "_mute", False) and (typed or _CALL_NAME.search(u.text or "")):
@@ -2897,7 +2998,7 @@ class Meeting:
                                         "v": ("论文全文" if tr.get("full") else "论文目录") +
                                              (f"，重点 {tr['section']}" if tr.get("section") else "")}]
                     elif status_turn:
-                        ex["steps"] = [{"t": self.meetings.clock(), "k": "读任务板"}]
+                        ex["steps"] = [{"t": self.meetings.clock(), "k": "查看修改进度"}]
                     line = self._speech_line(head0, heard=getattr(u, "heard", None), extra=ex or None)
                     if (self.cfg.get("deep") or {}).get("enabled", True) is not False:
                         ground = self.fast.grounder(u.text, tag)
@@ -3464,7 +3565,7 @@ class Meeting:
         last = str(self._last_reply or "").strip()
         handoff = self._L("好，这个我交给后台仔细想一想。", "Okay, I'll have the background think this through.")
         line = self._speech_line("#deep", heard=getattr(u, "heard", None), extra={
-            "steps": [{"t": self.meetings.clock(), "k": self._L("交给后台深想", "handed to the background"), "v": _short(u.text, 40)}]})
+            "steps": [{"t": self.meetings.clock(), "k": self._L("深入思考", "Thinking deeper"), "v": _short(u.text, 40)}]})
         self.mouth.say(handoff, on_start=line)
         self._last_reply = handoff
         q = ((f"【他要你把刚才讨论的那个问题交给后台仔细重新想（不是让前台再答一遍）。前台刚才的快速回答是：「{_short(last, 300)}」。"
@@ -3705,7 +3806,7 @@ class Meeting:
             if readonly(self.paper.path):            # 第 6 批：屏幕上这篇是 PPT 讲稿，只能看不能改（不记改稿任务）
                 self.log("reclass", text=self._L(f"PPT 只能看不能改，没记改稿：{rest}", f"slides are view-only, no edit: {rest}"))
                 said = str(getattr(self, "_last_reply", "") or "")
-                if "只能看" not in said and "view-only" not in said:
+                if "只能看" not in said and "不支持编辑" not in said and "view-only" not in said:
                     self.say(self._L(*READONLY_SAY))
                 return
         picked = getattr(u, "anchor", None)
@@ -3756,7 +3857,7 @@ class Meeting:
             remark = (f"共同主持人{guest}说：{u.text}" if guest else u.text) + pick_note
             # 标注模式（2026-11-14）：先排队交给工人只读地看一遍原文，写出钉在哪一段、怎么改、要补什么（不改论文，写好也不再念）
             task = self.board.add_note(remark=remark, title=title, section=sec, focus=focus,
-                                       result=self._L("只记下了，没改论文", "Noted only; the paper was not changed"), plan_job=True,
+                                       result=self._L("已记录，未修改论文", "Noted only; the paper was not changed"), plan_job=True,
                                        paper=self._paper_now())
             self.hands.notify()
             self.log("task_added", id=task["id"], title=f"{task['id']} {title}", note=True)
@@ -3873,6 +3974,8 @@ class Meeting:
     def _speculate(self, payload) -> None:
         """抢跑：payload 是准确文字（str，文字落地了、判停还在等），或者初稿（dict，draft=True：你一停顿，
         快识别 0.2 秒出的，Fun-ASR 的准确文字还在路上）。先让模型按它想着，真说完时对得上就直接用。"""
+        if self._chat_now():
+            return                                # 没有论文的会：AI 不接话，也就不用先想
         if getattr(self.fast, "is_cli", False):
             return                                # 快嘴是套餐里的 Claude（一个常驻进程）：不抢跑，免得同时想两件事
         draft = isinstance(payload, dict)
@@ -4067,7 +4170,7 @@ class Meeting:
                     old["deliver"] = True
         job = {"q": said, "t0": time.time(), "state": "running", "answer": None, "err": None, "spoken": False,
                "deliver": False, "ev": threading.Event(), "qcancel": threading.Event(), "lock": threading.Lock(),
-               "steps": ([{"t": self.meetings.clock(), "k": "没核对上", "v": str(why)}] if why else []),
+               "steps": ([{"t": self.meetings.clock(), "k": "未核实", "v": str(why)}] if why else []),
                "quick": quick, "last": time.time(), "topic": None}
         self._deep_seq = getattr(self, "_deep_seq", 0) + 1
         job["id"] = self._deep_seq
@@ -4124,8 +4227,8 @@ class Meeting:
                 # 出处也记论文以外读过的文件（"读 round1_report.log"）：2026-11-14 那场"同一套 507 句测试集上 68.8%"
                 # 是从项目记录里读来的（68.8% 其实是调参集 613 句上的），快嘴的上下文里没写出处，当成论文事实转述了
                 src = "；".join(_short(f"{x.get('k')} {x.get('v') or ''}".strip(), 60) for x in steps
-                               if x.get("k") in ("打开网页", "联网搜", "读论文", "在论文里搜")
-                               or str(x.get("k") or "").startswith(("读 ", "在")))[:300]
+                               if x.get("k") in ("打开网页", "联网搜索", "读论文", "搜索论文")
+                               or str(x.get("k") or "").startswith(("读 ", "搜索")))[:300]
                 outside = any(str(x.get("k") or "").startswith("读 ") for x in steps)
                 job["src"], job["outside"] = src, outside
                 self.fast.deep_log = (list(getattr(self.fast, "deep_log", []) or [])
@@ -4320,6 +4423,10 @@ class Meeting:
             self.pending_answers.clear()
             self.pending_reports.clear()
             return  # 散会后不出声：改完的结果在回顾的任务板里，下一场开会时清掉
+        if self._chat_now():                     # 没有论文的会：AI 不出声（上一场没改完的稿改好了也不念）
+            self.pending_answers.clear()
+            self.pending_reports.clear()
+            return
         gap = 3.5 if self._multi_party() else 2.0   # 三人会：大家都停下来久一点再插播，别打断人和人说话
         if self.mouth.speaking or time.time() - self.last_speech < gap or self._guests_talking(0.0 if gap < 3 else gap):
             return  # 等老师说完、嘴空下来再插播
@@ -4388,12 +4495,12 @@ class Meeting:
         self._report_ask = ask
         gen = self.fast.reply(note + ask)
         prog = task.get("progress") or {}
-        steps = [{"k": "改稿", "v": s} for s in (prog.get("log") or []) if s and s != "开始" and not task.get("note")]
+        steps = [{"k": "修改", "v": s} for s in (prog.get("log") or []) if s and s != "开始" and not task.get("note")]
         if task.get("note"):
             where = task.get("section") or (task.get("focus") or {}).get("section") or ""
             steps.append({"k": "标注", "v": _short(" ".join(x for x in (where, task.get("title") or "") if x), 60)})
         if task.get("status") != "done" and task.get("error"):
-            steps.append({"k": "没改成", "v": _short(task.get("error"), 60)})
+            steps.append({"k": "修改失败", "v": _short(task.get("error"), 60)})
         line = self._speech_line("#report", extra={"task": f"T{task.get('idx')}" if task.get("idx") else task.get("id"),
                                                     "title": str(task.get("title") or ""),
                                                     "ok": task.get("status") == "done", "steps": steps})

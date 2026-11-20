@@ -23,9 +23,9 @@ import {
   exportName,
   exportReason,
   fmtDay,
-  fmtDuration,
   fmtWhen,
   itemText,
+  isChat,
   meetingApi,
   splitCites,
   type Digest,
@@ -53,6 +53,15 @@ import { copyRich } from '../richCopy';
 const sig = (m: MeetingBrief | undefined) => (m ? [m.n_lines, m.has_summary, m.has_diff, m.n_tasks, m.n_done, m.state, m.ended, m.processing].join('|') : '');
 const busyOf = (m: MeetingBrief | undefined, d: MeetingDetail | undefined) =>
   !!(m?.processing || d?.processing || m?.state === 'live' || d?.meeting?.state === 'live' || d?.summary_job?.state === 'running');
+/** a meeting's length beside its start, in words ("15 分钟", "1 小时 3 分钟"): "10:30 15:00" read as a time range */
+const fmtLen = (s: number | null | undefined) => {
+  const v = Math.max(0, Math.round(s ?? 0));
+  if (v < 60) return t('meeting.history.len_s', { n: String(v) });
+  const m = Math.round(v / 60);
+  if (m < 60) return t('meeting.history.len_m', { n: String(m) });
+  const h = String(Math.floor(m / 60));
+  return m % 60 ? t('meeting.history.len_hm', { h, m: String(m % 60) }) : t('meeting.history.len_h', { h });
+};
 
 export function MeetingHistory({ onToast, active = true }: { onToast: (msg: string) => void; active?: boolean }) {
   const [list, setListRaw] = useState<MeetingBrief[] | null>(null);
@@ -307,13 +316,20 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
   const linesView = useMemo(
     () => (
       <ol className="mt-hp-lines">
-        {plines.map((l: Line, i: number) => (
-          <li key={i} className={`is-${l.who}`}>
-            <span className="mt-hp-who" style={{ color: nameColor(colors[nameOf(l.who, l.name)]) }} title={nameOf(l.who, l.name)}>{nameOf(l.who, l.name)}</span>
-            <span className="mt-hp-t">{l.t}</span>
-            <span className="mt-hp-text"><Highlight text={l.text} q={q} /></span>
-          </li>
-        ))}
+        {plines.map((l: Line, i: number) =>
+          // "王一凡 加入了会议": a grey line in the middle, as the opened meeting shows it
+          l.who === 'system' ? (
+            <li key={i} className="is-system">
+              <Highlight text={l.text} q={q} />
+            </li>
+          ) : (
+            <li key={i} className={`is-${l.who}`}>
+              <span className="mt-hp-who" style={{ color: nameColor(colors[nameOf(l.who, l.name)]) }} title={nameOf(l.who, l.name)}>{nameOf(l.who, l.name)}</span>
+              <span className="mt-hp-t">{l.t}</span>
+              <span className="mt-hp-text"><Highlight text={l.text} q={q} /></span>
+            </li>
+          ),
+        )}
       </ol>
     ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -406,14 +422,15 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
                       {mode === 'digest' ? (
                         <span className={`mt-hpick ${picks.includes(m.id) ? 'is-on' : ''}`}>{picks.includes(m.id) && <Icon name="check" size={11} />}</span>
                       ) : (
-                        <span className={`mt-state-dot is-${m.state ?? 'ended'}`} />
+                        // a dot only where it says something: on now, or its post-meeting work still running
+                        <span className={`mt-state-dot is-${m.state === 'live' ? 'live' : m.processing ? 'post' : m.state ?? 'ended'}`} />
                       )}
                     </span>
                     <span className="mt-hrow-main">
                       <span className="mt-hrow-title">{cleanTitle(m.title) || m.id}</span>
                       <span className="mt-hrow-sub">
                         <span>{fmtWhen(m.started, lang)}</span>
-                        <span>{fmtDuration(m.duration_s)}</span>
+                        <span>{fmtLen(m.duration_s)}</span>
                         {m.sample && <span className="mt-hrow-sample" data-testid="history-sample-tag">{t('meeting.history.sample')}</span>}
                       </span>
                     </span>
@@ -437,7 +454,7 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
                       <h2 className="mt-hp-title">{cleanTitle(brief.title) || brief.id}</h2>
                       <div className="mt-hrow-sub">
                         <span>{fmtWhen(brief.started, lang)}</span>
-                        <span>{fmtDuration(brief.duration_s)}</span>
+                        <span>{fmtLen(brief.duration_s)}</span>
                       </div>
                     </div>
                     <div className="mt-hp-acts">
@@ -564,6 +581,8 @@ const OpenMeeting = memo(function OpenMeeting({ d, active, onBack, onRefresh, on
   return (
     <MeetingLayout
       review
+      // a meeting held without a paper: 纪要 / 录屏 only (no 修订对比), the AI not among the people
+      chat={isChat(d.meeting)}
       active={active}
       meeting={d.meeting}
       transcript={d.transcript}

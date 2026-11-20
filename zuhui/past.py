@@ -752,10 +752,10 @@ def ask(lib, cfg: dict, question: str, mids=None) -> dict:
     except Exception as e:
         raise RuntimeError(str(e) or type(e).__name__) from None
     if not isinstance(r, dict):
-        raise RuntimeError("回答不是 JSON 对象")
+        raise RuntimeError("回答格式错误")
     answer = _one(r.get("answer"), 1500)
     if not answer:
-        raise RuntimeError("回答是空的")
+        raise RuntimeError("回答为空")
     cites = []
     for c in (r.get("cites") if isinstance(r.get("cites"), list) else []):
         try:
@@ -878,7 +878,7 @@ def digest_markdown(d: dict) -> str:
         out += ["", "## 反复出现的意见", ""] + [f"- {(x['by'] + '：') if x.get('by') else ''}{x['text']}{tag(x.get('meetings') or [])}"
                                             for x in r["feedback"]]
     if r.get("open"):
-        out += ["", "## 还没做完的待办", ""] + [f"- [ ] {x['text']}{('（' + x['who'] + '）') if x.get('who') else ''}"
+        out += ["", "## 未完成待办", ""] + [f"- [ ] {x['text']}{('（' + x['who'] + '）') if x.get('who') else ''}"
                                             f"{tag([x['meeting']] if x.get('meeting') else [])}" for x in r["open"]]
     return "\n".join(out) + "\n"
 
@@ -940,11 +940,11 @@ def run_digest(lib, cfg: dict, did: str) -> dict:
     try:
         metas = [m for m in (_read(lib.root / mid / "meta.json") for mid in d.get("mids") or []) if isinstance(m, dict)]
         if len(metas) < DIGEST_MIN:
-            raise RuntimeError("选的会有的已经删了")
+            raise RuntimeError("部分会议已删除")
         from .claude_text import SONNET, ask_json
         r = ask_json(_digest_material(lib, metas), system=DIGEST_PROMPT, model=SONNET, timeout=300)
         if not isinstance(r, dict):
-            raise RuntimeError("汇总不是 JSON 对象")
+            raise RuntimeError("生成失败：返回格式错误")
         d["result"] = _clean_digest(r, len(d.get("meetings") or []))
         if not d["result"]["title"]:
             d["result"]["title"] = "阶段汇总"
@@ -968,7 +968,7 @@ def list_digests(limit: int = 30) -> list[dict]:
         if not isinstance(d, dict) or not d.get("id"):
             continue
         if d.get("state") == "running" and time.time() - float(d.get("started_at") or 0) > DIGEST_STALE_S:
-            d["state"], d["error"] = "failed", "后台中途停了"
+            d["state"], d["error"] = "failed", "生成中断"
         out.append({k: d.get(k) for k in ("id", "created", "state", "error", "mids", "meetings")}
                    | {"title": (d.get("result") or {}).get("title") or ""})
     return out
@@ -979,5 +979,5 @@ def get_digest(did: str) -> dict | None:
     if not isinstance(d, dict):
         return None
     if d.get("state") == "running" and time.time() - float(d.get("started_at") or 0) > DIGEST_STALE_S:
-        d["state"], d["error"] = "failed", "后台中途停了"
+        d["state"], d["error"] = "failed", "生成中断"
     return d

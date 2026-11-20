@@ -129,18 +129,18 @@ class Base(unittest.TestCase):
 class MinutesTest(Base):
     def test_everything_is_in(self):
         text = ex.blocks_text(ex.minutes_blocks(self.g, CFG, "zh"))
-        for s in ("进展汇报", "2026-11-18 14:30 · 45:12 · 第三章 实验设计", "参会人：林晓、小B、王一凡", "主题摘要", "核心结论",
+        for s in ("进展汇报", "2026-11-18 14:30 · 45:12 · 第三章 实验设计", "参会者：林晓、小B、王一凡", "主题摘要", "核心结论",
                   "1. TimeGAN 下周补上（02:10）", "2. 表 2 更新", "01 数据划分（03:30）", "按时间切", "- 训练集到 2020 年（03:31）",
-                  "每个人", "王一凡", "讲了什么", "- 基线跑完了（01:05）", "收到的意见", "- 林晓：下周补上（02:10）", "要做的事",
-                  "- 林晓：更新表 2", "后续工作安排", "- 王一凡补 TimeGAN（02:10）", "上次遗留", "- [落实了] 补充相关工作：加了三篇（05:00）",
-                  "- [没落实] 画图 3", "发言时长"):
+                  "\n参会者\n", "王一凡", "发言要点", "- 基线跑完了（01:05）", "意见", "- 林晓：下周补上（02:10）", "待办",
+                  "- 林晓：更新表 2", "后续工作安排", "- 王一凡补 TimeGAN（02:10）", "遗留事项", "- [已完成] 补充相关工作：加了三篇（05:00）",
+                  "- [未完成] 画图 3", "发言时长"):
             self.assertIn(s, text)
         # 议程功能删了：旧纪要里带着 agenda 字段也不导出、不报错
         for s in ("议程", "讲到了", "讨论第三章"):
             self.assertNotIn(s, text)
         # 遗留：落实了的在前；主题在每个人前面（默认格式）
-        self.assertLess(text.index("[落实了]"), text.index("[没落实]"))
-        self.assertLess(text.index("01 数据划分"), text.index("每个人"))
+        self.assertLess(text.index("[已完成]"), text.index("[未完成]"))
+        self.assertLess(text.index("01 数据划分"), text.index("\n参会者\n"))
         # 发言时长：三个人都在，名字是参会人里的
         talk = text[text.index("发言时长"):]
         for n in ("林晓", "小B", "王一凡"):
@@ -149,7 +149,7 @@ class MinutesTest(Base):
     def test_progress_puts_people_first_and_renames(self):
         self.g["summary"] = dict(SUMMARY, template="progress")
         text = ex.blocks_text(ex.minutes_blocks(self.g, CFG, "zh"))
-        self.assertLess(text.index("每个人"), text.index("01 数据划分"))
+        self.assertLess(text.index("\n参会者\n"), text.index("01 数据划分"))
         self.assertIn("进展", text)
         self.assertIn("下周任务", text)
 
@@ -173,13 +173,13 @@ class MinutesTest(Base):
         text = ex.blocks_text(ex.minutes_blocks(self.g, CFG, "zh"))
         self.assertIn("1. c1", text)
         self.assertIn("- t1", text)
-        self.assertNotIn("每个人", text)
+        self.assertNotIn("\n参会者\n", text)
 
     def test_html_escaped_and_clip(self):
         clip = ex.minutes_clip(self.g, CFG, "zh")
         self.assertIn("&lt;b&gt;不是标签&lt;/b&gt;", clip["html"])
         self.assertNotIn("<b>不是标签", clip["html"])
-        for tag in ("<h1>", "<h2>主题摘要</h2>", "<ol>", "<ul>", "<li>", "<strong>落实了</strong>"):
+        for tag in ("<h1>", "<h2>主题摘要</h2>", "<ol>", "<ul>", "<li>", "<strong>已完成</strong>"):
             self.assertIn(tag, clip["html"])
         self.assertNotIn("<", clip["text"].replace("<b>不是标签</b>", ""))
         self.assertIn("主题摘要", clip["text"])
@@ -187,8 +187,8 @@ class MinutesTest(Base):
     def test_markdown(self):
         md = ex.minutes_md(self.g, CFG, "zh")
         self.assertTrue(md.startswith("# 进展汇报"))
-        self.assertIn("## 每个人", md)
-        self.assertIn("- **落实了** 补充相关工作：加了三篇（05:00）", md)
+        self.assertIn("## 参会者", md)
+        self.assertIn("- **已完成** 补充相关工作：加了三篇（05:00）", md)
         self.assertIn("1. TimeGAN 下周补上（02:10）", md)
 
 
@@ -196,15 +196,15 @@ class TodosTest(Base):
     def test_groups_ticks_edits(self):
         b = ex.todos_blocks(self.g, "zh")
         heads = [v for k, v in b if k == "h3"]
-        self.assertEqual(heads, ["摘要", "3.2 实验", "4 结果", "软件", "会上已改"])
+        self.assertEqual(heads, ["摘要", "3.2 实验", "4 结果", "软件", "会中已修改"])
         checks = [v for k, v in b if k == "check"]
         t1 = checks[1][0]
         self.assertTrue(t1["done"])                                    # carry.json 里勾掉了
         self.assertEqual(t1["text"], "补 TimeGAN 实验（实验数据）")
         # 末尾那行是标签（board.note_tags：标题里有"实验"、要补里有"数据"、怎么改里有"表 2"）
-        self.assertEqual(t1["sub"], ["王一凡 这个要补", "怎么改 加一行到表 2", "要重新跑实验、要补数据、要重画图表"])
+        self.assertEqual(t1["sub"], ["王一凡 这个要补", "修改方案：加一行到表 2", "需重跑实验、需补数据、需重画图表"])
         self.assertFalse(checks[2][0]["done"])
-        self.assertEqual(checks[2][0]["sub"], ["整理中", "要重画图表"])      # 标题"图 3 坐标轴"
+        self.assertEqual(checks[2][0]["sub"], ["整理中", "需重画图表"])      # 标题"图 3 坐标轴"
         self.assertEqual([x["text"] for x in checks[4]], ["改摘要第一句"])  # 撤回的不算
         md = ex.blocks_md(b)
         self.assertIn("- [x] 补 TimeGAN 实验（实验数据）", md)
@@ -222,7 +222,7 @@ class DocxTest(Base):
         self.assertEqual(out.suffix, ".docx")                       # 没写扩展名：补上
         with zipfile.ZipFile(out) as z:
             doc = z.read("word/document.xml").decode("utf-8")
-        for s in ("主题摘要", "每个人", "上次遗留", "林晓：下周补上", "（02:10）"):
+        for s in ("主题摘要", "参会者", "遗留事项", "林晓：下周补上", "（02:10）"):
             self.assertIn(s, doc)
         self.assertIn('w:val="Heading1"', doc)
         self.assertIn('w:val="Heading2"', doc)

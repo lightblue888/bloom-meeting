@@ -253,10 +253,10 @@ def ask_step(name: str, inp: dict, paper_name: str = "", sections=None) -> tuple
         raw = " ".join(str(inp.get("pattern") or "").split())
         pat = _pat_words(raw) or raw
         where = "论文" if (not fname or fname == paper_name) else fname
-        return (f"在{where}里搜", pat)
+        return (f"搜索{where}", pat)
     if name == "Read":
         if fname.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")):
-            return ("看截图", "")
+            return ("查看截图", "")
         off, lim = inp.get("offset"), inp.get("limit")
         rng = (f"第 {int(off)}–{int(off) + int(lim or 0)} 行" if off and lim else f"从第 {int(off)} 行起" if off else "全文")
         mine = not fname or fname == paper_name
@@ -267,9 +267,9 @@ def ask_step(name: str, inp: dict, paper_name: str = "", sections=None) -> tuple
             sec = a if a == b or not b else f"{a} → {b}"
         return (("读论文" if mine else f"读 {fname}"), rng + (f"（{sec}）" if sec else ""))
     if name == "Glob":
-        return ("找文件", str(inp.get("pattern") or ""))
+        return ("查找文件", str(inp.get("pattern") or ""))
     if name == "WebSearch":
-        return ("联网搜", " ".join(str(inp.get("query") or "").split()))
+        return ("联网搜索", " ".join(str(inp.get("query") or "").split()))
     if name == "WebFetch":
         u = str(inp.get("url") or "")
         return ("打开网页", u)
@@ -310,18 +310,18 @@ class WorkerProgress:
         fname = Path(path).name if path else ""
         if name == "Read":
             if fname.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")):
-                step = "看截图"
+                step = "查看截图"
             elif self._edited:
-                step = "检查改动"
+                step = "检查修改"
             elif not fname or fname == self.paper_file.name:
                 step = "读论文"
             else:
                 step = f"读 {fname}"
         elif name == "Grep":
             pat = " ".join(str(inp.get("pattern") or "").split())[:12]
-            step = "检查改动" if self._edited else (f"在论文里找“{pat}”" if pat else "在论文里找")
+            step = "检查修改" if self._edited else (f"查找“{pat}”" if pat else "搜索论文")
         elif name == "Glob":
-            step = "找文件"
+            step = "查找文件"
         elif name in ("Edit", "MultiEdit", "Write"):
             if name == "Edit":
                 olds = [inp.get("old_string")]
@@ -336,7 +336,7 @@ class WorkerProgress:
             self.section = sec
             where = self._where(sec)
             if name == "Write":
-                step = "整篇重写论文"
+                step = "重写全文"
             elif n == 1:
                 step = f"{where}改第 {self.edits} 处"
             else:
@@ -514,7 +514,7 @@ class Hands:
             except Exception as e:  # 单个任务怎么炸都不能把工人线程带走
                 _log([f"[{datetime.now().isoformat(timespec='seconds')}] {task['id']} 工人异常：{e!r}"])
                 try:
-                    self.board.finish(task["id"], error=f"工人异常：{e}")
+                    self.board.finish(task["id"], error=f"修改失败：{e}")
                 except Exception:
                     pass
             done = self.board.get(task["id"])
@@ -722,25 +722,25 @@ class Hands:
         prog = WorkerProgress(self.board, task["id"], self.paper_file)
 
         def finish(**kw):
-            prog.done("改完了" if kw.get("result") is not None else "没改成")
+            prog.done("已完成" if kw.get("result") is not None else "修改失败")
             self.board.finish(task["id"], **kw)
 
         for attempt in range(len(self.RETRY_WAITS) + 1):
             data, tail, rc = self.call(args, cwd=str(self.folder), timeout=timeout, label=task["id"], on_event=prog.on_event)
             if rc is None:
-                finish(error=f"改稿{tail}")
+                finish(error=f"修改{tail}")
                 return
             # 被网络挡了、文件也没动过：等几秒再来一次（文件动过了就不重试，免得改两遍）
             if attempt < len(self.RETRY_WAITS) and self._transient(data, rc) and self._read_paper() == before:
                 wait = self.RETRY_WAITS[attempt]
                 _log([f"[{datetime.now().isoformat(timespec='seconds')}] {task['id']} 网络类错误，{wait} 秒后重试"
                       f"（第 {attempt + 1} 次）：{(data or {}).get('api_error') or tail[-120:]}"])
-                prog.note("网络被挡，等一下重试")
+                prog.note("网络错误，正在重试")
                 time.sleep(wait)
                 continue
             break
         if data is None:
-            finish(error=f"claude 没返回 JSON（rc={rc}）：{tail or '无输出'}")
+            finish(error=f"修改失败：模型返回格式错误（rc={rc}）")
             return
         result = data.get("result")
         if not isinstance(result, str):
@@ -748,7 +748,7 @@ class Hands:
         if data.get("is_error") or rc != 0:
             msg = result.strip() or data.get("subtype") or f"rc={rc}"
             if self._transient(data, rc):
-                msg = "连 Claude 的网络被挡了，重试了两次还是不行：" + msg[:160]
+                msg = "网络错误，重试失败：" + msg[:160]
             finish(error=msg)
             return
         self._conclude(task, prog, before, result)
@@ -761,7 +761,7 @@ class Hands:
             prog.done("标注了")
             self.board.to_note(task["id"], plan=_none_if_empty(nt.get("plan")), need=_none_if_empty(nt.get("need")),
                                anchor=_none_if_empty(nt.get("anchor")), section=_none_if_empty(nt.get("section")),
-                               result=self._en_text("会上改不了，正文没动，记进修改清单",
+                               result=self._en_text("会中无法修改，已加入修改清单",
                                                     "Can't be done during the meeting; the text is unchanged and it's on the to-do list"))
             return
         if nt is not None:                        # 写了 #note 却又动了论文：按改过了算，汇报用它写的改法
@@ -769,14 +769,14 @@ class Hands:
         if self._read_paper() == before and not str(task.get("title") or "").startswith(("撤销", "Undo")):
             # 跑完了正文却一个字没动（读不到文件、找不到地方、说的根本不是论文）：不算"改好了"，
             # 不在正文里打勾，记进修改清单会后处理（2026-11-14 组会：没改成的三条也挂了勾、并排钉在滚动条边上）
-            prog.done("没改成")
+            prog.done("修改失败")
             self.board.to_note(task["id"], result=self._en_text(
-                "没改成，正文没动，记进修改清单：" + (result.strip()[:200] or "工人没说原因"),
+                "修改失败，已加入修改清单：" + (result.strip()[:200] or "原因未知"),
                 "Not done; the text is unchanged and it's on the to-do list: " + (result.strip()[:200] or "no reason given")))
             self.board.annotate(task["id"], unchanged=True)   # 汇报时说"没改成、为什么"，不说"要新数据"
             return
-        prog.done("改完了")
-        self.board.finish(task["id"], result=result.strip() or "（改完了，但工人没说改了什么）")
+        prog.done("已完成")
+        self.board.finish(task["id"], result=result.strip() or "已修改")
 
     def _en_text(self, zh: str, en: str) -> str:
         return en if str((self.cfg.get("meeting") or {}).get("lang") or "zh") == "en" else zh
@@ -804,7 +804,7 @@ class Hands:
         nt = parse_note((data or {}).get("result") if isinstance((data or {}).get("result"), str) else "") or {}
         self.board.to_note(task["id"], plan=_none_if_empty(nt.get("plan")), need=_none_if_empty(nt.get("need")),
                            anchor=_none_if_empty(nt.get("anchor")), section=_none_if_empty(nt.get("section")),
-                           result=self._en_text("只记下了，没改论文", "Noted only; the paper was not changed"))
+                           result=self._en_text("已记录，未修改论文", "Noted only; the paper was not changed"))
 
     def _ask(self, prompt: str, read_dirs, sect: dict, label: str, cancel=None, web: bool = False,
              on_step=None) -> tuple[str, str | None]:

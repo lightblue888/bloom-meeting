@@ -319,24 +319,74 @@ def api_key(cfg: dict) -> str:
 
 
 CURRENT_PAPER = STATE / "current_paper.json"     # 换过的论文记在这里：后端重启后还是这一篇
+# 没选论文时 paper_path 给的路径：文件不存在，所在的文件夹是个空目录（后台进程的工作目录要有个真实的地方）。
+# 没选论文就开会 = 没有论文的会（meta.mode="chat"）：只记逐字稿，AI 不接话
+NO_PAPER = STATE / "no_paper" / "no-paper.md"
 
 
 def current_paper() -> dict | None:
     try:
         d = json.loads(CURRENT_PAPER.read_text(encoding="utf-8"))
         return d if d.get("path") and Path(d["path"]).is_file() else None
-    except (OSError, ValueError):
+    except (OSError, ValueError, AttributeError):
         return None
 
 
+def paper_cleared() -> bool:
+    """大厅里点过「移除」：current_paper.json 里记着 {"none": true}，不再退回 config 里那篇。"""
+    try:
+        return json.loads(CURRENT_PAPER.read_text(encoding="utf-8")).get("none") is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def clear_paper() -> None:
+    """记下"现在没有论文"（POST /api/paper/clear）。重新选一篇时 current_paper.json 被换成那一篇。"""
+    tmp = CURRENT_PAPER.with_name(CURRENT_PAPER.name + f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps({"none": True, "at": time.strftime("%Y-%m-%d %H:%M:%S")}, ensure_ascii=False, indent=1),
+                   encoding="utf-8")
+    os.replace(tmp, CURRENT_PAPER)
+
+
 def paper_path(cfg: dict) -> Path:
+    """屏幕上这篇论文的文件。没选论文（移除了、新装的机器上 config 里那篇也不在）：NO_PAPER（不存在的文件）。"""
     cur = current_paper()
     if cur:
         return Path(cur["path"])
-    p = Path(cfg["paper"]["file"])
-    return p if p.is_absolute() else ROOT / p
+    if not paper_cleared():
+        f = (cfg.get("paper") or {}).get("file")
+        if f:
+            p = Path(f)
+            p = p if p.is_absolute() else ROOT / p
+            if p.is_file():
+                return p
+    try:
+        NO_PAPER.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return NO_PAPER
+
+
+def is_no_paper(path) -> bool:
+    """这个路径算不算"没有论文"：NO_PAPER 本身，或者文件不在。"""
+    if not path:
+        return True
+    p = Path(str(path))
+    try:
+        if os.path.normcase(str(p.resolve())) == os.path.normcase(str(NO_PAPER.resolve())):
+            return True
+    except OSError:
+        pass
+    return not p.is_file()
+
+
+def no_paper(cfg: dict) -> bool:
+    """现在没选论文：现在开会就是没有论文的会。"""
+    return is_no_paper(paper_path(cfg))
 
 
 def paper_title(cfg: dict) -> str:
     cur = current_paper()
-    return str(cur.get("name") or Path(cur["path"]).stem) if cur else str(cfg["paper"].get("title") or "论文")
+    if cur:
+        return str(cur.get("name") or Path(cur["path"]).stem)
+    return "" if no_paper(cfg) else str(cfg["paper"].get("title") or "论文")

@@ -322,7 +322,7 @@ class Share:
 
     def invite(self) -> dict:
         if not self.enabled:
-            return {"ok": False, "error": "没有配会议中继（config.json 的 share.base_url，见 relay/README.md），邀请链接不可用"}
+            return {"ok": False, "error": "未开启会议中继"}
         r = room()
         return {"ok": True, "room": r, "base": self.base, "url": f"{self.base}room/{quote(r)}",
                 "relay": self.configured, "public": self.public, "armed": self.armed,
@@ -353,8 +353,8 @@ class Share:
 
     def set_feed(self, state_fn, paper_key_fn, paper_fn) -> None:
         """访客能看到什么：state_fn() 没在开会时返回 None，开会时返回给访客的会议信息（标题、参会人、字幕用的最近几句 captions）；
-        paper_key_fn() 便宜地算论文快照的版本，变了才调 paper_fn() -> (html, {文件名: (类型, 字节)}) 重新推。
-        只在开会时推；散会就让中继把论文和图删掉。"""
+        paper_key_fn() 便宜地算论文快照的版本，变了才调 paper_fn() -> (html, {文件名: (类型, 字节)}) 重新推；
+        返回 None 是这场会没有论文页（没有论文的会），什么都不推。只在开会时推；散会就让中继把论文和图删掉。"""
         self._feed = (state_fn, paper_key_fn, paper_fn)
         if self.configured and not (self._push_thread and self._push_thread.is_alive()):
             self._push_thread = threading.Thread(target=self._push_loop, name="share-push", daemon=True)
@@ -578,11 +578,18 @@ class Share:
 
     def _upcoming(self) -> dict:
         """还没开的下一场：访客打开链接看到"未开始"（拿不到进会的 token），开会后自动变成能进。"""
-        from .config import assistant_name, current_paper
+        from .config import assistant_name, current_paper, no_paper
         me = str((self.cfg.get("meeting") or {}).get("me") or "主持人")
         title = ((current_paper() or {}).get("name") or "组会").strip()
+        people = [{"name": me, "role": "teacher"}]
+        try:
+            chat = no_paper(self.cfg)                     # 没选论文：下一场是没有论文的会，AI 不在会上
+        except Exception:
+            chat = False
+        if not chat:
+            people.append({"name": assistant_name(self.cfg), "role": "student"})
         return {"upcoming": True, "live": False, "title": title, "host": me, "paper": False,
-                "people": [{"name": me, "role": "teacher"}, {"name": assistant_name(self.cfg), "role": "student"}]}
+                "mode": "chat" if chat else "paper", "people": people}
 
     RESUME_GRACE_S = 90.0         # 后端刚起来这么久内，"没在开会"不当成散会（多半是重启后还没接回会议）
 
@@ -604,7 +611,7 @@ class Share:
         sent: dict[str, str] = {}  # 已推的图：文件名 -> 哈希
         was_live = False
         next_check = 0.0
-        upcoming_room, next_idle = None, 0.0
+        upcoming_room, upcoming_body, next_idle = None, None, 0.0
         while not self._stop.is_set():
             wait = 1.0
             if not self.armed:                                   # 公共中继没打开邀请：什么都不发
@@ -624,12 +631,16 @@ class Share:
                         self._push("clear", b"", "application/json")   # 中继：标成结束、踢人；失败就过几秒再来
                         new_room()                               # 下一场换新房间号：旧链接再也进不来
                         was_live, last_state, last_key, last_paper, sent, last_lines = False, None, None, None, {}, None
-                        upcoming_room, next_idle = None, 0.0
-                    if room() != upcoming_room or time.time() >= next_idle:   # 下一场的链接先在中继上登记成"未开始"
-                        if room() != upcoming_room or not self._have().get("sv"):
+                        upcoming_room, upcoming_body, next_idle = None, None, 0.0
+                    # 下一场的链接先在中继上登记成"未开始"。选了 / 移除了论文、改了昵称：马上换（以前要等到换房间号才换，
+                    # 选了论文以后访客打开链接看到的还是"没有论文的会"、会名还是"组会"）
+                    up = json.dumps(self._upcoming(), ensure_ascii=False, sort_keys=True)
+                    changed = room() != upcoming_room or up != upcoming_body
+                    if changed or time.time() >= next_idle:
+                        if changed or not self._have().get("sv"):
                             body = json.dumps(self._with_avatars(self._upcoming(), sent), ensure_ascii=False, sort_keys=True)
                             self._push("state", body.encode("utf-8"), "application/json")
-                        upcoming_room, next_idle = room(), time.time() + 60
+                        upcoming_room, upcoming_body, next_idle = room(), up, time.time() + 60
                     wait = 2.0
                 else:
                     if not was_live:
@@ -647,7 +658,7 @@ class Share:
                         sent = {k: v for k, v in sent.items() if k in names}
                         next_check = time.time() + 20
                     key = key_fn()
-                    if key != last_key:
+                    if key is not None and key != last_key:     # None：这场会没有论文页（没有论文的会），不推
                         html_text, assets = paper_fn()
                         for name, (ctype, data) in (assets or {}).items():
                             h = hashlib.sha1(data).hexdigest()

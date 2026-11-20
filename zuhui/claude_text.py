@@ -27,7 +27,7 @@ def ask(prompt: str, system: str = "", model: str = HAIKU, effort: str = "low", 
         except llm_api.ApiError as e:
             raise RuntimeError(str(e)) from None
     if m == "none":
-        raise RuntimeError("还没设置模型来源（设置 → 通用 → 模型来源）")
+        raise RuntimeError("未设置模型来源")
     from .config import load
     from .hands import _resolve_claude, _strip_claude_env
     cfg = load()

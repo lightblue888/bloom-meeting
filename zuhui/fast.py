@@ -277,7 +277,7 @@ class FastBrain:
                 print(f"[fast] {self.last_error}", file=sys.stderr)
                 raise CliError(str(e)) from None
         if m == "none":
-            raise CliError("还没设置模型来源（设置 → 通用 → 模型来源）")
+            raise CliError("未设置模型来源")
         last = None
         for attempt in (1, 2):                   # 进程中途退出之类：换个新进程再试一次
             got = False
@@ -304,6 +304,12 @@ class FastBrain:
         from . import provider
         if provider.mode() != "claude":          # API：没有要预热的进程（没设：也没什么可热的）
             return provider.mode() == "api"
+        skip = getattr(self, "skip_warm", None)
+        try:
+            if callable(skip) and skip():        # 没有论文的会（app 接上）：AI 不说话，不先起进程
+                return True
+        except Exception:
+            pass
         try:
             self._cli().warm(self._prefix(False), block=True)
             return True

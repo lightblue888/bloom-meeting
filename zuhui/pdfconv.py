@@ -673,8 +673,8 @@ def _cap_kind(text: str):
 # ======================================================================
 # MinerU
 # ======================================================================
-STAGES = {"layout": "版面分析", "vlm": "识别公式、表格和文字", "ocr-det": "找文字", "ocr-rec": "认文字",
-          "mfr": "认公式", "mfd": "找公式", "table": "认表格"}
+STAGES = {"layout": "版面分析", "vlm": "识别公式、表格和文字", "ocr-det": "检测文字", "ocr-rec": "识别文字",
+          "mfr": "识别公式", "mfd": "检测公式", "table": "识别表格"}
 PROG = re.compile(r"([A-Za-z][A-Za-z \-]{1,40}?)\s*:\s*(\d+)%\|[^|]*\|\s*(\d+)/(\d+)")
 
 
@@ -734,7 +734,7 @@ def run_mineru(pdf: Path, out_dir: Path, pages: int, progress=None, tier: str | 
                     state["last"] = time.time()
                     try:
                         progress(stage=label, done=int(m.group(3)), total=int(m.group(4)),
-                                 text=f"MinerU {label} {m.group(3)}/{m.group(4)}（共 {pages} 页，已用 {time.time() - t0:.0f} 秒）")
+                                 text=f"{label} {m.group(3)}/{m.group(4)}（共 {pages} 页，已用 {time.time() - t0:.0f} 秒）")
                     except Exception:
                         pass
 
@@ -1165,11 +1165,11 @@ def convert_pdf(pdf: Path, stage: Path, progress=None) -> tuple[str, dict]:
     work = Path(tempfile.mkdtemp(prefix="bloom-mineru-"))
     try:
         if progress:
-            progress(stage="启动 MinerU", done=0, total=pages, text=f"MinerU 正在加载模型（共 {pages} 页）")
+            progress(stage="启动 MinerU", done=0, total=pages, text=f"正在加载识别模型（共 {pages} 页）")
         res = run_mineru(pdf, work, pages, progress=progress)
         sc = json.loads((res / "structured_content.json").read_text(encoding="utf-8"))
         if progress:
-            progress(stage="写 Markdown", done=pages, total=pages, text="整理公式、表格和图")
+            progress(stage="写 Markdown", done=pages, total=pages, text="正在整理公式、表格和图片")
         md, stats = structured_to_md(sc, pdf, stage / "figures", title=pdf.stem)
         stats.update(engine="mineru", tier=TIER, secs=round(time.time() - t0, 1))
         return md, stats

@@ -1,5 +1,5 @@
-/* 第 7 批: the transcript column's tools (TranscriptEdit.tsx) — 回顾's 撤销 / 替换 / 编辑, a line or a name edited in
-   place. The tools are laid over the head's right end: the head keeps its height. */
+/* 第 7 批: the transcript column's tools (TranscriptEdit.tsx) — 回顾's 撤销 / 编辑, a line or a name edited in place.
+   The tools are laid over the head's right end: the head keeps its height. */
 .mt-right-head {
   position: relative;
 }
@@ -10,6 +10,10 @@
   display: flex;
   align-items: center;
   gap: 6px;
+}
+/* each button sits in a box that carries its tip: a greyed button takes no hover itself */
+.mt-trtip {
+  display: inline-flex;
 }
 .app .mt-trbtn {
   position: relative;
@@ -36,168 +40,137 @@
 .app .mt-trbtn:disabled {
   opacity: 0.5;
   cursor: default;
+  pointer-events: none;
 }
-.app .mt-trbtn.is-on {
-  border-color: color-mix(in srgb, var(--brand-ink, #60a5fa) 55%, transparent);
-  background: color-mix(in srgb, var(--brand-ink, #60a5fa) 14%, var(--ctl-bg));
-  color: var(--ink);
+/* 完成: solid, the page's primary blue (编辑 on is a mode you can see from across the room) */
+.app .mt-trbtn.is-on,
+.app .mt-trbtn.is-on:hover:not(:disabled) {
+  border-color: #2563eb;
+  background: #2563eb;
+  color: #fff;
 }
-.app .mt-trbtn.is-primary {
-  background: var(--brand-button);
-  border-color: transparent;
-  color: var(--on-brand-button);
-}
-.app .mt-trbtn.is-primary:hover:not(:disabled) {
-  background: var(--brand-button);
-  filter: brightness(1.06);
-  color: var(--on-brand-button);
-}
-/* 替换: floats under the head, over the lines */
-.mt-trpop {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 6px);
-  z-index: 30;
-  width: 288px;
-  max-width: calc(100vw - 32px);
-  padding: 10px;
-  background: var(--panel);
-  border: 1px solid var(--line-2);
-  border-radius: 9px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  animation: mtPop 0.12s ease;
-}
-.mt-trpop-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--mute);
-}
-.mt-trpop-row > span {
-  flex: none;
-  width: 6.8em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.app .mt-trpop-row input {
-  flex: 1;
-  min-width: 0;
-  height: 28px;
-  min-height: 0;
-  padding: 0 8px;
-  font-size: 13px;
-  color: var(--ink);
-  background: var(--ctl-bg);
-  border: 1px solid var(--ctl-border);
-  border-radius: 6px;
-}
-.mt-trpop-check {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding-left: 64px;
-  font-size: 12px;
-  color: var(--ink-2);
-}
-.mt-trpop-check input {
-  margin: 0;
-}
-/* the count, or what went wrong: two lines' room kept, so nothing under it moves */
-.mt-trpop-msg {
-  margin: 0;
-  padding-left: 64px;
-  min-height: calc(12px * 1.5 * 2);
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--mute);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.mt-trpop-msg.is-err {
-  color: var(--rec);
-}
-.mt-trpop-foot {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
+.app .mt-trbtn.is-on:hover:not(:disabled) {
+  background: color-mix(in srgb, #2563eb 90%, #000);
 }
 
-/* 编辑 on: a line takes a click to edit it (the same box as a line you can play: no line changes its size) */
-.mt-line-text.is-editable {
+/* ---------------------------------------------------------------- 编辑 on
+   Every bubble you can edit gets a dashed edge (in its own 1 px border: nothing moves); the line under the pointer
+   fills and shows a pencil in the room right of the bubble. */
+.mt-lines-in .mt-bubble:has(> .mt-line-text.is-editable) {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--ink) 30%, transparent);
+}
+.mt-bubble .mt-line-text.is-editable {
+  position: relative;
   cursor: text;
-  margin-left: -8px;
-  margin-right: -8px;
   padding-left: 8px;
   padding-right: 8px;
   border-radius: 6px;
 }
-.mt-line-text.is-editable:hover {
-  background: var(--hover);
+.mt-bubble .mt-line-text.is-editable:not(.is-editing):hover {
+  background: color-mix(in srgb, var(--focus) 16%, transparent);
 }
-.mt-bubble .mt-line-text.mt-line-edit {
-  display: block;
+/* the pencil: 8 px past the line's right edge is the bubble's edge, the pencil 7 px beyond it (the bubble leaves 24) */
+.mt-line-pen {
+  position: absolute;
+  left: calc(100% + 11px);
+  top: 50%;
+  margin-top: -6.5px;
+  color: var(--mute);
+  opacity: 0;
+  pointer-events: none;
+}
+.mt-line-text.is-editable:hover > .mt-line-pen,
+.mt-line-text.is-editable:focus-visible > .mt-line-pen {
+  opacity: 1;
+}
+
+/* a line open to edit: the same paragraph, its words laid out again unseen (they give it its size, so it grows as you
+   type), the field laid over it with the same padding, font and wrapping: the words don't move by a pixel. The focus
+   is the bubble's own edge, not a box inside it */
+.mt-bubble .mt-line-text.is-editing {
+  position: relative;
+}
+.mt-line-mirror {
+  visibility: hidden;
+}
+.mt-line-mirror .mt-typed {
+  visibility: visible;
+}
+.app .mt-bubble textarea.mt-line-edit,
+.app .mt-bubble textarea.mt-line-edit:focus {
+  position: absolute;
+  inset: 0;
   box-sizing: border-box;
-  width: calc(100% + 16px);
-  margin-left: -8px;
-  margin-right: -8px;
-  padding: 0 8px;
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: inherit;
   border: 0;
-  border-radius: 6px;
-  outline: 1px solid var(--line-2);
-  outline-offset: 0;
-  background: var(--ctl-bg);
-  color: var(--ink);
+  border-radius: inherit;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+  color: inherit;
   font: inherit;
-  font-size: 14px;
-  line-height: 1.65;
+  letter-spacing: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
   resize: none;
   overflow: hidden;
+}
+.mt-lines-in .mt-bubble:has(> .mt-line-text.is-editing) {
+  border-style: solid;
+  border-color: var(--focus);
+  box-shadow: 0 0 0 1px var(--focus);
+}
+/* several lines in the bubble: the one open is the one filled */
+.mt-bubble:has(> .mt-line-text + .mt-line-text) > .mt-line-text.is-editing {
+  background: color-mix(in srgb, var(--focus) 12%, transparent);
+}
+
+/* ---------------------------------------------------------------- a guest's name (编辑 on: a click renames them)
+   The button and the field over it share one box: same width, height, padding and font, the name at the same place.
+   A long name is cut with "…" inside the button (a button's own text can't be), full name on hover */
+.app .mt-who-btn,
+.app .mt-turn-head input.mt-name-edit {
+  box-sizing: border-box;
+  height: 20px;
   min-height: 0;
-  box-shadow: none;
-}
-.mt-bubble .mt-line-text.mt-line-edit.is-pick {
-  padding: 2px 8px;
-}
-.mt-bubble .mt-line-text.mt-line-edit:focus {
-  outline: 2px solid var(--focus);
-}
-.app .mt-who-btn {
-  min-height: 0;
-  height: auto;
-  padding: 0 4px;
   margin: 0 -4px;
+  padding: 0 4px;
   border: 0;
   border-radius: 4px;
-  background: none;
   box-shadow: none;
   font: inherit;
   font-size: 13px;
   font-weight: 600;
+  line-height: 20px;
+}
+.app .mt-who-btn {
+  max-width: calc(12em + 8px);  /* the name's own 12em (.mt-line-who), plus the padding */
+  background: none;
   cursor: text;
-  max-width: 220px;
+}
+.mt-who-t {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-decoration: underline dotted;
+  text-decoration-color: color-mix(in srgb, currentColor 55%, transparent);
+  text-underline-offset: 3px;
 }
 .app .mt-who-btn:hover {
-  background: var(--hover);
+  background: color-mix(in srgb, var(--focus) 16%, transparent);
 }
-.app .mt-name-edit {
-  width: 168px;
-  height: 22px;
-  min-height: 0;
-  padding: 0 6px;
-  font-size: 13px;
-  font-weight: 600;
-  background: var(--ctl-bg);
-  border: 1px solid var(--line-2);
-  border-radius: 6px;
-  box-shadow: none;
+.app .mt-turn-head input.mt-name-edit,
+.app .mt-turn-head input.mt-name-edit:focus {
+  width: calc(12em + 8px);
+  background: color-mix(in srgb, var(--focus) 10%, transparent);
+  box-shadow: 0 0 0 1px var(--focus);
+  border: 0;
 }

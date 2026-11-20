@@ -1002,7 +1002,9 @@ INJECT = r"""
 </script>
 """
 
+PLACEHOLDER_MARK = '<meta name="bloom-placeholder" content="1">'   # 占位页的记号：给访客的换成不带细节的那句
 PLACEHOLDER = """<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>Bloom</title>
+<meta name="bloom-placeholder" content="1">
 <meta name="viewport" content="width=device-width,initial-scale=1"><style>html{{background:#0b0b0b}}</style></head>
 <body style="font-family:system-ui,'Microsoft YaHei',sans-serif;background:#0b0b0b;color:#a09e96;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center">
 <p style="font-size:14px">{msg}</p></body></html>"""
@@ -1391,7 +1393,7 @@ def _mic_state(viewer) -> dict:
 
 _WHO = re.compile(r"^(?:【这句是)?(参会的老师|参会者)(.+?)说(?:的】|[:：])\s*")
 # 逐字稿上软件自己写的行（切论文时的"切到 某篇"）：以前被当成人说的话混进多人讨论（2026-11-14 组会的卡片上署了名）
-_SYS_ROW = re.compile(r"^(?:切到 \S|Switched to \S)")
+_SYS_ROW = re.compile(r"^(?:已切换到 \S|切到 \S|Switched to \S)")   # "切到"：以前的会议
 # 谁能跨源调这个后端：Bloom 自己的窗口（tauri）和本机的页面（localhost / 127.0.0.1，开发时的 vite 也算）。
 # 不带 Origin 的（本机脚本、语音桥转来的访客操作、/bloom 技能）照常。以前是 *：你浏览器里随便哪个网站都能悄悄调本机
 # 47330 切论文、清任务板、改名字（2026-11-17 收紧）
@@ -1522,7 +1524,7 @@ def _briefs(tasks: list, me: str = "") -> list:
     return out
 
 
-INJECT_TEXT = {'connecting': ('组会 · 连接中', 'Meeting · connecting'), 'start': ('开始组会', 'Start meeting'), 'unfold_aria': ('展开或收起没改动的段落', 'Show or hide unchanged paragraphs'), 'unfold': ('全文', 'Full text'), 'rec_ok': ('已叫 Bloom 开始录屏', 'Asked Bloom to start recording'), 'rec_fail': ('没叫动 Bloom，按 Alt+Shift+R', 'Could not reach Bloom. Press Alt+Shift+R'), 'st_queued': ('任务 排队', 'Tasks: queued '), 'st_working': (' 改中', ' · editing '), 'st_done': (' 已改', ' · done '), 'st_failed': (' 失败', ' · failed '), 'st_rebuilding': (' · 重算中…', ' · updating…'), 'down': ('组会服务断了', 'Meeting service disconnected'), 'toc_head': ('章节', 'Sections'), 'toc_n': (' 节', ''), 'toc_chg': (' 节有改动', ' changed'), 'toc_aria': ('收起/展开章节', 'Collapse or expand sections'), 's_queued': ('排队', 'Queued'), 's_working': ('改中', 'Editing'), 's_done': ('已改', 'Done'), 's_failed': ('没改成', 'Failed'), 's_note': ('会后改', 'After the meeting'), 's_note_ok': ('已处理', 'Handled'), 'tag_rerun': ('要重新跑实验', 'Rerun experiments'), 'tag_data': ('要补数据', 'Needs new data'), 'tag_figure': ('要重画图表', 'Redo figures or tables'), 'tag_lit': ('要查文献', 'Check the literature'), 'tag_discuss': ('要再讨论', 'Needs discussion'), 'plan': ('怎么改', 'Change'), 'need': ('要补', 'Needs'), 'plan_wait': ('正在看原文，写怎么改', 'Reading the paper to write the change'), 'st_notes': (' 标注', ' · notes '), 'reject_aria': ('不要这条改动，撤回原样', 'Reject this change and restore the original'), 'ok_aria': ('看过了，这一处消掉', 'Mark as reviewed'), 'other_a': ('其他 ', ''), 'other_b': (' 句', ' more lines'), 'earlier_a': ('前面 ', ''), 'earlier_b': (' 句', ' earlier lines'), 'undo_fail': ('没撤成', 'Could not undo'), 'edit': ('编辑', 'Edit'), 'edit_done': ('完成编辑', 'Done editing'), 'not_found': ('在稿子里没找到这一段', 'This paragraph was not found in the draft'), 'edit_hint': ('Ctrl+Enter 保存 · Esc 取消', 'Ctrl+Enter to save · Esc to cancel'), 'cancel': ('取消', 'Cancel'), 'save': ('保存', 'Save'), 'not_saved': ('没存上', 'Not saved'), 'saved': ('已保存', 'Saved'), 'no_backend': ('后端没应答', 'The backend did not respond'), 'find': ('查找', 'Find'), 'prev': ('上一个', 'Previous'), 'next': ('下一个', 'Next'), 'close': ('关闭', 'Close'), 'zoom_tbl': ('放大看全表', 'Enlarge table')}   # 键 → (中文, English)
+INJECT_TEXT = {'connecting': ('组会 · 连接中', 'Meeting · connecting'), 'start': ('开始组会', 'Start meeting'), 'unfold_aria': ('展开/收起未修改段落', 'Show or hide unchanged paragraphs'), 'unfold': ('全文', 'Full text'), 'rec_ok': ('已开始录屏', 'Recording started'), 'rec_fail': ('录屏启动失败：请按 Alt+Shift+R', 'Could not start recording. Press Alt+Shift+R'), 'st_queued': ('排队 ', 'Queued '), 'st_working': (' · 修改中 ', ' · editing '), 'st_done': (' · 已修改 ', ' · done '), 'st_failed': (' · 失败 ', ' · failed '), 'st_rebuilding': (' · 更新中…', ' · updating…'), 'down': ('连接已断开', 'Disconnected'), 'toc_head': ('章节', 'Sections'), 'toc_n': (' 节', ''), 'toc_chg': (' 节已修改', ' changed'), 'toc_aria': ('收起/展开章节', 'Collapse or expand sections'), 's_queued': ('排队中', 'Queued'), 's_working': ('修改中', 'Editing'), 's_done': ('已修改', 'Done'), 's_failed': ('修改失败', 'Failed'), 's_note': ('会后改', 'After the meeting'), 's_note_ok': ('已处理', 'Handled'), 'tag_rerun': ('需重跑实验', 'Rerun experiments'), 'tag_data': ('需补数据', 'Needs new data'), 'tag_figure': ('需重画图表', 'Redo figures or tables'), 'tag_lit': ('需查文献', 'Check the literature'), 'tag_discuss': ('待讨论', 'Needs discussion'), 'plan': ('修改方案', 'Plan'), 'need': ('需补充', 'Needs'), 'plan_wait': ('正在生成修改方案…', 'Writing the plan…'), 'st_notes': (' · 标注 ', ' · notes '), 'reject_aria': ('撤回修改', 'Undo change'), 'ok_aria': ('确认修改', 'Accept change'), 'other_a': ('其他 ', ''), 'other_b': (' 句', ' more lines'), 'earlier_a': ('前面 ', ''), 'earlier_b': (' 句', ' earlier lines'), 'undo_fail': ('撤回失败', 'Undo failed'), 'edit': ('编辑', 'Edit'), 'edit_done': ('完成编辑', 'Done editing'), 'not_found': ('论文中未找到此段', 'Paragraph not found in the paper'), 'edit_hint': ('Ctrl+Enter 保存 · Esc 取消', 'Ctrl+Enter to save · Esc to cancel'), 'cancel': ('取消', 'Cancel'), 'save': ('保存', 'Save'), 'not_saved': ('保存失败', 'Save failed'), 'saved': ('已保存', 'Saved'), 'no_backend': ('Bloom 无响应', 'Bloom is not responding'), 'find': ('查找', 'Find'), 'prev': ('上一个', 'Previous'), 'next': ('下一个', 'Next'), 'close': ('关闭', 'Close'), 'zoom_tbl': ('放大表格', 'Enlarge table')}   # 键 → (中文, English)
 
 
 def _inject(build: int | None, tasks: list, me: str, figs: dict | None = None, lang: str = "zh",
@@ -2115,11 +2117,11 @@ class Viewer:
             return {"ok": False, "error": READONLY_SAY[1 if getattr(self, "ui_lang", "zh") == "en" else 0]}
         want = self._key(text)
         if len(want) < 2:
-            return {"ok": False, "error": "这一段是空的"}
+            return {"ok": False, "error": "段落为空"}
         try:
             src = _read_doc(self.mirror)[0]
         except (OSError, DocReadError, UnicodeDecodeError) as e:
-            return {"ok": False, "error": f"读不到稿子：{e}"}
+            return {"ok": False, "error": f"读取论文失败：{e}"}
         spans = self._spans(src)
         keys = [self._key(k) for _, _, k in spans]
         idx = next((i for i, k in enumerate(keys) if k == want), -1)
@@ -2138,7 +2140,7 @@ class Viewer:
             if score >= 0.82:
                 idx = best
         if idx < 0:
-            return {"ok": False, "error": "在稿子里没找到这一段"}
+            return {"ok": False, "error": "论文中未找到此段"}
         return {"ok": True, "index": idx, "source": spans[idx][2].replace("\r\n", "\n")}
 
     def para_save(self, index, old: str, new: str) -> dict:
@@ -2152,7 +2154,7 @@ class Viewer:
             try:
                 src, bom, nl = _read_doc(self.mirror)
             except (OSError, DocReadError, UnicodeDecodeError) as e:
-                return {"ok": False, "error": f"读不到稿子：{e}"}
+                return {"ok": False, "error": f"读取论文失败：{e}"}
             spans = self._spans(src)
             try:
                 index = int(index)
@@ -2161,14 +2163,14 @@ class Viewer:
             if not (0 <= index < len(spans)) or norm(spans[index][2]) != old_n:
                 index = next((i for i, (_, _, k) in enumerate(spans) if norm(k) == old_n), -1)   # 稿子在你编辑时被改过：按原文再找
                 if index < 0:
-                    return {"ok": False, "error": "这一段刚被改过，关掉重新点开再编辑"}
+                    return {"ok": False, "error": "此段已被修改，请重新打开"}
             a, b, cur = spans[index]
             if new_n == old_n:
                 return {"ok": True, "changed": False}
             try:
                 _write_doc(self.mirror, src[:a] + new_n + src[b:], bom, nl)
             except OSError as e:
-                return {"ok": False, "error": f"没存上：{e}"}
+                return {"ok": False, "error": f"保存失败：{e}"}
             # 这一段在"还没看过"的基线里原样还在：你自己的手改不算待看的修订，一并改进基线（散会快照里仍看得到）
             try:
                 bt, bbom, bnl = _read_doc(self.base)
@@ -2649,15 +2651,15 @@ class Viewer:
         """批注卡片上点了 ×：这条改动不要了。从稿子里撤回去，批注收起，快嘴的任务板上记成"已撤回"。"""
         t = self.board.get(tid)
         if not t:
-            return {"ok": False, "error": "没有这条"}
+            return {"ok": False, "error": "修改不存在"}
         if t.get("status") != "done":
-            return {"ok": False, "error": "这条还没改完"}
+            return {"ok": False, "error": "修改未完成"}
         # 同一篇上有一条在改才等：工人只碰它那条任务的那一篇，别篇在改不碍事
         if any(x.get("status") == "working" for x in self._paper_tasks(tid)):
-            return {"ok": False, "error": "还有一条在改，等它改完再撤"}
+            return {"ok": False, "error": "另一处正在修改，请稍后撤回"}
         ops = self._changes(tid).get("ops") or []
         if not ops:
-            return {"ok": False, "error": "这条没记下改了哪里，撤不了"}
+            return {"ok": False, "error": "撤回失败：没有修改记录"}
         mirror, base = self._files_of(t)            # 这条改的那一篇（切走了也撤那一篇，不碰屏幕上这篇）
 
         also: list = []
@@ -2675,9 +2677,9 @@ class Viewer:
             try:
                 n = rewrite(mirror)
             except (OSError, DocReadError, UnicodeDecodeError) as e:
-                return {"ok": False, "error": f"读写稿子出错：{e}"}
+                return {"ok": False, "error": f"读写论文失败：{e}"}
             if not n:
-                return {"ok": False, "error": "这几段后来又改得面目全非了，没法单独撤"}
+                return {"ok": False, "error": "撤回失败：此处已被再次修改"}
             # 之前打过勾、已经并进基线的（它自己或连带撤下的那几条）：基线也撤回去
             if base.exists() and (t.get("accepted") or any((self.board.get(x) or {}).get("accepted") for x in also)):
                 try:
@@ -2700,7 +2702,7 @@ class Viewer:
         with _DOC_LOCK:
             t = self.board.get(tid)
             if not t:
-                return {"ok": False, "error": "没有这条"}
+                return {"ok": False, "error": "修改不存在"}
             accepted = False
             if t.get("status") == "done" and not t.get("note"):
                 try:
@@ -2802,17 +2804,17 @@ class Viewer:
                     rules.append({"note": key, "kind": "new", "text": [s[:20] for s in ch["new_paras"][:4]]})
             elif t["status"] == "failed":
                 # 不写"第几条"（界面上不出现编号）：直接写是哪一处
-                pending.append(f"<li><b>{html.escape(_clip(t.get('title'), 40))}</b> {'没改成' if self.ui_lang != 'en' else 'not done'}。"
-                               f"{html.escape(_clip(t.get('error'), 120))}</li>")
+                pending.append(f"<li><b>{html.escape(_clip(t.get('title'), 40))}</b> {'修改失败' if self.ui_lang != 'en' else 'failed'}"
+                               f"{('：' if self.ui_lang != 'en' else ': ') + html.escape(_clip(t.get('error'), 120)) if t.get('error') else ''}</li>")
             else:
-                st = ('改中' if t['status'] == 'working' else '排队') if self.ui_lang != 'en' else ('editing' if t['status'] == 'working' else 'queued')
+                st = ('修改中' if t['status'] == 'working' else '排队中') if self.ui_lang != 'en' else ('editing' if t['status'] == 'working' else 'queued')
                 pending.append(f"<li><b>{html.escape(_clip(t.get('title'), 60))}</b> {st}</li>")
         try:
             base_t = time.strftime("%H:%M", time.localtime(base.stat().st_mtime))
         except OSError:
             base_t = "—"
         en = self.ui_lang == "en"
-        closing = (f"<h2>{'Not in the text yet' if en else '还没落到正文里的'}</h2><ul>{''.join(pending)}</ul>" if pending else "")
+        closing = (f"<h2>{'Unfinished edits' if en else '未完成的修改'}</h2><ul>{''.join(pending)}</ul>" if pending else "")
         before = base0 if (final and base0.exists()) else base
         docs = [{"name": self._doc_name() if paper is None else self._name_of(mirror), "before": str(before), "after": str(mirror)}]
         papers = [p for p in (getattr(self, "papers", None) or []) if Path(str(p.get("path") or "")).is_file()]
@@ -2826,9 +2828,8 @@ class Viewer:
                              "before": str(b0 if b0.exists() else b if b.exists() else p["path"]), "after": str(p["path"])})
         return {
             "title": "Meeting revisions" if en else "组会修订对比",
-            "intro": (f"The original is the snapshot taken when the meeting started ({base_t}), and the current text has the AI's edits so far. "
-                      "A check on the right marks an edit, an outlined flag marks a note for after the meeting. Click either to see what was asked."
-                      if en else f"原文是开会时的快照（{base_t}），现稿是 AI 改到现在的样子。右边的勾是改过的地方，空心小旗是会上改不了、记进修改清单的标注，点开能看到说了什么。"),
+            "intro": (f"Original: the version at the start ({base_t})   Current: after the AI's edits"
+                      if en else f"原文：开会时（{base_t}）的版本　现稿：AI 修改后的版本"),
             "ui": "en" if en else "zh", "out": "diff.html", "lang": "auto",
             "docs": docs,
             "notes": notes, "rules": rules, "closing_html": closing,
@@ -2869,10 +2870,10 @@ class Viewer:
         try:
             mirror = self.mirror
             sig = self.signature()
-            if not mirror.exists():
-                out = PLACEHOLDER.format(msg=f"论文镜像不存在 {html.escape(str(mirror))}")
+            if not mirror.exists():                   # 不带本机路径：这一页也会推给访客
+                out = PLACEHOLDER.format(msg="暂无论文")
             elif not HTMLDIFF.exists():
-                out = PLACEHOLDER.format(msg=f"找不到对比生成器 {html.escape(str(HTMLDIFF))}")
+                out = PLACEHOLDER.format(msg="论文页生成失败：缺少组件")
             else:
                 self.ensure_base()
                 ok, out = self._generate(final=False)
@@ -2883,7 +2884,7 @@ class Viewer:
                     self._fails += 1
                     if self._fails < 3 and self._shown == paper_id(mirror):
                         return False                  # 上一版好的页面先留着，等重试
-                    out = PLACEHOLDER.format(msg="对比页这一版没生成出来，正在重试<pre>" + html.escape(out[-1500:]) + "</pre>")
+                    out = PLACEHOLDER.format(msg="论文页生成失败，正在重试<pre>" + html.escape(out[-1500:]) + "</pre>")
             if not _same_file(mirror, self.mirror):
                 return ok                             # 算的时候又切走了：这一版不往屏幕上放
             self._install(out, mirror)
@@ -3010,7 +3011,7 @@ class Viewer:
                 except Exception as e:
                     ok = False
                     with self.lock:
-                        self.html = PLACEHOLDER.format(msg="这一版没算出来，正在重试<pre>" + html.escape(repr(e)) + "</pre>")
+                        self.html = PLACEHOLDER.format(msg="论文页生成失败，正在重试<pre>" + html.escape(repr(e)) + "</pre>")
                         self.build += 1
                 if ok:
                     fails, retry_at = 0, 0.0
@@ -3057,6 +3058,7 @@ class Viewer:
             self.mirror = Path(path)
             self.base = base_for(self.mirror)
             self.focus = None
+            self._ready_cache = (0.0, None)          # 准备情况里"论文"那一项马上跟着变
         self.ensure_base(rebase=rebase)
         self._sig = None
         cached = None if rebase else self._pages.get(paper_id(self.mirror))
@@ -3085,6 +3087,9 @@ class Viewer:
         return info
 
     def paper_info(self) -> dict:
+        from .config import NO_PAPER
+        if _same_file(self.mirror, NO_PAPER):
+            return {"path": "", "name": "", "exists": False}   # 没选论文：没有名字、路径可显示
         try:
             st = self.mirror.stat()
             from .config import current_paper
@@ -3133,7 +3138,8 @@ class Viewer:
         if now - self._ready_cache[0] < 3 and self._ready_cache[1]:
             return self._ready_cache[1]
         import urllib.request
-        r = {"paper": self.mirror.exists(), "fast": False, "tts": False, "blurt": False, "recording": False, "hands": self.cfg["hands"].get("backend", "cli")}
+        from .config import is_no_paper
+        r = {"paper": not is_no_paper(self.mirror), "fast": False, "tts": False, "blurt": False, "recording": False, "hands": self.cfg["hands"].get("backend", "cli")}
         try:
             from . import provider
             mode = provider.mode()
@@ -3319,7 +3325,8 @@ class Viewer:
         if not m:
             return None
         # 以往的会：当时在场的人（散会时存下的）；老的会没存过，就只有你和 Claude
-        m["participants"] = m.get("participants") or self.participants(guests=False)
+        from .meetings import mode_of
+        m["participants"] = m.get("participants") or self.roster(guests=False, mode=mode_of(m.get("meeting")))
         m["processing"] = self.processing(mid)
         # 收尾到哪一步了（会议页不再有"纪要"那一页，散会后的进度在回顾里看）：[{key, label, state}]
         post = _read_json(STATE / "postmeeting.json")
@@ -3474,9 +3481,13 @@ class Viewer:
             assistant = {"name": assistant_name(self.cfg), "dialog": "", "edit": "", "effort": "", "tts": "", "asr": ""}
         lines = self.meetings.current_lines()
         everyone = self.participants()
+        from .meetings import mode_of
+        mode = mode_of(cur)
+        chat = mode == "chat"                      # 没有论文的会：没有论文页，AI 不在名单上
+        shown = [p for p in people if not (chat and p.get("id") == "claude")]
         out = {"title": title or self.paper_info().get("name") or "组会", "host": people[0]["name"], "live": True,
-               "started": cur.get("started"), "paper": True,
-               "people": [{"name": p["name"], "role": p["role"], "rank": p.get("rank")} for p in people],
+               "started": cur.get("started"), "paper": not chat, "mode": mode,
+               "people": [{"name": p["name"], "role": p["role"], "rank": p.get("rank")} for p in shown],
                "colors": {p["name"]: p.get("color") for p in everyone if p.get("color")},
                "assistant": assistant,
                "captions": share_captions(lines, people[0]["name"], people[1]["name"]),   # 旧访客页的字幕：最近几句
@@ -3488,10 +3499,11 @@ class Viewer:
         try:
             out["v"] = 2
             out["meeting"] = {k: cur.get(k) for k in ("id", "title", "started", "state", "lang", "duration_s", "title_auto")}
+            out["meeting"]["mode"] = mode
             from .meetings import papers_of
             out["papers"] = [{"id": p.get("id"), "name": p.get("name")} for p in papers_of(cur)]
             try:
-                out["active_paper"] = paper_id(self.mirror)
+                out["active_paper"] = None if chat else paper_id(self.mirror)
             except Exception:
                 out["active_paper"] = cur.get("active_paper")
             out["meeting"]["papers"], out["meeting"]["active_paper"] = out["papers"], out["active_paper"]
@@ -3499,7 +3511,8 @@ class Viewer:
             out["partial"] = self.meetings.partial
             hide = {"shot", "paper_path", "files", "path", "mirror"}
             out["board"] = {"counts": self.board.counts(), "tasks": [{k: v for k, v in t.items() if k not in hide} for t in self.board.tasks()]}
-            out["participants"] = [{k: p.get(k) for k in ("id", "name", "role", "rank", "color")} for p in everyone]
+            out["participants"] = [{k: p.get(k) for k in ("id", "name", "role", "rank", "color")} for p in everyone
+                                   if not (chat and p.get("id") == "claude")]
             if callable(self.brain):
                 try:
                     out["brain"] = self.brain()
@@ -3525,14 +3538,14 @@ class Viewer:
         from . import roles
         path, by, body = str(a.get("path") or ""), str(a.get("by") or "").strip(), a.get("body") or {}
         if not (self.meetings and self.meetings.current()):
-            return {"ok": False, "error": "会议没在开"}
+            return {"ok": False, "error": "会议已结束"}
         log = getattr(self, "on_log", None)
         if path == "upload":
             # 论文一次只导入一篇（app 里排队）：访客连着传，排着的最多 GUEST_UPLOADS_PENDING 份，
             # 再多的先不取（中继那边留着、满了让他稍等），免得一份份 50 MB 在内存里、磁盘上越堆越多
             with _GUEST_UP_LOCK:
                 if _GUEST_UP[0] >= self.GUEST_UPLOADS_PENDING:
-                    return {"ok": False, "error": "正在导入其他论文，请稍后再传"}
+                    return {"ok": False, "error": "正在导入其他论文，请稍后重试"}
                 _GUEST_UP[0] += 1
             try:
                 name, data = fetch_upload(str(body.get("upload") or ""))
@@ -3556,7 +3569,7 @@ class Viewer:
         if path in self.GUEST_COHOST and not roles.is_cohost(by):
             if callable(log):
                 log("guest_act", text=f"{by}（参会者）想做 {path}：只有主持人和共同主持人能做")
-            return {"ok": False, "error": "只有主持人和共同主持人能做"}
+            return {"ok": False, "error": "仅主持人和共同主持人可操作"}
         if path in self.GUEST_OPEN or path in self.GUEST_COHOST:
             if callable(log):
                 log("guest_act", text=f"{by}：{path} {json.dumps(body, ensure_ascii=False)[:120]}")
@@ -3573,7 +3586,7 @@ class Viewer:
                 log("guest_act", text=f"{by}：{path} {json.dumps(body, ensure_ascii=False)[:120]}")
             out, _code = live_api.post(self, path, body if isinstance(body, dict) else {}, by=by, guest=True)
             return out
-        return {"ok": False, "error": "做不了"}
+        return {"ok": False, "error": "不支持此操作"}
 
     def _local_post(self, path: str, body: dict, timeout: float = 60) -> dict:
         """转给本机的会议接口（和主持人在 Bloom 里点的是同一个）。"""
@@ -3591,14 +3604,20 @@ class Viewer:
                 return {"ok": False, "error": f"HTTP {e.code}"}
 
     def guest_paper_key(self):
+        """论文快照的版本（变了中继那边重新推）。没有论文的会：None = 没有论文页，不推。"""
+        if self.mode_now() == "chat":
+            return None
         with self.lock:
             return (self.build, getattr(self, "_raw", None) is not None)
 
     def guest_paper(self) -> tuple[str, dict]:
-        """访客看的论文：和你窗口里同一份修订对比页，只读（不轮询、不上报、不能编辑），图和公式都从中继拿。"""
+        """访客看的论文：和你窗口里同一份修订对比页，只读（不轮询、不上报、不能编辑），图和公式都从中继拿。
+        占位页（还没生成好、生成出错）给访客的只是一句"正在准备论文"：出错的细节里可能有本机路径，不出这台电脑。"""
         from .share import room as share_room
         with self.lock:
             raw = getattr(self, "_raw", None) or self.html or ""
+        if PLACEHOLDER_MARK in raw:
+            return PLACEHOLDER.format(msg="正在准备论文…"), {}
         base = f"/view/{share_room()}/fig/"
         figs, assets = {}, {}
         for no, f in self.figures().items():
@@ -3671,11 +3690,42 @@ class Viewer:
                 cm[n] = next((c for c in pal if c not in used), pal[len(cm) % len(pal)])
         return {n: cm[n] for n in present}
 
+    def mode_now(self) -> str:
+        """开着会：这场会是哪种（"chat" 没有论文的会：只记逐字稿，AI 不接话 / "paper" 改论文的会）；
+        没开会：现在开会会是哪种（没选论文 → "chat"）。"""
+        from .meetings import mode_of
+        cur = self.meetings.current() if self.meetings else None
+        if cur:
+            return mode_of(cur)
+        from .config import is_no_paper
+        return "chat" if is_no_paper(self.mirror) else "paper"
+
+    def roster(self, guests: bool = True, mode: str | None = None) -> list[dict]:
+        """给人看的参会人名单（主持人的会议页、访客页）：没有论文的会里 AI 不说话，名单上不放它。
+        participants() 本身照旧（别处按位置取你和 AI）。"""
+        people = self.participants(guests=guests)
+        if (mode or self.mode_now()) == "chat":
+            people = [p for p in people if p.get("id") != "claude"]
+        return people
+
+    def clear_paper(self) -> None:
+        """大厅里点「移除」：现在没有论文（current_paper.json 记成"没有"、摊开的单子清空），对比页换成占位页。
+        app 接上时由 app.clear_paper 调（它还要换掉快嘴、工人手里那篇）。开着会不能移除。"""
+        if self.meetings and self.meetings.current():
+            raise RuntimeError("会议中无法移除论文")
+        from .config import clear_paper as _clear, paper_path as _pp
+        from .meetings import save_open_papers
+        _clear()
+        save_open_papers([], None)
+        self.papers = []
+        self.set_mirror(_pp(self.cfg), rebase=False)
+
     def api_current(self) -> dict:
         cur = self.meetings.current()
-        out = {"backend": True, "paper": self.paper_info(), "ready": self.readiness(),
+        mode = self.mode_now()
+        out = {"backend": True, "paper": self.paper_info(), "ready": self.readiness(), "mode": mode,
                "board": {"counts": self.board.counts(), "tasks": self.board.tasks()},
-               "last_report": self.meetings.last_report, "participants": self.participants(),
+               "last_report": self.meetings.last_report, "participants": self.roster(mode=mode),
                "focus": self.focus, "partial": self.meetings.partial if cur else None, "brain": None}
         if cur and callable(self.brain):
             try:
@@ -3693,12 +3743,13 @@ class Viewer:
         from .meetings import load_open_papers, papers_of
         out["papers"] = [{k: p.get(k) for k in ("id", "name")} for p in (papers_of(cur) if cur else load_open_papers()["papers"])]
         try:
-            out["active_paper"] = paper_id(self.mirror)
+            out["active_paper"] = None if not out["paper"].get("exists") and not out["papers"] else paper_id(self.mirror)
         except Exception:
             out["active_paper"] = None
         last = None
         if cur:
-            out.update({"meeting": cur, "transcript": self.meetings.current_lines(), "summary": None})
+            from .meetings import mode_of
+            out.update({"meeting": dict(cur, mode=mode_of(cur)), "transcript": self.meetings.current_lines(), "summary": None})
         else:
             last = self.meetings.list()
             if last:
@@ -4006,11 +4057,11 @@ class Viewer:
                 elif p == "/api/models":         # Claude 那张卡：四个部件现在用的什么、能换成什么
                     fn = viewer.models_get
                     if not callable(fn):
-                        return self._json({"ok": False, "error": "换模型还没接上"}, 503)
+                        return self._json({"ok": False, "error": "换模型失败：服务未就绪"}, 503)
                     try:
                         self._json(fn())
                     except NotImplementedError as e:
-                        self._json({"ok": False, "error": str(e) or "换模型还没接上"}, 503)
+                        self._json({"ok": False, "error": str(e) or "换模型失败：服务未就绪"}, 503)
                     except Exception as e:
                         self._json({"ok": False, "error": repr(e)[:200]}, 500)
                 elif p == "/api/devices":        # 自己那张卡：麦克风、扬声器（点开卡片时重问一次系统）
@@ -4339,7 +4390,7 @@ class Viewer:
                     if not isinstance(want, bool):
                         return self._json({"muted": _mic_state(viewer)["muted"], "error": "muted 要是 true 或 false"}, 400)
                     if not callable(fn):
-                        return self._json({"muted": False, "error": "静音还没接上（没有耳朵）"}, 503)
+                        return self._json({"muted": False, "error": "静音失败：麦克风未就绪"}, 503)
                     try:
                         return self._json({"muted": bool(fn(want))})
                     except Exception as e:
@@ -4377,10 +4428,10 @@ class Viewer:
                 elif p.startswith("/api/meetings/") and p.endswith("/title"):    # 改会议名（开着的会、以往的会都行；空串回到自动起的名字）
                     fn = getattr(viewer.meetings, "rename", None)
                     if not callable(fn):
-                        return self._json({"ok": False, "error": "改会议名还没接上"}, 503)
+                        return self._json({"ok": False, "error": "重命名失败：服务未就绪"}, 503)
                     m = fn(p.split("/")[3], str(body.get("title") or ""))
                     if not m:
-                        return self._json({"ok": False, "error": "没有这场会"}, 404)
+                        return self._json({"ok": False, "error": "会议不存在"}, 404)
                     cb = getattr(viewer, "on_renamed", None)
                     if callable(cb):                     # app：散会收尾的进度条上那个名字也跟着改
                         try:
@@ -4391,7 +4442,7 @@ class Viewer:
                 elif p == "/api/paper/switch":   # 会中切到摊开过的另一篇（加论文走 /api/paper：开会时就是加进这场会并切过去）
                     fn = getattr(viewer, "on_switch_paper", None)
                     if not callable(fn):
-                        return self._json({"ok": False, "error": "切论文还没接上"}, 503)
+                        return self._json({"ok": False, "error": "切换论文失败：服务未就绪"}, 503)
                     try:
                         self._json({"ok": True, "paper": fn(str(body.get("id") or ""))})
                     except (KeyError, ValueError, RuntimeError) as e:
@@ -4444,7 +4495,7 @@ class Viewer:
                 elif p == "/api/models":         # Claude 那张卡上点了一行：换对话模型 / 改稿模型 / 思考强度
                     fn = viewer.models_set
                     if not callable(fn):
-                        return self._json({"ok": False, "error": "换模型还没接上"}, 503)
+                        return self._json({"ok": False, "error": "换模型失败：服务未就绪"}, 503)
                     part, value = str(body.get("part") or ""), str(body.get("value") or "")
                     if not part or not value:
                         return self._json({"ok": False, "error": "缺 part 或 value"}, 400)
@@ -4453,11 +4504,11 @@ class Viewer:
                     except ValueError as e:
                         self._json({"ok": False, "error": str(e)}, 400)
                     except PermissionError as e:
-                        self._json({"ok": False, "error": str(e) or "只有主持人能换"}, 403)
+                        self._json({"ok": False, "error": str(e) or "仅主持人可切换"}, 403)
                     except ConnectionError as e:     # 想换的模型现在连不上（比如没钱了）：没换，照实说
                         self._json({"ok": False, "error": str(e)}, 409)
                     except NotImplementedError as e:
-                        self._json({"ok": False, "error": str(e) or "换模型还没接上"}, 503)
+                        self._json({"ok": False, "error": str(e) or "换模型失败：服务未就绪"}, 503)
                 elif p == "/api/roles":          # 顶栏参会人卡片：设为共同主持人 / 改回参会者
                     from . import roles
                     try:
@@ -4483,25 +4534,37 @@ class Viewer:
                     src = viewer.video_path(str(body.get("meeting") or ""))
                     to = Path(str(body.get("to") or "")).expanduser()
                     if not src or not src.exists():
-                        return self._json({"ok": False, "error": "这场没有录屏"}, 404)
+                        return self._json({"ok": False, "error": "此会议没有录屏"}, 404)
                     if not to.is_absolute() or not to.parent.is_dir():
-                        return self._json({"ok": False, "error": "存的位置不对"}, 400)
+                        return self._json({"ok": False, "error": "保存失败：路径无效"}, 400)
                     if to.suffix.lower() != src.suffix.lower():
                         to = to.with_suffix(src.suffix)
                     try:
                         shutil.copyfile(src, to)
                     except OSError as e:
-                        return self._json({"ok": False, "error": f"没存成：{e}"}, 500)
+                        return self._json({"ok": False, "error": f"保存失败：{e}"}, 500)
                     self._json({"ok": True, "path": str(to)})
                 elif p == "/api/paper/writeback":   # 从 Word 转来的论文：会上改完的另存成原 .docx 旁边的「（会上修订）.docx」
                     fn = getattr(viewer, "on_writeback", None)
                     if not callable(fn):
-                        return self._json({"ok": False, "error": "写回 Word 还没接上"}, 503)
+                        return self._json({"ok": False, "error": "写回 Word 失败：服务未就绪"}, 503)
                     try:
                         r = fn()
                         self._json(r, 200 if r.get("ok") else 400)
                     except Exception as e:
                         self._json({"ok": False, "error": repr(e)[:200]}, 500)
+                elif p == "/api/paper/clear":   # 大厅里点「移除」：没有论文了，之后开的会只记逐字稿（mode=chat）
+                    fn = getattr(viewer, "on_clear_paper", None)
+                    try:
+                        if callable(fn):
+                            fn()
+                        else:
+                            viewer.clear_paper()
+                        self._json({"ok": True})
+                    except RuntimeError as e:
+                        self._json({"ok": False, "error": str(e)}, 409)
+                    except Exception as e:
+                        self._json({"ok": False, "error": f"移除失败：{e}"[:200]}, 500)
                 elif p == "/api/paper":        # 拖进来一份论文：导入并切成当前论文
                     path = (body.get("path") or "").strip()
                     if not path:

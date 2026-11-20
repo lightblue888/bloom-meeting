@@ -196,7 +196,7 @@ class CarryTest(Base):
         c3 = next(c for c in s["carried"] if c["id"] == "c3")
         self.assertEqual((c3["done"], c3["item"], c3["t"], c3["sec"]), (True, "补消融实验", "00:20", 20.0))
         self.assertFalse(next(c for c in s["carried"] if c["id"] == "c1")["done"])
-        self.assertIn("## 上次遗留", s["markdown"])
+        self.assertIn("## 遗留事项", s["markdown"])
         self.assertIn("- [x] 补消融实验：王一凡做完了，结果在表 5 `00:20`", s["markdown"])
         self.assertEqual(past.settle(self.lib, live.name, s), 1)
         left = [x["text"] for x in past.carry(self.lib, PA, exclude=live.name)]
@@ -345,7 +345,7 @@ class DigestTest(Base):
         self.assertEqual(d["result"]["issues"][0]["meetings"], [1, 2])                         # 编号对不上的不要
         md = d["markdown"]
         for part in ("# 十一月阶段汇总", "## 高频问题", "- 消融实验不够（11月1日、11月8日）", "## 反复出现的意见",
-                     "- 王老师：数据划分写清楚", "## 还没做完的待办", "- [ ] 重跑表 4（王一凡）（11月8日）"):
+                     "- 王老师：数据划分写清楚", "## 未完成待办", "- [ ] 重跑表 4（王一凡）（11月8日）"):
             self.assertIn(part, md)
         lst = past.list_digests()
         self.assertEqual((lst[0]["id"], lst[0]["state"], lst[0]["title"]), (d["id"], "done", "十一月阶段汇总"))
@@ -513,7 +513,7 @@ class ApiModeTest(unittest.TestCase):
         self.assertIn("02:10", r["seen"][0]["user"])                        # 片段带着哪一场、几分几秒、谁说的
         self.assertIn("王老师：第三章的消融实验不够", r["seen"][0]["user"])
         self.assertEqual(r["digest"]["state"], "done")
-        self.assertIn("## 还没做完的待办", r["digest"]["markdown"])
+        self.assertIn("## 未完成待办", r["digest"]["markdown"])
         seen = r["seen"]
         self.assertEqual(seen[0]["model"], "fake-fast")                     # 提问走快速那档（省钱）
         self.assertEqual(seen[1]["model"], "fake-main")                     # 阶段汇总走主力那档

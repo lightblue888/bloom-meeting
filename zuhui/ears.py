@@ -1593,11 +1593,20 @@ def _parse_lines(lines: list[bytes]):
             continue
 
 
-def _tail_session(session: Path, from_start: bool, still_running, c: _Collector, vad=None) -> int:
-    """tail <session>/live/transcript.jsonl 直到 still_running() 为假；返回本场发出的条数。"""
+def _transcript_end(session: Path) -> int:
+    """实时转写文件现在多长（从末尾接着听时从这里读起）。"""
+    try:
+        return (session / "live" / "transcript.jsonl").stat().st_size
+    except OSError:
+        return 0
+
+
+def _tail_session(session: Path, from_start: bool, still_running, c: _Collector, vad=None, start_pos: int | None = None) -> int:
+    """tail <session>/live/transcript.jsonl 直到 still_running() 为假；返回本场发出的条数。
+    start_pos：从末尾接着听时从哪儿读起（调用方在报"开会"之前量好：报完到这里开始读之间说的话不丢）。"""
     tp = session / "live" / "transcript.jsonl"
     pv = session / "live" / "preview.json"
-    pos = 0 if from_start or not tp.exists() else tp.stat().st_size
+    pos = 0 if from_start or not tp.exists() else (start_pos if start_pos is not None else tp.stat().st_size)
     partial = b""
     pv_seen = None
     c.vad = vad
@@ -1760,6 +1769,9 @@ class Ears:
                 from_start = _iso_to_epoch(j.get("started") or "") >= bridge_start - 5
                 log.info("recording %s -> %s (from_start=%s)", j["id"], session, from_start)
                 self.session = session
+                # 从末尾接着听（后端重启后接上同一场）：先量好从哪儿读，再报"开会"。以前等载入完静音检测才量，
+                # 这一两秒里说的话（界面上已经显示"接着开"了）被跳过
+                start_pos = None if from_start else _transcript_end(session)
                 self._emit("meeting_started", str(session))
                 c = _Collector(session, self.idle_flush, self.min_chars, self.screenshots,
                                emit=lambda u: self._emit("utterance", u),
@@ -1780,7 +1792,7 @@ class Ears:
                         vad.echo_gate = self.echo_gate
                     self.vad = vad
                     n = _tail_session(session, from_start,
-                                      lambda: job_running(job_file) and not self._stop.is_set(), c, vad)
+                                      lambda: job_running(job_file) and not self._stop.is_set(), c, vad, start_pos=start_pos)
                 except Exception:
                     log.exception("tail %s 失败", session)
                     n = c.n

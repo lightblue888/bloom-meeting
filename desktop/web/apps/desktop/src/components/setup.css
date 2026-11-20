@@ -412,30 +412,50 @@
   gap: 12px;
   min-height: 24px;
 }
-.app .lb-side-h .link {
+/* 大厅里的文字链接（设置、更换、试听、下载、全部、移除、历史版本、去设置）：同一种样子，一样高、一样大，
+   平时淡，指上去用强调色；准备情况那几行指到哪一行，那一行的链接就亮 */
+.app .lb .link {
   min-height: 0;
+  height: 20px;
+  padding: 0 4px;
   font-size: 12.5px;
+  line-height: 20px;
+  color: var(--mute);
 }
-/* 新版本：在"准备情况"和"设置"中间占住这一行剩下的宽度，有没有字都一样宽，旁边的东西不动；字太长时省略号 */
+.app .lb .link:hover:not(:disabled),
+.app .lb .link:focus-visible,
+.app .lb-st:hover .lb-st-a .link {
+  color: var(--brand-ink);
+}
+/* 新版本：在"准备情况"和"设置"中间占住这一行剩下的宽度，有没有都一样宽、一样高（24px，和这一行的 min-height 一样），
+   旁边的东西不动。有的时候是一枚胶囊：版本号用强调色，「更新」是实心按钮；正在更新是蓝色，失败是红色。字太长时省略号 */
 .lb-upd {
   display: flex;
   flex: 1 1 0;
   align-items: center;
   justify-content: flex-end;
-  gap: 6px;
   min-width: 0;
-  height: 20px;
-  overflow: hidden;
-  font-size: 12.5px;
-  color: var(--mute);
+  height: 24px;
 }
-.lb-upd.has::after {
-  content: '';
-  flex: none;
-  width: 1px;
-  height: 12px;
-  margin-left: 2px;
-  background: var(--line-2);
+.lb-upd-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 24px;
+  padding: 0 2px 0 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--brand-ink);
+  background: var(--brand-tint);
+}
+.lb-upd-chip.is-busy {
+  padding-right: 10px;
+}
+.lb-upd-chip.is-err {
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 9%, transparent);
 }
 .lb-upd-t {
   min-width: 0;
@@ -443,30 +463,41 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.lb-upd-t.is-err {
-  color: var(--err);
-}
-.app .lb-side-h .lb-upd-b {
+.app .lb-upd-b {
   flex: none;
   min-width: 3.6em;
-  color: var(--brand-ink);
-  text-align: center;
-  justify-content: center;
+  height: 20px;
+  min-height: 0;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 20px;
+  color: var(--on-brand-button);
+  background: var(--brand-button);
+  cursor: pointer;
 }
-.app .lb-side-h .lb-upd-b:disabled {
+.app .lb-upd-b:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.app .lb-upd-b:disabled {
   color: var(--faint);
+  background: var(--line-2);
+  cursor: default;
 }
 .lb-inv {
   margin-top: auto;
   padding-top: 16px;
   border-top: 1px solid var(--line);
 }
+/* 标签这一行定高：右边是「全部」、翻页还是什么都没有，下面的列表都不动 */
 .lb-card-hrow {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 24px;
+  height: 24px;
 }
 /* 开会失败、论文没导进来：写在"新会议"同一行的右边，下面什么都不动 */
 .lb-notice {
@@ -529,7 +560,7 @@
 .app .lb-input {
   width: 100%;
   min-width: 0;
-  height: 36px;
+  height: 32px;
   box-sizing: border-box;
   padding: 0 12px;
   font: inherit;
@@ -564,9 +595,12 @@
   gap: 10px;
   flex: none;
 }
-.app .lb-paper-acts .link {
+/* 论文行的「选择 / 更换」和邀请的「复制」：同一种按钮，一样高 */
+.app .lb-paper-change,
+.app .lb-invite button {
+  height: 32px;
   min-height: 0;
-  font-size: 12.5px;
+  padding: 0 12px;
 }
 .lb-paper.is-busy .mw-spinner {
   width: 18px;
@@ -575,7 +609,11 @@
 .lb-paper-text {
   min-width: 0;
 }
+/* both lines fixed high: a Chinese name, a Latin one or none at all (未选择) give the row the same height, so 开始会议
+   under it never moves (2026-11-19: 移除 moved it 1.25 px, the CJK fallback font's line box was taller) */
 .lb-paper-name {
+  height: 21px;
+  line-height: 21px;
   overflow: hidden;
   font-size: 14.5px;
   font-weight: 600;
@@ -583,13 +621,44 @@
   white-space: nowrap;
 }
 .lb-paper-meta {
-  min-height: 1.45em;
+  height: 18px;
+  line-height: 18px;
   margin-top: 2px;
   overflow: hidden;
   font-size: 12.5px;
   color: var(--mute);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 选的论文文件找不到了（挪走、改名、删了）：小字那一行写出来，和开始会议旁边的缺项一样用红色 */
+.lb-paper-meta.is-err {
+  color: var(--err);
+}
+/* 没选论文：同一行、同样高（名字和小字那两行照样占着，空的），"未选择"叠在上面、上下居中；不是缺项，不用提醒色 */
+.lb-paper-text {
+  position: relative;
+}
+.lb-paper-none {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  font-size: 14.5px;
+  font-weight: 500;
+  color: var(--mute);
+  white-space: nowrap;
+}
+/* 选择 / 更换：两个字叠在同一格里，按长的那个占宽，换来换去按钮不变宽 */
+.lb-swap {
+  display: inline-grid;
+}
+.lb-swap > span {
+  grid-area: 1 / 1;
+  text-align: center;
+}
+.lb-swap > .is-off {
+  visibility: hidden;
 }
 .app .lb-drop {
   display: flex;
@@ -655,14 +724,18 @@
   box-shadow: none;
   cursor: not-allowed;
 }
+/* 浅色：卡片几乎是白的，--panel-2 在上面看不出来，灰底加深一点，按钮的轮廓还在 */
+[data-theme='light'] .app .lb-start:disabled {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+}
 .lb-start .mw-spinner {
   position: absolute;
   left: 12px;
   width: 16px;
   height: 16px;
 }
-/* 缺的最多三项（模型来源、转写模型、论文），一项一行：格子按三行留好，缺几项、补上几项、下载中，
-   开始会议和下面"最近的会议"都不动 */
+/* 缺的项（论文文件不在、模型来源、转写模型；没选论文不算缺），一项一行：格子按三行留好（和以前一样高），缺几项、
+   补上几项、下载中，开始会议和下面"最近的会议"都不动。和准备情况里那一行同样用红色；下载中不算缺，用正文色 */
 .lb-needs {
   display: flex;
   flex: 1 1 220px;
@@ -680,14 +753,10 @@
   height: 20px;
   font-size: 12.5px;
   white-space: nowrap;
-  color: var(--attn-ink);
+  color: var(--err);
 }
-/* 缺项后面的"去设置""下载"：和这一行一样高，上下两行的链接不叠 */
-.app .lb-need .link {
-  min-height: 0;
-  height: 20px;
-  padding: 0 4px;
-  line-height: 20px;
+.lb-need.is-dl {
+  color: var(--ink-2);
 }
 /* 下载中：名字、进度条、百分比挤在这一行里，进度条占剩下的地方 */
 .lb-need.is-dl .lb-need-t {
@@ -734,14 +803,6 @@
   border-radius: 50%;
   background: var(--line-2);
 }
-.app .lb-st-a .link {
-  min-height: 0;
-  color: var(--mute);
-}
-.app .lb-st:hover .lb-st-a .link,
-.app .lb-st-a .link:focus-visible {
-  color: var(--brand-ink);
-}
 .lb-st.is-ok .lb-st-dot {
   background: var(--ok);
 }
@@ -750,6 +811,13 @@
 }
 .lb-st.is-block .lb-st-dot {
   background: var(--err);
+}
+/* 没设置但不碍事（没选论文时的模型）：灰点，字用淡色 */
+.lb-st.is-off .lb-st-dot {
+  background: var(--faint);
+}
+.lb-st.is-off .lb-st-v {
+  color: var(--mute);
 }
 .lb-st > svg {
   color: var(--mute);
@@ -790,6 +858,11 @@
   font-size: 12.5px;
   color: var(--ink-2);
   cursor: pointer;
+}
+/* 浅色：关着的开关底色太浅，和白卡片分不出来，加深一点 */
+[data-theme='light'] .app .lb-invite-on .st-switch:not(.on) {
+  background: color-mix(in srgb, var(--ink) 14%, transparent);
+  border-color: transparent;
 }
 .lb-invite {
   display: flex;
@@ -928,7 +1001,7 @@
 /* 一条遗留：勾、内容、谁、哪一类、哪一场（点日期打开那场会）；比最近的会议矮一点，小窗口也放得下几条 */
 .lb-carry {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 7em 5.6em 5.4em;
+  grid-template-columns: minmax(0, 1fr) 7em 7.4em 5.4em;
   align-items: center;
   gap: 14px;
   min-height: 36px;
@@ -1074,14 +1147,19 @@
   align-items: center;
   gap: 4px;
 }
-.app .lb-invite-off .link {
-  min-height: 0;
-  padding: 0 4px;
-}
 .lb-empty {
   margin-top: 10px;
   font-size: 13px;
   color: var(--mute);
+}
+/* 列表里没有东西：字放在空着的这块正中，不贴着标签 */
+.lb-list-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
 }
 
 @media (max-width: 1120px) {

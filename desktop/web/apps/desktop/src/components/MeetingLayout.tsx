@@ -7,6 +7,7 @@
 // 编辑 / 修订标记 · 修订后 · 原文, drawn here and sent to the iframe by postMessage; the iframe's own toolbar hides);
 // after the meeting and in 回顾 the switch comes back with the tools on the same row.
 // The top bar: title, state, clock, who is in the meeting, the action buttons. No prompt chips, no input field.
+// A meeting without a paper (mode "chat", `chat`): the transcript alone, centred on the page; the AI is not in it.
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { relayApi } from '../setupApi';
 import { useDismiss } from './useDismiss';
@@ -47,7 +48,7 @@ import {
   watchMic,
 } from '../meetingApi';
 import { SummaryTools, SummaryView, TaskBoard, TodoList } from './MeetingSummary';
-import { Composer, QuietNote, ToolsFloat, type LiveTools } from './MeetingTools';
+import { Composer, MarkButton, QuietNote, ToolsFloat, type LiveTools } from './MeetingTools';
 import { Highlight } from './Highlight';
 import { CLAUDE_COLOR, colorsById, colorsByName, Flower, HOST_COLOR, nameColor, ownPhoto } from './Flower';
 import { EditTools, LineEditor, NameEditor, type TranscriptEditing } from './TranscriptEdit';
@@ -113,13 +114,18 @@ export function MeetingLayout({
   paperVersion,
   onFrame,
   jump,
-  tools,
+  tools: toolsIn,
   bookmarks,
   carryDone,
   transcriptEdit,
   comments,
   onHistory,
+  chat = false,
 }: {
+  /** a meeting without a paper (mode "chat"): only the transcript is kept and the AI stays out — no paper column (the
+   *  transcript takes the page, centred; in 回顾 the switch has no 修订对比), no AI among the people, no "what the AI is
+   *  doing" strip, nobody types to it (the box is 标记 alone: `tools.noAi`) */
+  chat?: boolean;
   /** 第 6 批: the comments typed on the paper; the paper's page draws them (a bubble beside the paragraph, a card over
    *  the text) and, when `canAdd`, lets the viewer write, reply and resolve; `canDelete`: the host and co-hosts */
   comments?: PaperComments | null;
@@ -215,10 +221,21 @@ export function MeetingLayout({
   const videoSrc = meetingApi.videoUrl(video?.url);
   // 修改清单 (To-dos) shows once the meeting left something on the board: notes to do after it, edits made in it
   const hasTodos = !!board?.tasks?.some((x) => x.note || (x.status === 'done' && !x.rejected));
-  const tabs: Tab[] = ['diff', 'notes', ...(hasTodos ? (['todos'] as Tab[]) : []), ...(videoSrc ? (['video'] as Tab[]) : [])];
+  // a meeting without a paper has no 修订对比: its first tab is the 纪要
+  const first: Tab = chat ? 'notes' : 'diff';
+  const tabs: Tab[] = [...(chat ? [] : (['diff'] as Tab[])), 'notes', ...(hasTodos ? (['todos'] as Tab[]) : []), ...(videoSrc ? (['video'] as Tab[]) : [])];
   // 回顾: opening a meeting that has a recording shows the recording
-  const [tabSel, setTab] = useState<Tab>(() => (videoSrc ? 'video' : 'diff'));
-  const tab: Tab = showTabs && tabs.includes(tabSel) ? tabSel : 'diff';
+  const [tabSel, setTab] = useState<Tab>(() => (videoSrc ? 'video' : first));
+  const tab: Tab = showTabs && tabs.includes(tabSel) ? tabSel : first;
+  // the 会议 page of a meeting without a paper: no left column at all, the transcript alone in the middle
+  const bare = chat && !showTabs;
+  // and nobody types to the AI there (whatever the page around says)
+  const tools = useMemo(() => (toolsIn && chat && (!toolsIn.noAi || toolsIn.anchor) ? { ...toolsIn, noAi: true, anchor: null } : toolsIn), [toolsIn, chat]);
+  // the host's page of such a meeting (the only one with 邀请): 标记, its one tool, sits in the top bar beside 邀请 and
+  // the bar at the foot goes; what comes and goes (the quiet reminder, the co-host reminder, an error) has a slot of its
+  // own at the page's foot, so it covers neither the search box nor the transcript (2026-11-20 review). The guest page
+  // keeps its box (a phone's top bar has no room)
+  const soloHost = bare && !!invite;
   const frame = useRef<HTMLIFrameElement | null>(null);
   // the paper's two iframe slots: a new version of the live page loads in the hidden one and swaps in when it is ready
   // (no blank page, no jump); the slots never move in the DOM (moving an iframe reloads it)
@@ -361,7 +378,7 @@ export function MeetingLayout({
     [],
   );
   // Ctrl + 加号 / 减号 / 0 while the focus is in the shell: the paper zooms (inside the iframe the page catches them)
-  const noPaper = !!left;
+  const noPaper = !!left || chat;
   useEffect(() => {
     if (!active || !diffSrc || tab !== 'diff' || noPaper) return;
     const k = (e: KeyboardEvent) => {
@@ -379,9 +396,14 @@ export function MeetingLayout({
 
   // Ctrl+F while the focus is in the shell: the paper's own find bar opens (the diff page draws it; inside the frame
   // the page catches the key itself)
+  // (no paper: the transcript's own search box takes it)
   useEffect(() => {
     if (!active) return;
     const onFind = () => {
+      if (chat) {
+        (rootRef.current?.querySelector('[data-testid="transcript-search"]') as HTMLInputElement | null)?.focus();
+        return;
+      }
       const go = () => {
         frame.current?.focus();
         post({ zhFind: 1 });
@@ -394,7 +416,7 @@ export function MeetingLayout({
     };
     window.addEventListener('bloom-find', onFind);
     return () => window.removeEventListener('bloom-find', onFind);
-  }, [active, tab, post]);
+  }, [active, chat, tab, post]);
 
   // switched away (the page stays mounted, hidden): the recording stops, nothing inside keeps the focus
   const rootRef = useRef<HTMLDivElement>(null);
@@ -515,7 +537,11 @@ export function MeetingLayout({
   }, [tab, showTabs, notesSeen]);
 
   const lang = appI18n().lang;   // the date in the header and other chrome follow the app's language, not the meeting's
-  const who = people ?? NOBODY;
+  // without a paper the AI is not in the meeting: not among the people (the backend leaves it out too)
+  const who = useMemo(() => {
+    const all = people ?? NOBODY;
+    return chat && all.some((p) => p.id === 'claude') ? all.filter((p) => p.id !== 'claude') : all;
+  }, [people, chat]);
 
   // the running time: the backend's duration_s, and between polls the clock here
   const [now, setNow] = useState(() => Date.now());
@@ -535,15 +561,31 @@ export function MeetingLayout({
 
   // one name: the meeting's own (its paper), else the paper on the desk; the date and length sit on the line below
   const title = titleOverride || cleanTitle(meeting?.title) || titlePrefix || t('meeting.title.none');
-  const stateKey = state === 'live' ? 'meeting.state.live' : state === 'ended' ? 'meeting.state.ended' : 'meeting.state.idle';
+  // ended, its post-meeting work still running (回顾: 编辑 is greyed until it's done): 整理中
+  const tidying = !!postBusy && state === 'ended';
+  const stateKey = state === 'live' ? 'meeting.state.live' : tidying ? 'meeting.state.post' : state === 'ended' ? 'meeting.state.ended' : 'meeting.state.idle';
   const showBoard = live && state !== 'ended' ? true : !summary;
-  const ptools = tab === 'diff' && !!diffSrc && !!paper;
+  const ptools = !chat && tab === 'diff' && !!diffSrc && !!paper;
   // the layers of the body: all stay mounted (the paper's page, its MathJax, the decoded recording), the ones not shown
   // are hidden in place, at their size — switching is a repaint, no reload, no reflow of the paper
   const layer = (k: Tab) => `mt-layer ${tab === k ? '' : 'is-off'}`;
+  // what comes and goes floats and takes no room: over the paper's column, or (no paper column) over the page's middle
+  const suggestNote = onRole && suggest && suggest.length > 0 ? <RoleSuggest list={suggest} onRole={onRole} /> : null;
+  const notes = (
+    <>
+      {tools && <QuietNote tools={tools} />}
+      {notice && <div className="mt-notice">{notice}</div>}
+    </>
+  );
+  const floats = (
+    <>
+      {suggestNote}
+      {notes}
+    </>
+  );
 
   return (
-    <div className="mt-root" data-testid="meeting" ref={rootRef}>
+    <div className={`mt-root ${chat ? 'is-chat' : ''} ${bare ? 'is-one-col' : ''}`} data-testid="meeting" ref={rootRef}>
       <header className="mt-head">
         <div className="mt-head-main">
           {/* one line, fixed height: the title fills the row and its field opens inside that same box, so renaming or
@@ -552,12 +594,12 @@ export function MeetingLayout({
             <MeetingTitle key={meeting?.id ?? ''} title={title} onRename={onRename ?? null} />
           </div>
           <div className="mt-meta">
-            <span className={`mt-state is-${state}`}>
+            <span className={`mt-state is-${tidying ? 'post' : state}`}>
               <span className="mt-state-dot" />
-              {/* the three words share one box as wide as the widest: 录制中 → 已结束 never moves the date, nor 新增 after
+              {/* the words share one box as wide as the widest: 录制中 → 整理中 → 已结束 never moves the date, nor 新增 after
                   the name block (2026-11-18) */}
               <span className="mt-state-t">
-                {(['meeting.state.live', 'meeting.state.ended', 'meeting.state.idle'] as const).map((k) => (
+                {(['meeting.state.live', 'meeting.state.post', 'meeting.state.ended', 'meeting.state.idle'] as const).map((k) => (
                   <span key={k} className={k === stateKey ? undefined : 'is-ghost'} aria-hidden={k === stateKey ? undefined : true}>
                     {t(k)}
                   </span>
@@ -570,14 +612,19 @@ export function MeetingLayout({
         </div>
         {/* 新增 right after the name, on the bar's centre line like everything else; the people, 邀请 and 开会/散会 sit at
             the right end (2026-11-15: 新增 at the title row's end hung mid-bar, 12 px above the people, and crowded them) */}
-        {(onAddPaper || (papers?.length ?? 0) > 1) && (
+        {!chat && (onAddPaper || (papers?.length ?? 0) > 1) && (
           <PaperMenu papers={papers ?? []} active={activePaper ?? null} onSwitch={onSwitchPaper ?? null} onAdd={onAddPaper ?? null} onHistory={onHistory ?? null} />
         )}
         <People people={who} status={status ?? null} onRole={onRole} active={active} uiLang={appI18n().lang} />
+        {soloHost && tools && <MarkButton tools={tools} inHead />}
         {invite && <InviteButton topic={title} active={active} uiLang={appI18n().lang} />}
         {actions && <div className="mt-head-acts">{actions}</div>}
       </header>
-      <div className="mt-cols" style={{ gridTemplateColumns: `minmax(0, 1fr) ${Math.max(TR_MIN, Math.min(trW, Math.round(vw * 0.42)))}px` }}>
+      <div
+        className={`mt-cols ${bare ? 'is-chat' : ''} ${soloHost ? 'is-solo' : ''}`}
+        style={{ gridTemplateColumns: bare ? 'minmax(0, 1fr)' : `minmax(0, 1fr) ${Math.max(TR_MIN, Math.min(trW, Math.round(vw * 0.42)))}px` }}
+      >
+        {!bare && (
         <section className="mt-left" aria-label={t('meeting.left.label')}>
           {left ?? (
             <>
@@ -607,7 +654,7 @@ export function MeetingLayout({
               )}
               <div className="mt-pane" role="tabpanel">
                 {/* 论文页一直挂着，切到别的页时只是原地藏起来（大小不变）：切回来不重新加载、不重排，读到哪还在哪 */}
-                {diffSrc ? (
+                {chat ? null : diffSrc ? (
                   <div className={layer('diff')}>
                     <iframe
                       ref={slotA}
@@ -671,14 +718,14 @@ export function MeetingLayout({
           )}
           {/* what comes and goes floats over the paper's column and takes no room: the reminder under the paper's
               bar, the notice at the column's foot (2026-11-18: over the transcript they hid its header and newest line) */}
-          {onRole && suggest && suggest.length > 0 && <RoleSuggest list={suggest} onRole={onRole} />}
-          {tools && <QuietNote tools={tools} />}
-          {notice && <div className="mt-notice">{notice}</div>}
+          {floats}
         </section>
+        )}
         {/* the right column: the transcript, and the box at its foot (one height, live or ended); what comes and goes
-            (the answer only the one who asked sees, a selected passage) floats over the transcript */}
+            (the answer only the one who asked sees, a selected passage) floats over the transcript. Without a paper
+            column it is the page's one column, centred, at a width a line still reads well at */}
         <div className="mt-rcol">
-          <div className="mt-divider" onMouseDown={dragTr} onDoubleClick={resetTr} aria-hidden="true" />
+          {!bare && <div className="mt-divider" onMouseDown={dragTr} onDoubleClick={resetTr} aria-hidden="true" />}
           <Transcript
             uiLang={appI18n().lang}
             lines={transcript}
@@ -689,15 +736,27 @@ export function MeetingLayout({
             tick={vtime == null ? 0 : Math.floor(vtime)}
             onPick={videoSrc ? playAt : undefined}
             focus={focusLine}
-            brain={live ? brain ?? null : null}
-            board={live ? board : null}
+            brain={live && !chat ? brain ?? null : null}
+            board={live && !chat ? board : null}
             offline={!live}
+            noAi={chat}
             marks={bookmarks ?? undefined}
             onMark={jumpTo}
             editing={transcriptEdit ?? null}
           />
           {tools && <ToolsFloat tools={tools} />}
-          {tools && <Composer tools={tools} />}
+          {/* the host's page without a paper: the co-host reminder in the transcript's title row (between 逐字稿 and
+              the search box, where there is room); the quiet reminder and an error in a slot of their own at the foot,
+              one row high, there whether or not anything is in it (nothing moves when one comes or goes) */}
+          {soloHost && suggestNote}
+          {soloHost && (
+            <div className="mt-solo-notes" data-testid="solo-notes">
+              {notes}
+            </div>
+          )}
+          {tools && !soloHost && <Composer tools={tools} />}
+          {/* no paper column (the guest page): they float over this one (the notice in the empty left of the 标记 row) */}
+          {bare && !soloHost && floats}
         </div>
       </div>
     </div>
@@ -1004,13 +1063,14 @@ export function BloomMark({ size = 28 }: { size?: number }) {
 const meOf = (people: Participant[]) => people.find((p) => p.rank === 'host') ?? people.find((p) => p.you) ?? people.find((p) => p.role === 'teacher');
 const claudeOf = (people: Participant[]) => people.find((p) => p.id === 'claude') ?? people.find((p) => p.role === 'student');
 
-/** a person's photo; without one of their own (none, the guests' stand-in, or it doesn't load) Bloom's flower in their colour */
+/** a person's photo; without one of their own (none, the guests' stand-in, or it doesn't load) Bloom's flower in their
+ *  colour, on a disc tinted with that colour (meeting.css .mt-avatar.is-flower: light in the light theme) */
 function Avatar({ person, color }: { person?: Participant; color: string }) {
   const src = ownPhoto(person?.avatar) ? avatarUrl(person?.avatar) : '';
   const [broken, setBroken] = useState('');
   if (src && broken !== src) return <img className="mt-avatar is-img" src={src} alt="" draggable={false} onError={() => setBroken(src)} />;
   return (
-    <span className="mt-avatar is-flower" aria-hidden="true">
+    <span className="mt-avatar is-flower" style={{ '--av-c': color } as CSSProperties} aria-hidden="true">
       <Flower color={color} />
     </span>
   );
@@ -1640,7 +1700,7 @@ function ClaudeChips({ l }: { l: ShownLine }) {
   return (
     <span className="mt-chips">
       <span className={`mt-chip is-cat is-${cat}`}>{t(`meeting.ai.cat.${cat}`)}</span>
-      {l.model && <span className="mt-chip is-by">{l.model}</span>}
+      {l.model && <span className="mt-chip is-by" data-tip={l.model} data-tip-trunc="">{l.model}</span>}
       {(cat === 'claude' || l.quick) && l.took != null ? (
         <span className="mt-chip is-time">{t('meeting.ai.took', { s: secs(l.took) })}</span>
       ) : l.lead && l.lat != null ? (
@@ -1780,7 +1840,7 @@ function LiveDeep({ deep, brain, Head }: { deep: Lookup; brain: Brain | null; He
           {Head()}
           <span className="mt-chips">
             <span className={`mt-chip is-cat is-${deep.quick ? 'think' : 'claude'}`}>{t(`meeting.ai.cat.${deep.quick ? 'think' : 'claude'}`)}</span>
-            {deep.model && <span className="mt-chip is-by">{deep.model}</span>}
+            {deep.model && <span className="mt-chip is-by" data-tip={deep.model} data-tip-trunc="">{deep.model}</span>}
             <span className="mt-chip is-time">
               {deep.state === 'done' ? t('meeting.ai.deep_wait') : t('meeting.ai.deep_secs', { s: String(secs) })}
             </span>
@@ -1829,11 +1889,14 @@ export const Transcript = memo(function Transcript({
   brain,
   board,
   offline,
+  noAi,
   bare,
   marks,
   onMark,
   editing,
 }: {
+  /** a meeting without the AI (no paper): no "what the AI is doing" strip at all, not even its empty place */
+  noAi?: boolean;
   /** 回顾: the host fixes the transcript by hand (编辑 / 替换 / 撤销 in the head) */
   editing?: TranscriptEditing | null;
   /** the moments marked (标记): a small flag row at their time, between the turns; a click goes there */
@@ -2061,7 +2124,10 @@ export const Transcript = memo(function Transcript({
         <NameEditor name={name} color={nameColor(c)} onSave={(to) => editing!.rename(name, to)} onDone={() => setEdName(null)} />
       ) : editMode && w === 'guest' && name ? (
         <button type="button" className="mt-line-who mt-who-btn" style={{ color: nameColor(c) }} onClick={() => setEdName(`${name}@${first?.sec}`)}
-          aria-label={`${ut('meeting.tredit.rename')} ${name}`} data-tip={name} data-tip-trunc="" data-testid="tredit-who">{name}</button>
+          aria-label={`${ut('meeting.tredit.rename')} ${name}`} data-testid="tredit-who">
+          {/* the name in its own box: a button's own text can't end in "…" */}
+          <span className="mt-who-t" data-tip={name} data-tip-trunc="">{name}</span>
+        </button>
       ) : (
         <span className="mt-line-who" style={{ color: nameColor(c) }} title={nameOf(w, name)}>{nameOf(w, name)}</span>
       );
@@ -2129,7 +2195,7 @@ export const Transcript = memo(function Transcript({
         <h2>{ut('meeting.transcript')}</h2>
         <span className="mt-right-n">{lines.length ? i18n().formatNumber(lines.length) : ''}</span>
         {editing && (
-          <EditTools editing={editing} on={editMode} lines={lines}
+          <EditTools editing={editing} on={editMode}
             onToggle={() => (setEditOn((v) => !v), setEdLine(null), setEdName(null))} />
         )}
       </div>
@@ -2142,7 +2208,7 @@ export const Transcript = memo(function Transcript({
           </button>
         )}
       </div>
-      {brain ? (
+      {noAi ? null : brain ? (
         <ClaudeNow brain={brain} board={board ?? null} ai={claude?.name || t('meeting.who.student')} />
       ) : (
         // not in a meeting (2026-11-13: the user looked at an ended meeting and couldn't find the strip at all); before
@@ -2218,7 +2284,8 @@ export const Transcript = memo(function Transcript({
                   {u.lines.map((l, k) => (
                     <Fragment key={k}>
                     {edLine && editable(l) && edLine.i === l.i && edLine.text === l.text ? (
-                      <LineEditor text={l.text} onSave={(v) => saveLine(l, v)} onDone={() => setEdLine(null)} pick={pickable(l)} />
+                      <LineEditor text={l.text} onSave={(v) => saveLine(l, v)} onDone={() => setEdLine(null)} pick={pickable(l)}
+                        typed={l.typed ? t('meeting.line.typed') : undefined} />
                     ) : editable(l) ? (
                       // 编辑 on: a click opens the line in place (the recording stays where it is)
                       <p
@@ -2228,11 +2295,14 @@ export const Transcript = memo(function Transcript({
                         tabIndex={0}
                         onClick={() => setEdLine({ i: l.i!, text: l.text })}
                         onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), setEdLine({ i: l.i!, text: l.text }))}
-                        aria-label={ut('meeting.tredit.line')}
+                        // named by its words (what you see); what a click does is the description
+                        aria-description={ut('meeting.tredit.line')}
                         data-testid="transcript-line"
                       >
                         {l.typed && <span className="mt-typed">{t('meeting.line.typed')}</span>}
                         <Highlight text={l.text} q={q} />
+                        {/* on hover, right of the bubble (transcript-edit.css) */}
+                        <Icon name="pencil" size={13} className="mt-line-pen" />
                       </p>
                     ) : pickable(l) ? (
                       <p
@@ -2293,7 +2363,7 @@ export const Transcript = memo(function Transcript({
                   <header className="mt-turn-head">
                     {claudeWho()}
                     <span className="mt-chips">
-                      {brain?.edit_model && <span className="mt-chip is-by">{brain.edit_model}</span>}
+                      {brain?.edit_model && <span className="mt-chip is-by" data-tip={brain.edit_model} data-tip-trunc="">{brain.edit_model}</span>}
                       <span className="mt-chip is-time">{t('meeting.ai.working', { id: '', title: w.title })}</span>
                     </span>
                   </header>

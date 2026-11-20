@@ -63,7 +63,7 @@ class NoteTags(unittest.TestCase):
     def test_export_lists_tags(self):
         from zuhui import export
         g = {"board": {"tasks": [_note("第 4 节消融实验", "加一组去掉注意力模块的对照，重跑表 3", "重跑消融实验")]}}
-        for lang, want in (("zh", "要重新跑实验、要重画图表"), ("en", "Rerun experiments, Redo figures or tables")):
+        for lang, want in (("zh", "需重跑实验、需重画图表"), ("en", "Rerun experiments, Redo figures or tables")):
             rows = next(b[1] for b in export.todos_blocks(g, lang) if b[0] == "check")
             self.assertIn(want, rows[0]["sub"])
 

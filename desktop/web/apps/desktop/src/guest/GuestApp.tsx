@@ -7,7 +7,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { applyPlatform, applyTheme } from '@blurt/ui';
 import { setLang } from '../i18n';
-import { setGuestTransport, type AnchorSel, type Board, type Bookmark, type PaperComment, type Brain, type Line, type Meeting, type MeetingPaper, type Models, type Participant, type PartialLine, type Ready } from '../meetingApi';
+import { setGuestTransport, type AnchorSel, type Board, type Bookmark, type PaperComment, type Brain, type Line, type Lookup, type Meeting, type MeetingPaper, type Models, type Participant, type PartialLine, type Ready } from '../meetingApi';
 import { BloomMark, MeetingLayout } from '../components/MeetingLayout';
 import type { LiveTools } from '../components/MeetingTools';
 import { nameColor } from '../components/Flower';
@@ -17,6 +17,27 @@ import { Follow, type HostFocus } from './follow';
 const ZH = /^zh/i.test(navigator.language || '');
 setLang(ZH ? 'zh-Hans' : 'en');
 const L = (zh: string, en: string) => (ZH ? zh : en);
+/** the relay's error codes (relay/token_server.py) in words; anything else as it came */
+const RELAY_ERR: Record<string, [string, string]> = {
+  busy: ['服务器繁忙', 'server busy'],
+  'too large': ['文件过大', 'file too large'],
+  'too many': ['操作过于频繁', 'too many requests'],
+  'too many assets': ['文件数量已达上限', 'too many files'],
+  type: ['不支持的文件类型', 'unsupported file type'],
+  cohost_only: ['仅主持人和共同主持人可操作', 'host and co-hosts only'],
+  unauthorized: ['链接已失效', 'link expired'],
+  'not found': ['会议不存在', 'meeting not found'],
+  'no room': ['会议不存在', 'meeting not found'],
+  'no such upload': ['文件不存在', 'file not found'],
+  name_taken: ['名字已被占用', 'name taken'],
+  identity: ['身份无效', 'invalid identity'],
+  'bad json': ['请求无效', 'bad request'],
+};
+const relayErr = (e: unknown) => {
+  const s = String(e ?? '');
+  const m = RELAY_ERR[s];
+  return m ? L(m[0], m[1]) : s;
+};
 
 /** what the host's Bloom pushes to the relay while the meeting is on (zuhui/view.py guest_state, v2) */
 interface Assistant { name?: string; dialog?: string; edit?: string; effort?: string; tts?: string; asr?: string }
@@ -49,12 +70,15 @@ interface RelayState {
   anchor?: AnchorSel | null;
   /** 第 8 批: the host's Bloom is recording the screen (and the microphone), only the sound, or nothing */
   rec?: 'screen' | 'audio' | null;
+  /** a meeting without a paper: mode "chat", paper false — no paper page to load, only the transcript, the AI stays out */
+  mode?: 'chat' | 'paper';
+  paper?: boolean;
 }
 
 /** the recording notice in one sentence (the join card; the bar's marker shows it on hover) */
 const recLine = (rec: RelayState['rec']) =>
-  rec === 'audio' ? L('会议正在录音，发言会转成文字', 'This meeting’s audio is being recorded and transcribed')
-    : L('会议正在录屏，发言会转成文字', 'This meeting is being recorded and transcribed');
+  rec === 'audio' ? L('会议正在录音并转写', 'This meeting’s audio is being recorded and transcribed')
+    : L('会议正在录屏并转写', 'This meeting is being recorded and transcribed');
 
 const ROOM = (() => {
   const m = location.pathname.match(/\/room\/([A-Za-z0-9_-]{6,64})/);
@@ -143,6 +167,17 @@ function makeStore<T>(get: () => T, keyOf: (v: T) => string) {
 
 const latest: { state: RelayState | null } = { state: null };
 
+/** a phone (guest.css's 640 px): the notice hangs over the bottom bar, whichever tab is showing */
+const phoneMq = typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(max-width: 640px)') : null;
+const onPhoneChange = (f: () => void) => {
+  phoneMq?.addEventListener('change', f);
+  return () => phoneMq?.removeEventListener('change', f);
+};
+const isPhone = () => !!phoneMq?.matches;
+
+/** a model's name as guests see it: never an organisation's prefix ("my-company/…") or a context tag */
+const bareModel = (m?: string | null) => (m ? m.replace(/\[1m\]$/i, '').split('/').pop()!.trim() || m : m ?? undefined);
+
 // ---------------------------------------------------------------- the voice and the following: one each for the page,
 // made once outside React (StrictMode builds hooks twice in development; two voices would split their state)
 let phaseNow: Phase = 'loading';
@@ -190,6 +225,9 @@ export function GuestApp() {
   }
   const st = ended ? frozen.current : relay.state;
   latest.state = st;
+  // a meeting without a paper: the transcript alone takes the page (on a phone too: no 论文 / 逐字稿 tabs), the AI is
+  // not in it, nobody types to it
+  const chat = st?.mode === 'chat' || st?.paper === false;
 
   const [toasts, setToasts] = useState<{ id: number; text: string }[]>([]);
   const toast = useCallback((text: string) => {
@@ -201,6 +239,7 @@ export function GuestApp() {
 
   const vs = useSyncExternalStore(metaStore.subscribe, metaStore.get);
   const fs = useSyncExternalStore(followStore.subscribe, followStore.get);
+  const phone = useSyncExternalStore(onPhoneChange, isPhone);
 
 
   // the host's place from the relay too (the data channel is faster, this one is the fallback)
@@ -208,14 +247,14 @@ export function GuestApp() {
     if (joined) follow.onFocus(st?.focus ?? null, 'relay');
   }, [joined, st?.focus]);
 
-  // the meeting ended while in it: hang up; the page stays as it was at the end (read only) until they leave
+  // the meeting ended while in it: hang up; the page stays as it was at the end (read only) until they leave. No toast:
+  // the notice over the paper and the bar's state already say it (a toast too made it twice, 2026-11-19)
   useEffect(() => {
     if (joined && phase === 'ended') {
       voice.leave('ended');
       if (!frozen.current) setMe(null);
-      toast(L('会议已结束', 'The meeting has ended'));
     }
-  }, [joined, phase, toast]);
+  }, [joined, phase]);
 
   // ---------------------------------------------------------------- doing things: through the relay to the host's Bloom
   const amCo = useMemo(() => {
@@ -236,7 +275,7 @@ export function GuestApp() {
         if (d.done) return d.result ?? { ok: true };
       } catch { /* try again */ }
     }
-    return { ok: false, error: L('主持人那边没回应', 'The host did not answer') };
+    return { ok: false, error: L('主持人无响应', 'The host did not respond') };
   }, []);
 
   const act = useCallback(async (path: string, body: unknown): Promise<Record<string, unknown>> => {
@@ -268,7 +307,7 @@ export function GuestApp() {
 
   const switchPaper = useCallback(async (id: string) => {
     const d = await act('/api/paper/switch', { id });
-    if (d.ok === false) toast(L(`没切过去：${d.error ?? ''}`, `Could not switch: ${d.error ?? ''}`));
+    if (d.ok === false) toast(L(`切换失败：${relayErr(d.error)}`, `Switch failed: ${relayErr(d.error)}`));
   }, [act, toast]);
 
   const addPaper = useCallback(() => {
@@ -278,18 +317,18 @@ export function GuestApp() {
     input.onchange = async () => {
       const f = input.files?.[0];
       if (!f) return;
-      if (f.size > 50 * 1024 * 1024) { toast(L('文件太大（最多 50 MB）', 'The file is too large (50 MB at most)')); return; }
-      toast(L(`正在传《${f.name}》…`, `Uploading “${f.name}”…`));
+      if (f.size > 50 * 1024 * 1024) { toast(L('上传失败：文件超过 50 MB', 'Upload failed: file over 50 MB')); return; }
+      toast(L(`正在上传《${f.name}》…`, `Uploading “${f.name}”…`));
       try {
         const tok = await voice.getToken();
         const r = await fetch(`/view/${enc(ROOM)}/upload?name=${enc(f.name)}`, { method: 'POST', headers: { Authorization: `Bearer ${tok}` }, body: f });
         const d = await r.json().catch(() => ({}));
-        if (!r.ok || !d.id) { toast(L(`没传上：${d.error || r.status}`, `Upload failed: ${d.error || r.status}`)); return; }
-        toast(L('传上了，主持人那边正在导入…', 'Uploaded: the host’s Bloom is importing it…'));
+        if (!r.ok || !d.id) { toast(L(`上传失败：${d.error ? relayErr(d.error) : r.status}`, `Upload failed: ${d.error ? relayErr(d.error) : r.status}`)); return; }
+        toast(L('已上传，正在导入…', 'Uploaded, importing…'));
         const res = await waitResult(d.id, 10 * 60_000);
-        toast(res.ok === false ? L(`没导入：${res.error ?? ''}`, `Import failed: ${res.error ?? ''}`) : L('论文加进来了', 'The paper is in'));
+        toast(res.ok === false ? L(`导入失败：${relayErr(res.error)}`, `Import failed: ${relayErr(res.error)}`) : L('论文已添加', 'Paper added'));
       } catch (e) {
-        toast(L(`没传上：${String((e as Error)?.message ?? e)}`, `Upload failed: ${String((e as Error)?.message ?? e)}`));
+        toast(L(`上传失败：${String((e as Error)?.message ?? e)}`, `Upload failed: ${String((e as Error)?.message ?? e)}`));
       }
     };
     input.click();
@@ -302,9 +341,9 @@ export function GuestApp() {
         const a = latest.state?.assistant;
         if (!a) return null;
         const one = (v?: string) => (v ? { current: v, options: [{ id: v, label: v }] } : undefined);
-        return { dialog: one(a.dialog), edit: one(a.edit), effort: one(a.effort), tts: a.tts, asr: a.asr };
+        return { dialog: one(bareModel(a.dialog)), edit: one(bareModel(a.edit)), effort: one(a.effort), tts: a.tts, asr: a.asr };
       },
-      devices: async () => ({ mic: metaStore.get().micOn ? L('浏览器的麦克风', 'the browser’s microphone') : null, speaker: null }),
+      devices: async () => ({ mic: metaStore.get().micOn ? L('浏览器麦克风', 'Browser microphone') : null, speaker: null }),
       setMicMuted: async (muted: boolean) => {
         if (voice.snapshot().micOn === muted) await voice.toggleMic();
         return !voice.snapshot().micOn;
@@ -329,7 +368,7 @@ export function GuestApp() {
     return {
       paper: true, fast: true, tts: true, blurt: true, recording: true, fast_online: true, hands_ready: true,
       working: st?.board?.counts?.working ?? 0, queued: st?.board?.counts?.queued ?? 0,
-      models: { fast: a.dialog, hands: [a.edit, a.effort].filter(Boolean).join(' · '), tts: a.tts, asr: a.asr },
+      models: { fast: bareModel(a.dialog), hands: [bareModel(a.edit), a.effort].filter(Boolean).join(' · '), tts: a.tts, asr: a.asr },
     };
   }, [st?.assistant, st?.board?.counts?.working, st?.board?.counts?.queued]);
 
@@ -347,10 +386,30 @@ export function GuestApp() {
     const raw = JSON.stringify(st?.brain ?? null);
     if (raw !== brainRef.current.raw) {
       const b = st?.brain ?? null;
-      brainRef.current = { raw, b: b ? { ...b, skew: b.now != null ? b.now - Date.now() / 1000 : 0 } : null };
+      const look = (d: Lookup) => ({ ...d, model: bareModel(d.model) });
+      brainRef.current = {
+        raw,
+        b: b
+          ? {
+              ...b,
+              front_model: bareModel(b.front_model), back_model: bareModel(b.back_model),
+              deep_model: bareModel(b.deep_model), edit_model: bareModel(b.edit_model),
+              deep: b.deep ? look(b.deep) : b.deep, deeps: b.deeps?.map(look),
+              skew: b.now != null ? b.now - Date.now() / 1000 : 0,
+            }
+          : null,
+      };
     }
     return brainRef.current.b;
   }, [st?.brain]);
+
+  // the transcript as guests see it: the model by its bare name (快答 / 思考 and which model answered: 2026-11-20 the
+  // user, "怎么把思考的模型也删了"), no timings (guest.css hides the timing chips — `lat` stays in the data, it tells an
+  // old #deep line from a new one)
+  const lines = useMemo(
+    () => (st?.transcript ?? NO_LINES).map((l) => (l.model || l.took != null ? { ...l, model: bareModel(l.model), took: undefined } : l)),
+    [st?.transcript],
+  );
 
   const meeting: Meeting | null = useMemo(() => {
     if (!st) return null;
@@ -404,10 +463,11 @@ export function GuestApp() {
       role: amCo ? 'cohost' : 'guest',
       me,
       live: !ended,
-      anchor: st?.anchor ?? null,
+      noAi: chat,
+      anchor: chat ? null : st?.anchor ?? null,
       onError: toast,
     }),
-    [amCo, me, ended, st?.anchor, toast],
+    [amCo, me, ended, chat, st?.anchor, toast],
   );
 
   // 第 6 批: comments on the paper — anyone in the meeting writes, replies and resolves; a co-host also deletes (the
@@ -431,40 +491,50 @@ export function GuestApp() {
     if (mtab === 'talk') setSeenLines(nLines);
   }, [mtab, nLines]);
   const unseen = mtab === 'paper' && nLines > seenLines;
+  // the connection, the voice, the end: over the paper's foot on a wide screen; on a phone over the bottom bar, seen
+  // from either tab (inside the paper's column it went with the column when 逐字稿 was showing)
+  const notice = ended ? (
+    <div className="g-conn">
+      <span>{L('会议已结束', 'The meeting has ended.')}</span>
+    </div>
+  ) : (
+    <GuestNotes s={vs} offline={offline} voice={voice} following={fs.following} hasHost={fs.host && !chat && !phone} />
+  );
   return (
-    <div className={`app g-app ${joined ? 'is-in' : ''}`} data-mtab={mtab}>
+    <div className={`app g-app ${joined ? 'is-in' : ''} ${ended ? 'is-ended' : ''}`} data-mtab={chat ? 'talk' : mtab}>
       {joined && (phase === 'live' || ended) && v2 ? (
         <>
         <MeetingLayout
           meeting={meeting}
-          papers={st?.papers ?? null}
+          chat={chat}
+          papers={chat ? null : st?.papers ?? null}
           activePaper={st?.active_paper ?? null}
-          onSwitchPaper={!ended && (st?.papers?.length ?? 0) > 1 ? (id: string) => void switchPaper(id) : null}
-          onAddPaper={ended ? null : addPaper}
-          transcript={st?.transcript ?? NO_LINES}
+          onSwitchPaper={!chat && !ended && (st?.papers?.length ?? 0) > 1 ? (id: string) => void switchPaper(id) : null}
+          onAddPaper={ended || chat ? null : addPaper}
+          transcript={lines}
           partial={st?.partial ?? null}
           people={people}
           board={st?.board ?? null}
           brain={ended ? null : brainNow}
           summary={null}
-          diffSrc={`/view/${enc(ROOM)}/paper?host=bloom&co=${amCo ? 1 : 0}`}
+          diffSrc={chat ? '' : `/view/${enc(ROOM)}/paper?host=bloom&co=${amCo ? 1 : 0}`}
           paperVersion={ended ? frozenPv.current : relay.pv}
           onFrame={(el) => follow.setFrame(el)}
           live={!ended}
           tools={tools}
           bookmarks={st?.bookmarks ?? null}
-          comments={guestComments}
+          comments={chat ? null : guestComments}
           status={ended ? null : status}
           // after the meeting the same row stays (the recording mark's room just goes blank): the people don't slide over
           actions={<GuestActions co={amCo} onLeave={leave} />}
-          notice={ended ? (
-            <div className="g-conn">
-              <span>{L('会议已结束，关掉页面后就看不到了', 'The meeting has ended. Close the page and it’s gone.')}</span>
-            </div>
-          ) : (
-            <GuestNotes s={vs} offline={offline} voice={voice} following={fs.following} hasHost={fs.host} />
-          )}
+          notice={phone ? null : notice}
         />
+        {phone && (
+          <div className="mt-notice g-mnotice" aria-live="polite" data-testid="guest-notice">
+            {notice}
+          </div>
+        )}
+        {!chat && (
         <nav className="g-mtabs" role="tablist" aria-label={L('切换', 'Switch')}>
           <button role="tab" aria-selected={mtab === 'paper'} className={mtab === 'paper' ? 'is-sel' : ''} onClick={() => setMtab('paper')} data-testid="guest-tab-paper">
             {L('论文', 'Paper')}
@@ -477,12 +547,13 @@ export function GuestApp() {
             </span>
           </button>
         </nav>
+        )}
         </>
       ) : joined && phase === 'live' ? (
         <div className="g-center">
           <div className="g-card">
             <BloomMark size={30} />
-            <p className="g-msg">{L('主持人的 Bloom 版本太旧，还推不来完整的会议页面。请主持人更新后再进。', 'The host’s Bloom is too old to share the full meeting page. Ask the host to update it.')}</p>
+            <p className="g-msg">{L('主持人的 Bloom 版本过旧，请主持人更新后重新加入', 'The host’s Bloom is out of date. Ask the host to update it, then join again.')}</p>
             <button className="g-btn" onClick={leave}>{L('离开', 'Leave')}</button>
           </div>
         </div>
@@ -509,7 +580,7 @@ const GuestActions = memo(function GuestActions({ co, onLeave }: { co: boolean; 
       {/* recording: the bar's own state line already says 录制中 (and the join card says what is recorded), so no
           second mark here */}
       {co && (
-        <span className="g-co" title={L('共同主持人：可以确认、撤回修订，直接修改段落', 'Co-host: you can confirm or undo revisions and edit paragraphs')}>
+        <span className="g-co" title={L('共同主持人：可确认、撤回修订和修改段落', 'Co-host: can confirm or undo revisions and edit paragraphs')}>
           {L('共同主持人', 'Co-host')}
         </span>
       )}
@@ -529,14 +600,14 @@ function GuestNotes({ s, offline, voice, following, hasHost }: {
   hasHost: boolean;
 }) {
   const conn = offline ? (
-    <div className="g-conn is-busy"><span>{L('连接断了，正在重连…', 'Connection lost, reconnecting…')}</span></div>
+    <div className="g-conn is-busy"><span>{L('连接已断开，正在重连…', 'Disconnected, reconnecting…')}</span></div>
   ) : s.conn || s.audioBlocked ? <ConnBar s={s} voice={voice} /> : null;
   const noVoice = !offline && !s.connected && s.joined && !s.conn ? (
-    <div className="g-conn is-busy"><span>{L('语音未连上', 'No voice')}</span></div>
+    <div className="g-conn is-busy"><span>{L('语音未连接', 'Voice not connected')}</span></div>
   ) : null;
   const back = !following && hasHost ? (
     <button className="mt-btn g-back" onClick={() => follow.setFollow(true)} data-testid="guest-back">
-      {L('回到主持人位置', 'Back to the host')}
+      {L('跟随主持人', 'Follow the host')}
     </button>
   ) : null;
   if (!conn && !noVoice && !back) return null;
@@ -553,7 +624,7 @@ function ConnBar({ s, voice }: { s: VoiceSnapshot; voice: GuestVoice }) {
   if (s.audioBlocked)
     return (
       <div className="g-conn">
-        <span>{L('浏览器挡住了声音', 'The browser blocked the sound')}</span>
+        <span>{L('浏览器已阻止播放', 'Playback blocked by the browser')}</span>
         <button className="g-link" onClick={() => voice.startAudio()}>{L('开启声音', 'Turn on sound')}</button>
       </div>
     );
@@ -579,7 +650,7 @@ function JoinScreen({ phase, st, onJoin }: { phase: Phase; st: RelayState | null
     : phase === 'wait' && host ? L(`${host} 的会议`, `${host}’s meeting`) : '';
   const go = () => {
     const n = name.trim();
-    if (!n) { setErr(L('先填一下你的名字', 'Enter your name first')); return; }
+    if (!n) { setErr(L('请输入名字', 'Enter your name')); return; }
     onJoin(n, mic);
   };
   const inApp = /MicroMessenger|wxwork|\bQQ\/\d|DingTalk|Lark|Feishu|Weibo/i.test(navigator.userAgent || '');
@@ -603,7 +674,7 @@ function JoinScreen({ phase, st, onJoin }: { phase: Phase; st: RelayState | null
           </p>
         )}
         {inApp && phase === 'live' && (
-          <p className="g-warn">{L('在 App 里打开容易断线，建议点右上角「···」用浏览器打开。', 'Opened inside an app: voice drops more easily. Open it in a browser if you can.')}</p>
+          <p className="g-warn">{L('建议用浏览器打开：点右上角「···」', 'Open in a browser: tap ··· at the top right')}</p>
         )}
         {phase === 'live' ? (
           <div className="g-form">
@@ -612,23 +683,24 @@ function JoinScreen({ phase, st, onJoin }: { phase: Phase; st: RelayState | null
               value={name}
               maxLength={32}
               autoComplete="name"
-              placeholder={L('你的名字', 'Your name')}
+              placeholder={L('名字', 'Name')}
               onChange={(e) => { setName(e.target.value); setErr(''); }}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) go(); }}
               data-testid="guest-name"
             />
             <label className="g-switch">
               <input type="checkbox" checked={mic} onChange={(e) => setMic(e.target.checked)} />
-              <span>{mic ? L('进会时打开麦克风：大家能听到你', 'Microphone on: everyone hears you') : L('进会后先静音，随时可以打开', 'Join muted; unmute any time')}</span>
+              <span>{L('入会时开启麦克风', 'Microphone on when joining')}</span>
             </label>
-            {err && <p className="g-err">{err}</p>}
+            {/* its row is always there (guest.css): the message coming doesn't push 进入会议 down */}
+            <p className="g-err" role="alert">{err}</p>
             <button className="g-btn is-primary" onClick={go} data-testid="guest-go">{L('进入会议', 'Join')}</button>
           </div>
         ) : (
           <p className="g-msg">
             {phase === 'loading' ? L('正在连接…', 'Connecting…')
-              : phase === 'invalid' ? L('用邀请链接进会', 'Join with an invite link')
-              : phase === 'wait' ? L('会议还没开始，开始后这里会自动变成可以进入', 'Not started yet: you can join here once it starts')
+              : phase === 'invalid' ? L('请通过邀请链接加入', 'Join with an invite link')
+              : phase === 'wait' ? L('会议开始后可加入', 'You can join once the meeting starts')
               : L('会议已结束', 'The meeting has ended')}
           </p>
         )}
@@ -638,15 +710,17 @@ function JoinScreen({ phase, st, onJoin }: { phase: Phase; st: RelayState | null
 }
 
 function WhoIsIn({ st }: { st: RelayState | null }) {
-  const list: { id?: string; name: string; role?: string; rank?: string; color?: string | null }[] = st?.participants?.length
+  const all: { id?: string; name: string; role?: string; rank?: string; color?: string | null }[] = st?.participants?.length
     ? st.participants
     : (st?.people ?? []).map((p, i) => ({ id: `p${i}`, name: p.name, role: p.role, rank: p.rank }));
+  // a meeting without a paper: the AI is not in it
+  const list = st?.mode === 'chat' || st?.paper === false ? all.filter((p) => p.id !== 'claude' && p.role !== 'student') : all;
   if (!list.length) return null;
   const label = (p: { rank?: string; role?: string; id?: string }) =>
     p.rank === 'host' ? L('主持人', 'host') : p.id === 'claude' || p.role === 'student' ? 'AI' : p.rank === 'cohost' || p.rank === 'teacher' ? L('共同主持人', 'co-host') : '';
   return (
     <div className="g-who" data-testid="guest-who">
-      <span className="g-who-h">{L(`会上 ${list.length} 人`, `${list.length} in the meeting`)}</span>
+      <span className="g-who-h">{L(`${list.length} 人在会中`, `${list.length} in the meeting`)}</span>
       <span className="g-who-list">
         {list.slice(0, 8).map((p) => (
           <span key={p.id ?? p.name} className="g-who-p" style={{ color: nameColor(p.color) }}>

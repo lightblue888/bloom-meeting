@@ -9,7 +9,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { inTauri, listen } from '../api';
 import { t } from '../i18n';
-import { exportReason, meetingApi, POLL_MS, watchBrain, type Brain, type Current, type Line } from '../meetingApi';
+import { exportReason, isChat, meetingApi, POLL_MS, watchBrain, type Brain, type Current, type Line } from '../meetingApi';
 import { MeetingLayout } from './MeetingLayout';
 import { MeetingLobby } from './MeetingLobby';
 import { PaperHistory } from './PaperHistory';
@@ -184,6 +184,25 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
   }, [onToast]);
   const latest = useRef(importPaper);
   latest.current = importPaper;
+  // the lobby's 移除: the next meeting has no paper (it keeps only the transcript); the lobby shows it at once
+  const [clearing, setClearing] = useState(false);
+  const clearPaper = useCallback(async () => {
+    setClearing(true);
+    setError(null);
+    try {
+      await meetingApi.clearPaper();
+      setPaperName(null);
+      try {
+        setCur(await meetingApi.current());
+      } catch {
+        kick.current();
+      }
+    } catch (e) {
+      setError(t('lobby.paper_clear_failed', { a: String((e as Error)?.message ?? e) }));
+    } finally {
+      setClearing(false);
+    }
+  }, [setCur]);
   const changePaper = async () => {
     try {
       const path = await meetingApi.pickPaper();
@@ -239,6 +258,9 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
   const meeting = cur?.meeting ?? null;
   const state = meeting?.state ?? 'idle';
   const hasPaper = !!cur?.paper?.exists || !!paperName;
+  // a meeting without a paper (mode "chat"): only the transcript, the AI stays out. Live, /api/current's mode is the
+  // meeting's; after it (the page still shows it) the meeting's own, else what the backend says now
+  const chat = isChat(state === 'idle' || !meeting?.mode ? cur : meeting);
 
   // 改会议名, before the meeting only (2026-11-14, the user: once it starts the name is fixed, in 回顾 too). Before the
   // meeting there is no meeting to rename yet: the name is kept here and given to the meeting the moment it starts;
@@ -428,13 +450,14 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
     () => ({
       role: 'host',
       live: state === 'live',
-      anchor: cur?.anchor ?? null,
+      noAi: chat,
+      anchor: chat ? null : cur?.anchor ?? null,
       quietS: cur?.quiet_s ?? null,
       onError: onToolError,
       onEnd: onQuietEnd,
       onChanged,
     }),
-    [state, cur?.anchor, cur?.quiet_s, onToolError, onQuietEnd, onChanged],
+    [state, chat, cur?.anchor, cur?.quiet_s, onToolError, onQuietEnd, onChanged],
   );
 
   // no backend yet: nothing to click — the app starts it by itself (the effect above) and this page waits
@@ -453,7 +476,8 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
   const notice = error ? (
     <span className="mt-notice-err">
       <Icon name="warning" size={13} />
-      {error}
+      {/* its own box: a long reason ends in "…" (the whole of it on hover), 关闭 stays */}
+      <span className="mt-notice-t" title={error}>{error}</span>
       <button className="link" onClick={() => setError(null)}>{t('meeting.notice.dismiss')}</button>
     </span>
   ) : null; // the student's last reply is already in the transcript: no second copy up here
@@ -479,6 +503,7 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
         }}
         onStart={() => void startMeeting()}
         onPickPaper={() => void (busy !== 'paper' && changePaper())}
+        onClearPaper={busy || clearing || waitLive ? null : () => void clearPaper()}
         dropProps={dropProps}
         over={over}
         active={active}
@@ -510,18 +535,21 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
     </div>
   );
 
+  // a meeting without a paper: no paper column, no drop, no 新增 — the transcript takes the page (MeetingLayout `chat`)
+  const paperOn = hasPaper && !chat;
   return (
-    <div className={`mt-host ${over && hasPaper ? 'is-drop-over' : ''}`} {...(hasPaper ? dropProps : {})}>
+    <div className={`mt-host ${over && paperOn ? 'is-drop-over' : ''}`} {...(paperOn ? dropProps : {})}>
       <MeetingLayout
         meeting={meeting}
-        titlePrefix={paperTitle}
+        chat={chat}
+        titlePrefix={chat ? null : paperTitle}
         titleOverride={titleOverride}
         invite
         onRename={!live && hasPaper && !applying ? renameNext : null}
-        papers={hasPaper ? papers : null}
+        papers={paperOn ? papers : null}
         activePaper={cur?.active_paper ?? papers[0]?.id ?? null}
-        onSwitchPaper={busy !== 'paper' && papers.length > 1 ? (id: string) => void switchPaper(id) : null}
-        onAddPaper={hasPaper ? () => void (busy !== 'paper' && changePaper()) : null}
+        onSwitchPaper={!chat && busy !== 'paper' && papers.length > 1 ? (id: string) => void switchPaper(id) : null}
+        onAddPaper={paperOn ? () => void (busy !== 'paper' && changePaper()) : null}
         transcript={cur?.transcript ?? NO_LINES}
         partial={cur?.partial ?? null}
         people={cur?.participants ?? null}
@@ -531,18 +559,18 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
         brain={live ? brainNow : null}
         active={active}
         summary={cur?.summary ?? null}
-        diffSrc={hasPaper ? meetingApi.liveDiffUrl() : ''}
+        diffSrc={paperOn ? meetingApi.liveDiffUrl() : ''}
         live={live}
         status={cur?.ready ?? null}
         actions={actions}
         notice={notice}
-        left={hasPaper ? undefined : dropZone}
+        left={hasPaper || chat ? undefined : dropZone}
         tools={meeting ? tools : null}
         bookmarks={cur?.bookmarks ?? null}
-        comments={hasPaper ? comments : null}
-        onHistory={hasPaper && histPaper ? () => setHistOpen(true) : null}
+        comments={paperOn ? comments : null}
+        onHistory={paperOn && histPaper ? () => setHistOpen(true) : null}
       />
-      {over && hasPaper && (
+      {over && paperOn && (
         <div className="mt-drop-veil" aria-hidden="true">
           <Icon name="document" size={28} />
           {t(live ? 'meeting.paper.drop_add' : 'meeting.paper.drop_new')}

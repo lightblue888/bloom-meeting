@@ -14,6 +14,11 @@ export const ZUHUI_BASE = (typeof location !== 'undefined' && !('__TAURI_INTERNA
 export const POLL_MS = 1500;
 
 export type MeetingState = 'idle' | 'live' | 'ended';
+/** "paper": a meeting about a paper (the AI takes part, edits it); "chat": no paper — only the transcript is kept, the
+ *  AI stays out (no AI among the people, no box to type to it). Older meetings have no mode: "paper" */
+export type MeetingMode = 'chat' | 'paper';
+/** a meeting (or /api/current) without a mode is a paper meeting */
+export const isChat = (x: { mode?: MeetingMode | string | null } | null | undefined) => x?.mode === 'chat';
 
 export interface Meeting {
   id: string;
@@ -35,6 +40,8 @@ export interface Meeting {
   records_removed?: string | null;
   /** 第 8 批: the sample meeting that comes with Bloom (zuhui/sample.py) */
   sample?: boolean;
+  /** "chat" when it was held without a paper; missing (older meetings): "paper" */
+  mode?: MeetingMode;
 }
 
 /** one of the papers opened in a meeting (zuhui/meetings.py paper_entry) */
@@ -495,6 +502,8 @@ export interface MeetingBrief {
   sample?: boolean;
   /** 第 8 批: its transcripts and notes were deleted (Settings → Storage) */
   records_removed?: boolean;
+  /** "chat" when it was held without a paper; missing (older meetings): "paper" */
+  mode?: MeetingMode;
 }
 
 export interface PaperInfo {
@@ -772,6 +781,9 @@ export interface Provider {
 
 export interface Current {
   backend: boolean;
+  /** a meeting on: its mode; none on: what the next one would be ("chat" while no paper is picked). Missing (an older
+   *  backend): "paper" */
+  mode?: MeetingMode;
   /** live only: what Claude is doing (null when no meeting is on) */
   brain?: Brain | null;
   paper?: PaperInfo | null;
@@ -1127,6 +1139,12 @@ export const meetingApi = {
     const j = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string; paper?: PaperInfo };
     if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
     return j.paper as PaperInfo;
+  },
+  /** the lobby's 移除: no paper on the desk any more (the next meeting is one without a paper). Throws the code */
+  clearPaper: async (): Promise<void> => {
+    const r = await fetch(`${ZUHUI_BASE}/api/paper/clear`, { method: 'POST', signal: AbortSignal.timeout(8000) });
+    const j = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
   },
   /** 改会议名 (a live or a past meeting); '' goes back to the name it got from its paper. The meeting as saved */
   renameMeeting: async (id: string, title: string): Promise<Meeting> => {

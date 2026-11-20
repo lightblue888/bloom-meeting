@@ -29,7 +29,7 @@ from . import llm_api, provider
 from .config import PROMPTS
 from .hands import ANNOTATE_PROMPT, WorkerProgress, _log, _none_if_empty, _SafeDict, app_facts, parse_note
 
-UNSET = "还没设置模型来源（设置 → 通用 → 模型来源）"
+UNSET = "未设置模型来源"
 NO_VISION = ("我现在用的模型看不了截图。你直接说是哪一段、哪里有问题，我照着论文答。",
              "The model I'm set up with can't read screenshots. Tell me which paragraph you mean and I'll answer from the paper.")
 
@@ -41,7 +41,7 @@ FALLBACK = (
 )
 
 # 网络这一类：连不上、限流、服务忙，什么都没改，隔几秒再试多半就过了（和 Hands._transient 一个意思；403/401/402/404 是设置不对，不重试）
-_TRANSIENT = re.compile(r"连不上(?!.*timeout)|回了 (?:408|429|500|502|503|504|529)\b|overloaded|econnreset", re.I | re.S)
+_TRANSIENT = re.compile(r"(?:连不上|无法连接)(?!.*timeout)|(?:回了 |请求失败（)(?:408|429|500|502|503|504|529)\b|overloaded|econnreset", re.I | re.S)
 # 接口不收图：说到图片 / 视觉 / 不支持，或者带着图回了 400
 _NO_IMAGE = re.compile(r"image|vision|multi-?modal|unsupported|not support|图片|图像|多模态|不支持", re.I)
 _HEADING = re.compile(r"(?m)^\s*(?:#{1,6}\s|\\(?:sub)*section\*?\{)")
@@ -360,7 +360,7 @@ def run_edit(hands, task: dict) -> None:
     prog = WorkerProgress(hands.board, task["id"], hands.paper_file)
 
     def fail(msg: str) -> None:                 # 和 Claude 那一路的 finish(error=…) 一样
-        prog.done("没改成")
+        prog.done("修改失败")
         hands.board.finish(task["id"], error=msg)
 
     if provider.mode() != "api":
@@ -371,7 +371,7 @@ def run_edit(hands, task: dict) -> None:
     try:
         text, _bom, _crlf = _read_raw(path)
     except (OSError, ValueError) as e:
-        fail(f"论文文件读不了：{e}")
+        fail(f"读取论文失败：{e}")
         return
     before = hands._read_paper()
     en = _en(hands)
@@ -398,13 +398,13 @@ def run_edit(hands, task: dict) -> None:
     for rnd in range(2):                        # 第二轮：上一轮有 old 对不上 / 不是 JSON，说清哪里不对再要一次
         left = deadline - time.time()
         if left < 1:
-            fail(f"改稿超时 {timeout:.0f} 秒")
+            fail(f"修改超时（{timeout:.0f} 秒）")
             return
         reply, err = _ask(system, msgs, tier="main", max_tokens=8192, timeout=left, waits=hands.RETRY_WAITS,
-                          label=task["id"], on_wait=lambda: prog.note("网络被挡，等一下重试"),
+                          label=task["id"], on_wait=lambda: prog.note("网络错误，正在重试"),
                           tools=tools if rnd == 0 else None, run_tool=run_tool)
         if reply is None:
-            fail(f"改稿{err}" if err == "被打断" or str(err).startswith("超时") else str(err))
+            fail(f"修改{err}" if err == "被打断" or str(err).startswith("超时") else str(err))
             return
         plan, why = _parse(reply)
         if plan is None:
@@ -413,18 +413,18 @@ def run_edit(hands, task: dict) -> None:
             try:
                 cur, bom, crlf = _read_raw(path)          # 现读：模型想的这一会儿，对比页可能动过稿子
             except (OSError, ValueError) as e:
-                fail(f"论文文件读不了：{e}")
+                fail(f"读取论文失败：{e}")
                 return
             new_text, bad = _apply(cur, plan["edits"])
         if not bad:
             break
         _log([f"[{_now()}] {task['id']} 第 {rnd + 1} 轮改法对不上：" + "；".join(bad)[:600]])
         if rnd == 0:
-            prog.on_event(_tool_ev("Grep", {"pattern": ""}))           # → "在论文里找"（重新定位）
+            prog.on_event(_tool_ev("Grep", {"pattern": ""}))           # → "搜索论文"（重新定位）
             msgs += [{"role": "assistant", "content": reply}, {"role": "user", "content": _fix_msg(bad, en)}]
             continue
         if plan is None:                        # 两次都不是 JSON：和 claude 没返回 JSON 一样算失败
-            fail(f"模型没按格式交回改法：{why}")
+            fail(f"模型返回格式错误：{why}")
             return
         # 两次都有原文对不上：一个字都没写，照 Claude 那一路"跑完了正文没动"收场（记进修改清单，汇报时说为什么）
         hands._conclude(task, prog, hands._read_paper(), hands._en_text(
@@ -452,9 +452,9 @@ def run_edit(hands, task: dict) -> None:
                 bom, crlf = bom2, crlf2
             _write(path, new_text, bom, crlf)
         except (OSError, ValueError) as e:
-            fail(f"写不回论文：{e}")
+            fail(f"写入论文失败：{e}")
             return
-        prog.on_event(_tool_ev("Read", {"file_path": str(path)}))       # → "检查改动"
+        prog.on_event(_tool_ev("Read", {"file_path": str(path)}))       # → "检查修改"
         wrote = True
     else:
         wrote = False
@@ -492,7 +492,7 @@ def run_annotate(hands, task: dict) -> None:
             nt = parse_note(reply or "") or {}
     hands.board.to_note(task["id"], plan=_none_if_empty(nt.get("plan")), need=_none_if_empty(nt.get("need")),
                         anchor=_none_if_empty(nt.get("anchor")), section=_none_if_empty(nt.get("section")),
-                        result=hands._en_text("只记下了，没改论文", "Noted only; the paper was not changed"))
+                        result=hands._en_text("已记录，未修改论文", "Noted only; the paper was not changed"))
 
 
 # ---------- 查论文、看屏幕 ----------
@@ -658,7 +658,7 @@ def ask_screen(hands, question: str, shot: str | None, focus: dict | None, histo
                        timeout=float((hands.cfg.get("look") or {}).get("timeout_s") or 150),
                        waits=hands.RETRY_WAITS, cancel=cancel, label="看屏幕")
     if answer is None:
-        if img is not None and err != "被打断" and (_NO_IMAGE.search(str(err)) or "回了 400" in str(err)):
+        if img is not None and err != "被打断" and (_NO_IMAGE.search(str(err)) or "请求失败（400" in str(err)):
             _log([f"[{_now()}] 看屏幕：接口不收图（{str(err)[:160]}），回一句看不了截图"])
             return NO_VISION[1 if en else 0], None
         return "", str(err or "接口没回话")[:200]

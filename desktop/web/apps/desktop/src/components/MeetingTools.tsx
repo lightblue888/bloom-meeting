@@ -2,7 +2,8 @@
 // guest page alike —
 //   the box at the foot       — the host and co-hosts type to the AI (the same as saying it: in the transcript, answered
 //                               aloud); 标记 (everyone) marks this moment (a short note can follow).
-//                               A participant's box holds 标记 only;
+//                               A participant's box holds 标记 only; on the host's page of a meeting without a
+//                               paper there is no box: 标记 (MarkButton) sits in the top bar;
 //   laid over the transcript  — the passage selected in the paper (the next words to the AI are about it; it clears
 //                               itself).
 // Everything that comes and goes floats; the box keeps one height whatever it shows, live or ended.
@@ -30,6 +31,8 @@ export interface LiveTools {
   me?: string | null;
   /** the meeting is on (after it ends everything stays where it was, switched off) */
   live: boolean;
+  /** a meeting without a paper (mode "chat"): the AI stays out, so nobody types to it — everyone's box is 标记 alone */
+  noAi?: boolean;
   anchor: AnchorSel | null;
   /** the host's: seconds nobody has spoken */
   quietS?: number | null;
@@ -43,12 +46,10 @@ export interface LiveTools {
 
 // ---------------------------------------------------------------- the box at the foot
 export const Composer = memo(function Composer({ tools }: { tools: LiveTools }) {
-  // typing to the AI: the host and co-hosts; a participant's box is 标记 alone
-  const canAsk = tools.role !== 'guest';
+  // typing to the AI: the host and co-hosts; a participant's box is 标记 alone, and everyone's in a meeting without the AI
+  const canAsk = tools.role !== 'guest' && !tools.noAi;
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
-  const [marking, setMarking] = useState(false);
-  const [mark, setMark] = useState<Bookmark | null>(null);
   const live = tools.live;
   const send = async () => {
     const q = text.trim();
@@ -62,19 +63,6 @@ export const Composer = memo(function Composer({ tools }: { tools: LiveTools }) 
       tools.onError(t('meeting.live.ask_failed', { a: liveError(e) }));
     } finally {
       setSending(false);
-    }
-  };
-  const doMark = async () => {
-    if (!live || marking) return;
-    setMarking(true);
-    try {
-      const r = await meetingApi.bookmark('');
-      setMark(r.bookmark);
-      tools.onChanged?.();
-    } catch (e) {
-      tools.onError(t('meeting.live.mark_failed', { a: liveError(e) }));
-    } finally {
-      setMarking(false);
     }
   };
   return (
@@ -108,15 +96,39 @@ export const Composer = memo(function Composer({ tools }: { tools: LiveTools }) 
       ) : (
         <span className="mt-compose-gap" />
       )}
-        <span className="mt-compose-mark">
-          <button className="mt-tbtn" onClick={() => void doMark()} disabled={!live || marking} data-testid="bookmark">
-            <Icon name="flag" size={13} />
-            {t('meeting.live.mark')}
-          </button>
-          {mark && <MarkNote mark={mark} onClose={() => setMark(null)} onError={tools.onError} onChanged={tools.onChanged} />}
-        </span>
+        <MarkButton tools={tools} />
       </div>
     </div>
+  );
+});
+
+/** 标记 and the note card right after it. In the box at the transcript's foot; on the host's page of a meeting without a
+ *  paper it is the only tool, so it sits in the top bar beside 邀请 (`inHead`: a top-bar button, the card opens under it) */
+export const MarkButton = memo(function MarkButton({ tools, inHead = false }: { tools: LiveTools; inHead?: boolean }) {
+  const [marking, setMarking] = useState(false);
+  const [mark, setMark] = useState<Bookmark | null>(null);
+  const live = tools.live;
+  const doMark = async () => {
+    if (!live || marking) return;
+    setMarking(true);
+    try {
+      const r = await meetingApi.bookmark('');
+      setMark(r.bookmark);
+      tools.onChanged?.();
+    } catch (e) {
+      tools.onError(t('meeting.live.mark_failed', { a: liveError(e) }));
+    } finally {
+      setMarking(false);
+    }
+  };
+  return (
+    <span className={`mt-compose-mark ${inHead ? 'is-head' : ''}`}>
+      <button className={inHead ? 'mt-btn mt-mark-btn' : 'mt-tbtn'} onClick={() => void doMark()} disabled={!live || marking} data-testid="bookmark">
+        <Icon name="flag" size={13} />
+        {t('meeting.live.mark')}
+      </button>
+      {mark && <MarkNote mark={mark} onClose={() => setMark(null)} onError={tools.onError} onChanged={tools.onChanged} />}
+    </span>
   );
 });
 

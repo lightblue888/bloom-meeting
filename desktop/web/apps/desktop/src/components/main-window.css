@@ -397,10 +397,13 @@ body.mw-resizing * {
 }
 
 /* the window's own tooltip (Tooltip.tsx) */
+/* as wide as its words (up to 360 px), wherever it starts: near the window's right edge it used to wrap to the room left
+   there (three characters a line) and keep that width after Tooltip.tsx moved it back in (2026-11-20) */
 .mw-tip {
   position: fixed;
   z-index: 90;
-  max-width: 360px;
+  width: max-content;
+  max-width: min(360px, calc(100vw - 16px));
   padding: 5px 9px;
   border-radius: 6px;
   background: var(--raise);

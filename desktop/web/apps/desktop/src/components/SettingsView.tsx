@@ -230,7 +230,6 @@ function SearchResults({ query, groups, stops, sel, setSel, open, clear, setQuer
             <Icon name="search" size={20} />
             <div className="st-none-body">
               <div className="title">{S('settings.search.none.title_short')}</div>
-              <div>{S('settings.search.none.hint')}</div>
               <div className="try">
                 <span>{S('settings.search.none.common')}</span>
                 {suggestions.map((k, i) => (

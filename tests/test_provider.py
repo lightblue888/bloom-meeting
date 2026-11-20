@@ -139,7 +139,7 @@ class ProviderTest(unittest.TestCase):
     def test_modes_and_api(self):
         r = run(UNIT)
         self.assertEqual(r["fresh"], ["unset", "none", "AI"])                       # 新装：没设，AI 不默认叫 Claude
-        self.assertIn("还没设置模型来源", r["fresh_ask"])
+        self.assertIn("未设置模型来源", r["fresh_ask"])
         self.assertEqual(r["claude"], ["claude", "Claude", ""])                      # Claude Code 账号：一切照旧
         self.assertEqual(r["deepseek"], ["api", "DeepSeek", "deepseek-flash", "deepseek-flash", "DeepSeek Flash", "Max"])
         self.assertEqual(r["public"], {"kind": "deepseek", "key_set": True, "key_tail": "1234", "active": True,

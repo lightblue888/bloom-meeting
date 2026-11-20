@@ -183,8 +183,8 @@ export class GuestVoice {
   async toggleMic(): Promise<boolean> {
     const LK = window.LivekitClient;
     if (!this.room || !LK) {
-      this.toast(this.joined && (this.rj.busy || this.rj.timer) ? this.L('正在重新连接，连上后麦克风照原样', 'Reconnecting: the microphone comes back as it was')
-        : this.L('语音没连上', 'Voice is not connected'));
+      this.toast(this.joined && (this.rj.busy || this.rj.timer) ? this.L('正在重新连接…', 'Reconnecting…')
+        : this.L('语音未连接', 'Voice not connected'));
       return false;
     }
     const r = this.room;
@@ -194,7 +194,7 @@ export class GuestVoice {
       await r.localParticipant.setMicrophoneEnabled(!on);
       if (r === this.room) { this.wantMic = !on; this.micLater = false; }
     } catch {
-      this.toast(this.L('没拿到麦克风权限', 'No microphone permission'));
+      this.toast(this.L('未获得麦克风权限', 'No microphone permission'));
     }
     this.onChange();
     return this.snapshot().micOn;
@@ -227,10 +227,10 @@ export class GuestVoice {
     const mine = () => r === this.room;
     const isBloom = (p: any) => { try { return !!JSON.parse(p.metadata || '{}').bloom_host; } catch { return false; } };
     r.on(RE.ParticipantConnected, (p: any) => {
-      if (mine() && !isBloom(p) && Date.now() > this.quietUntil) this.toast(`${p.name || p.identity} ${this.L('进来了', 'joined')}`);
+      if (mine() && !isBloom(p) && Date.now() > this.quietUntil) this.toast(`${p.name || p.identity} ${this.L('加入会议', 'joined')}`);
       this.onChange();
     })
-      .on(RE.ParticipantDisconnected, (p: any) => { if (mine() && !isBloom(p)) this.toast(`${p.name || p.identity} ${this.L('离开了', 'left')}`); this.onChange(); })
+      .on(RE.ParticipantDisconnected, (p: any) => { if (mine() && !isBloom(p)) this.toast(`${p.name || p.identity} ${this.L('离开会议', 'left')}`); this.onChange(); })
       .on(RE.ActiveSpeakersChanged, () => this.onChange())
       .on(RE.TrackMuted, () => this.onChange())
       .on(RE.TrackUnmuted, () => this.onChange())
@@ -255,8 +255,8 @@ export class GuestVoice {
         try { m = JSON.parse(new TextDecoder().decode(payload)); } catch { return; }
         this.onData(topic, m);
       })
-      .on(RE.SignalReconnecting, () => { if (!mine()) return; this.diag('SignalReconnecting'); this.setConn(this.L('网络不稳，正在重连…', 'Unstable network, reconnecting…'), 'busy'); })
-      .on(RE.Reconnecting, () => { if (!mine()) return; this.diag('Reconnecting'); this.setConn(this.L('网络不稳，正在重连…', 'Unstable network, reconnecting…'), 'busy'); })
+      .on(RE.SignalReconnecting, () => { if (!mine()) return; this.diag('SignalReconnecting'); this.setConn(this.L('网络不稳定，正在重连…', 'Unstable network, reconnecting…'), 'busy'); })
+      .on(RE.Reconnecting, () => { if (!mine()) return; this.diag('Reconnecting'); this.setConn(this.L('网络不稳定，正在重连…', 'Unstable network, reconnecting…'), 'busy'); })
       .on(RE.Reconnected, () => { if (!mine()) return; this.diag('Reconnected'); this.setConn(''); })
       .on(RE.ConnectionQualityChanged, (q: string, p: any) => {
         if (!mine() || !p || p !== r.localParticipant || q === this.lastQ) return;
@@ -277,17 +277,17 @@ export class GuestVoice {
     if (!this.joined) return;
     if (why === 'DUPLICATE_IDENTITY') {
       this.rj.stop = why;
-      this.setConn(this.L('有人用同一个名字进了会，你这边的语音断开了。换个名字刷新再进', 'Someone joined with your name, so your voice was cut. Refresh and join with another name.'), 'info');
+      this.setConn(this.L('语音已断开：有人用相同名字入会，请换名字后重新加入', 'Voice disconnected: someone joined with the same name. Rejoin with another name.'), 'info');
       return;
     }
-    if (NO_AUTO[why]) { this.rj.stop = why; this.setConn(this.L('语音断开了，论文和逐字稿照常更新', 'Voice disconnected; the paper and transcript still update'), 'retry'); return; }
+    if (NO_AUTO[why]) { this.rj.stop = why; this.setConn(this.L('语音已断开', 'Voice disconnected'), 'retry'); return; }
     this.rejoinSoon();
   }
 
   private rejoinSoon() {
     if (!this.joined || this.room || this.rj.busy || this.rj.timer || this.rj.stop) return;
     if (!this.live()) { this.setConn(''); return; }
-    if (this.rj.n >= RJ_MAX) { this.diag('rejoin_giveup'); this.setConn(this.L('语音断开了，论文和逐字稿照常更新', 'Voice disconnected; the paper and transcript still update'), 'retry'); return; }
+    if (this.rj.n >= RJ_MAX) { this.diag('rejoin_giveup'); this.setConn(this.L('语音已断开', 'Voice disconnected'), 'retry'); return; }
     this.setConn(this.L('正在重新连接…', 'Reconnecting…'), 'busy');
     this.rj.timer = window.setTimeout(() => { this.rj.timer = 0; this.voice(true); }, Math.min(4000, 1000 * 2 ** this.rj.n));
   }
@@ -303,8 +303,8 @@ export class GuestVoice {
       if (r !== this.room) return;
       this.wantMic = false;
       this.diag('mic_fail', e && (e.name || e.message));
-      this.toast(first ? this.L('没拿到麦克风权限，先以静音进会', 'No microphone permission: joined muted')
-        : this.L('麦克风没重新打开，点一下麦克风按钮再开', 'The microphone did not come back: click the microphone to turn it on'));
+      this.toast(first ? this.L('未获得麦克风权限，已静音入会', 'No microphone permission: joined muted')
+        : this.L('麦克风开启失败，请手动打开', 'Microphone failed to turn on: turn it on by hand'));
     }
     this.onChange();
   }
@@ -313,7 +313,7 @@ export class GuestVoice {
     if (!this.joined || this.room || this.rj.busy) return;
     if (!this.live()) { this.setConn(''); return; }
     const LK = window.LivekitClient;
-    if (!LK) { this.setConn(this.L('语音模块没加载上：听不到、也说不了，论文和逐字稿照常更新。刷新一下可以重试。', 'The voice module did not load: you can’t hear or talk, the paper and transcript still update. Refresh to try again.'), 'info'); return; }
+    if (!LK) { this.setConn(this.L('语音加载失败，请刷新重试', 'Voice failed to load. Refresh to try again.'), 'info'); return; }
     const g = this.gen;
     let r: any = null;
     const t1 = Date.now();
@@ -347,7 +347,7 @@ export class GuestVoice {
           this.diag(again ? 'rejoin_fail' : 'connect_fail', msg);
           this.onChange();
           if (!this.joined) return;
-          if (e && e.tokenStatus === 403) { this.setConn(this.L(`语音没连上（${msg}），论文和逐字稿照常更新。`, `Voice did not connect (${msg}); the paper and transcript still update.`), 'info'); return; }
+          if (e && e.tokenStatus === 403) { this.setConn(this.L(`语音连接失败：${msg}`, `Voice connection failed: ${msg}`), 'info'); return; }
           this.rejoinSoon();
         },
       );

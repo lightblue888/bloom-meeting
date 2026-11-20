@@ -173,11 +173,11 @@ def convert_pptx(src: Path, stage: Path) -> tuple[str, dict]:
     try:
         z = zipfile.ZipFile(src)
     except (zipfile.BadZipFile, OSError):
-        raise PptxError(f"这个 PPT 打不开（文件坏了，或者不是 .pptx）：{src.name}")
+        raise PptxError(f"PPT 文件已损坏：{src.name}")
     with z:
         slides = _slides(z)
         if not slides:
-            raise PptxError(f"这个 PPT 里没有幻灯片：{src.name}")
+            raise PptxError(f"PPT 中没有幻灯片：{src.name}")
         names = set(z.namelist())
         raw_all = " ".join(z.read(s).decode("utf-8", "replace") for s in slides[:40])
         cjk = len(re.findall(r"[一-鿿]", raw_all)) >= 4
@@ -253,7 +253,7 @@ def convert_pptx(src: Path, stage: Path) -> tuple[str, dict]:
                 out.append(("备注：" if cjk else "Notes: ") + " ".join(_md_esc(n) for n in notes))
                 out.append("")
         if not shown:
-            raise PptxError(f"这个 PPT 的页都是隐藏的：{src.name}")
+            raise PptxError(f"PPT 中所有页均已隐藏：{src.name}")
         if fig_meta:
             (figs_dir / "figures.json").write_text(json.dumps(fig_meta, ensure_ascii=False, indent=1), encoding="utf-8")
     md = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).rstrip() + "\n"
@@ -273,4 +273,4 @@ def readonly(md_path) -> bool:
         return False
 
 
-READONLY_SAY = ("PPT 只能看不能改", "Slides are view-only. I can't edit them.")
+READONLY_SAY = ("PPT 不支持编辑", "Slides are view-only. I can't edit them.")

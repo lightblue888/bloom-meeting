@@ -14,24 +14,47 @@ const PALETTE = ['#4ade80', '#facc15', '#f472b6', '#22d3ee', '#c084fc', '#f87171
 export const nameColor = (c: string | null | undefined): string | undefined =>
   c ? `color-mix(in srgb, ${c} var(--name-mix, 100%), #000)` : undefined;
 
-const isHost = (p: Participant) => !!p.you || p.rank === 'host';
 const isClaude = (p: Participant) => p.id === 'claude';
+/** the host: the one ranked so. Only a list without ranks (an older backend) falls back on "you" — on the guest page
+ *  "you" is the guest, who was drawn in the host's blue next to the host (2026-11-20 review) */
+const hostOf = (people: Participant[]) => people.find((p) => p.rank === 'host') ?? (people.some((p) => p.rank) ? undefined : people.find((p) => p.you));
+const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
 /** a photo of their own — not the backend's stand-in for guests (/avatars/bloom.png) */
 export const ownPhoto = (avatar: string | null | undefined): avatar is string => !!avatar && !/\/avatars\/bloom\.png(?:[?#]|$)/i.test(avatar);
 
-/** each person's colour, by id: the host blue, Claude orange, a guest the backend's colour (else the palette's, in order) */
+/** each person's colour, by id: the host blue, Claude orange, a guest the backend's colour (else the palette's, in
+ *  order). Nobody else gets the host's or the AI's colour: a guest whose colour is one of theirs, or a guest without one,
+ *  takes the next palette colour nobody has yet */
 export function colorsById(people: Participant[]): Record<string, string> {
   const out: Record<string, string> = Object.create(null);
-  let k = 0;
+  const host = hostOf(people);
+  const taken: string[] = [];
+  // the host's and the AI's are the ones picked in Settings → Profile (sent with the people); blue / orange otherwise
   for (const p of people) {
-    // the host's and the AI's are the ones picked in Settings → Profile (sent with the people); blue / orange otherwise
-    if (isHost(p)) out[p.id] = p.color || HOST_COLOR;
+    if (p === host) out[p.id] = p.color || HOST_COLOR;
     else if (isClaude(p)) out[p.id] = p.color || CLAUDE_COLOR;
-    else {
-      out[p.id] = p.color || PALETTE[k % PALETTE.length];
-      k++;
+    else continue;
+    taken.push(out[p.id]);
+  }
+  const reserved = [...taken];
+  for (const p of people) if (p !== host && !isClaude(p) && p.color && !reserved.some((c) => same(c, p.color!))) taken.push(p.color);
+  let k = 0;
+  const next = () => {
+    for (let i = 0; i < PALETTE.length; i++) {
+      const c = PALETTE[(k + i) % PALETTE.length];
+      if (!taken.some((x) => same(x, c))) {
+        k = (k + i + 1) % PALETTE.length;
+        taken.push(c);
+        return c;
+      }
     }
+    // more people than colours: round the palette again
+    return PALETTE[k++ % PALETTE.length];
+  };
+  for (const p of people) {
+    if (p === host || isClaude(p)) continue;
+    out[p.id] = p.color && !reserved.some((c) => same(c, p.color!)) ? p.color : next();
   }
   return out;
 }
@@ -42,13 +65,17 @@ export function colorsByName(people: Participant[], others: string[] = [], me?: 
   const byId = colorsById(people);
   const out: Record<string, string> = Object.create(null);
   for (const p of people) if (p.name && out[p.name] === undefined) out[p.name] = byId[p.id];
-  if (me && !people.some(isHost) && out[me] === undefined) out[me] = HOST_COLOR;
+  if (me && !hostOf(people) && out[me] === undefined) out[me] = HOST_COLOR;
   const ai = people.find(isClaude)?.name ?? 'Claude';            // the AI, whatever it is called
   if (out[ai] === undefined) out[ai] = CLAUDE_COLOR;
-  let k = people.filter((p) => !isHost(p) && !isClaude(p)).length;
+  // the others: the palette's colours nobody has yet, in order (then round again)
+  const used = Object.values(out);
+  const free = PALETTE.filter((c) => !used.some((u) => same(u, c)));
+  const pool = free.length ? free : PALETTE;
+  let k = 0;
   for (const raw of others) {
     const n = (raw ?? '').trim();
-    if (n && out[n] === undefined) out[n] = PALETTE[k++ % PALETTE.length];
+    if (n && out[n] === undefined) out[n] = pool[k++ % pool.length];
   }
   return out;
 }

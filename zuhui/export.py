@@ -47,40 +47,40 @@ WORDS = {
     "notes": ("纪要", "Notes"),
     "abstract": ("主题摘要", "Summary"),
     "conclusions": ("核心结论", "Key conclusions"),
-    "people": ("每个人", "By person"),
-    "said": ("讲了什么", "Said"),
-    "feedback": ("收到的意见", "Feedback"),
-    "asks": ("要做的事", "Asked to do"),
+    "people": ("参会者", "By person"),
+    "said": ("发言要点", "Said"),
+    "feedback": ("意见", "Feedback"),
+    "asks": ("待办", "Asked to do"),
     "p_said": ("进展", "Progress"),
     "p_feedback": ("意见", "Feedback"),
     "p_asks": ("下周任务", "Next week"),
     "todos": ("后续工作安排", "Follow-ups"),
-    "carried": ("上次遗留", "Left from last time"),
-    "carried_done": ("落实了", "Done"),
-    "carried_open": ("没落实", "Not yet"),
+    "carried": ("遗留事项", "Left from last time"),
+    "carried_done": ("已完成", "Done"),
+    "carried_open": ("未完成", "Not yet"),
     "talk": ("发言时长", "Talk time"),
-    "participants": ("参会人", "Participants"),
+    "participants": ("参会者", "Participants"),
     "changes": ("修改清单", "To-dos"),
     "diff": ("修订对比", "Revisions"),
     "transcript": ("逐字稿", "Transcript"),
     "pack": ("会议包", "Meeting pack"),
-    "done_in_meeting": ("会上已改", "Edited in the meeting"),
-    "plan": ("怎么改 {a}", "Change: {a}"),
-    "need": ("要补 {a}", "Needs: {a}"),
-    "tag_rerun": ("要重新跑实验", "Rerun experiments"),
-    "tag_data": ("要补数据", "Needs new data"),
-    "tag_figure": ("要重画图表", "Redo figures or tables"),
-    "tag_lit": ("要查文献", "Check the literature"),
-    "tag_discuss": ("要再讨论", "Needs discussion"),
+    "done_in_meeting": ("会中已修改", "Edited in the meeting"),
+    "plan": ("修改方案：{a}", "Plan: {a}"),
+    "need": ("需补充：{a}", "Needs: {a}"),
+    "tag_rerun": ("需重跑实验", "Rerun experiments"),
+    "tag_data": ("需补数据", "Needs new data"),
+    "tag_figure": ("需重画图表", "Redo figures or tables"),
+    "tag_lit": ("需查文献", "Check the literature"),
+    "tag_discuss": ("待讨论", "Needs discussion"),
     "writing": ("整理中", "Working on it"),
     "other": ("其他", "Other"),
     "app": ("软件", "App"),
     "guest": ("访客", "Guest"),
     "host": ("主持人", "Host"),
     "meeting": ("组会", "Meeting"),
-    "no_notes": ("没有纪要", "No notes"),
-    "no_changes": ("没有会后要改的", "Nothing to fix after the meeting"),
-    "no_lines": ("没有发言", "Nobody spoke"),
+    "no_notes": ("暂无纪要", "No notes"),
+    "no_changes": ("暂无待修改项", "Nothing to fix after the meeting"),
+    "no_lines": ("暂无发言", "Nobody spoke"),
 }
 
 
@@ -172,7 +172,10 @@ def info(g: dict, cfg: dict | None, lang: str) -> dict:
         n = _one(p.get("name")) if isinstance(p, dict) else ""
         if n and n not in people:
             people.append(n)
-    for n in [me, ai] + [who_of(l, me, ai, lang) for l in g.get("transcript") or [] if l.get("who") == "guest"]:
+    lines = g.get("transcript") or []
+    # 没有论文的会：AI 没参加（参会人名单里本来就没有它），导出的"参会人"也不写它
+    ai_in = m.get("mode") != "chat" or any(l.get("who") == "student" for l in lines)
+    for n in [me] + ([ai] if ai_in else []) + [who_of(l, me, ai, lang) for l in lines if l.get("who") == "guest"]:
         if n and n not in people:
             people.append(n)
     safe = _BAD_NAME.sub(" ", title).strip().strip(".") or tr("meeting", lang)
@@ -323,7 +326,7 @@ def todos_blocks(g: dict, lang: str, head: bool = True) -> list:
                 sub.append(tr("plan", lang, a=_one(x.get("plan"))))
             elif x.get("status") != "done":
                 sub.append(tr("writing", lang))
-            from .board import note_tags            # 标注的标签：要重新跑实验、要补数据……（界面上那排胶囊）
+            from .board import note_tags            # 标注的标签：需重跑实验、需补数据……（界面上那排胶囊）
             tags = [tr("tag_" + k, lang) for k in note_tags(x)]
             if tags:
                 sub.append((", " if lang == "en" else "、").join(tags))

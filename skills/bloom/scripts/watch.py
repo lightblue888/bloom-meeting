@@ -95,7 +95,7 @@ def catchup():
     print(f"== 正在开的会：{m.get('title')} · {m.get('started')} 开始 · id {m.get('id')}")
     ps = cur.get("participants") or []
     if ps:
-        rank = {"host": "主持人", "assistant": "AI", "teacher": "导师", "participant": "参会者"}
+        rank = {"host": "主持人", "cohost": "共同主持人", "assistant": "AI", "teacher": "导师", "participant": "参会者"}
         print("参会人：" + "、".join(f"{p.get('name')}（{rank.get(p.get('rank'), p.get('rank') or '')}）" for p in ps))
     p = cur.get("paper") or {}
     if p.get("exists"):

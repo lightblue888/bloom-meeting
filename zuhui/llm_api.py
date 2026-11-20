@@ -256,11 +256,11 @@ def _error(r: httpx.Response, label: str) -> ApiError:
         msg = (j.get("error") or {}).get("message") if isinstance(j.get("error"), dict) else j.get("error") or j.get("message")
     except Exception:
         msg = r.text[:200]
-    hint = {401: "API key 不对", 402: "余额不足", 403: "没有权限", 404: "接口地址或型号不对", 429: "请求太频繁或额度用完"}.get(r.status_code, "")
-    return ApiError(f"{label} 回了 {r.status_code}{('（' + hint + '）') if hint else ''}：{str(msg or '')[:160]}")
+    hint = {401: "API Key 无效", 402: "余额不足", 403: "无权限", 404: "接口地址或型号错误", 429: "请求过于频繁或额度已用完"}.get(r.status_code, "")
+    return ApiError(f"{label} 请求失败（{r.status_code}{('，' + hint) if hint else ''}）：{str(msg or '')[:160]}")
 
 
-UNSET = "还没设置模型来源（设置 → 通用 → 模型来源）"
+UNSET = "未设置模型来源"
 
 
 def _post(d: dict, body: dict, timeout: float) -> dict:
@@ -273,7 +273,7 @@ def _post(d: dict, body: dict, timeout: float) -> dict:
         try:
             r = _client(px).post(url, headers=headers, json=b, timeout=timeout)
         except httpx.HTTPError as e:
-            raise ApiError(f"连不上 {provider.label(d)}：{e!r}"[:200]) from None
+            raise ApiError(f"无法连接 {provider.label(d)}：{e!r}"[:200]) from None
         if r.status_code == 200:
             try:
                 return r.json()
@@ -369,7 +369,7 @@ def stream(system: str, messages: list[dict], tier: str = "fast", max_tokens: in
                 elif t == "message_stop":
                     return
     except httpx.HTTPError as e:
-        raise ApiError(f"连不上 {provider.label(d)}：{e!r}"[:200]) from None
+        raise ApiError(f"无法连接 {provider.label(d)}：{e!r}"[:200]) from None
     finally:
         if use or said:
             from . import usage
@@ -427,7 +427,7 @@ def _stream_openai(d: dict, system: str, messages: list[dict], tier: str, max_to
                 return
         raise ApiError(f"{provider.label(d)} 不认这次的请求参数")
     except httpx.HTTPError as e:
-        raise ApiError(f"连不上 {provider.label(d)}：{e!r}"[:200]) from None
+        raise ApiError(f"无法连接 {provider.label(d)}：{e!r}"[:200]) from None
     finally:
         if started:
             _record(d, tier, use, _chars(system, messages), "".join(said))
@@ -475,7 +475,7 @@ def chat(system: str, messages: list[dict], tools: list[dict], run_tool, tier: s
         try:
             j = _post(d, body, left)
         except ApiError as e:
-            if rnd == 0 and "回了 400" in str(e) and _NO_TOOLS.search(str(e)):
+            if rnd == 0 and "请求失败（400" in str(e) and _NO_TOOLS.search(str(e)):
                 return complete(system, messages, tier=tier, max_tokens=max_tokens, timeout=left, d=d)
             raise
         if fmt == "openai":
@@ -527,7 +527,7 @@ def list_models(kind: str, base_url: str, key: str = "", timeout: float = 15) ->
     try:
         r = _client(_proxy_for(base)).get(base + "/models", headers=headers, timeout=timeout)
     except httpx.HTTPError as e:
-        raise ApiError(f"连不上 {label}：{e!r}"[:200]) from None
+        raise ApiError(f"无法连接 {label}：{e!r}"[:200]) from None
     if r.status_code != 200:
         raise _error(r, label)
     try:

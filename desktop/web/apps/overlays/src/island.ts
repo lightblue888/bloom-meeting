@@ -631,9 +631,10 @@ function homeBody() {
     paper ? ` aria-label="${esc(t('island.paper_ax', { name: paper }))}"` : ''
   }>${esc(paper || 'Bloom')}</span></div>`;
   const rows: string[] = [];
-  // the two things Bloom does from here: start the meeting (as its page's button does) and copy the invitation
+  // the two things Bloom does from here: start the meeting (as its page's button does) and copy the invitation. No
+  // paper doesn't keep it off: that meeting keeps only the transcript (mode "chat")
   rows.push(`<div class="bl-acts">
-    <button class="bl-btn primary" data-a="meeting.start"${S.paper ? '' : ' disabled'} aria-label="${esc(t('island.meeting.start'))}">${ic('video', 14)}<span>${esc(t('island.meeting.start'))}</span></button>
+    <button class="bl-btn primary" data-a="meeting.start" aria-label="${esc(t('island.meeting.start'))}">${ic('video', 14)}<span>${esc(t('island.meeting.start'))}</span></button>
     <button class="bl-btn" data-a="invite.copy" aria-label="${esc(t('island.invite.copy'))}">${ic('copy', 14)}<span>${esc(t('island.invite.copy'))}</span></button></div>`);
   for (const j of S.jobs.slice(0, 3)) rows.push(jobRow(j));
   const n = cardCount();

@@ -712,11 +712,11 @@ class Handler(BaseHTTPRequestHandler):
         with LOCK:
             live = _live(_room(room))
         if not live:                               # 只有正在开的会能进: 旧链接 / 还没开的会都拿不到 token
-            return self._json(403, {"error": "这场会没在开，进不了"})
+            return self._json(403, {"error": "会议未开始或已结束"})
         if PUBLIC:                                 # 公共中继: 一场会最多这么多人
             try:
                 if len(_participants(room)) >= PUB_MAX_GUESTS:
-                    return self._json(429, {"error": "这场会人满了"})
+                    return self._json(429, {"error": "会议人数已满"})
             except Exception:
                 pass
         with LOCK:                                 # 这个名字在这场会里是不是已经有人用了 (见 _claim)
@@ -751,7 +751,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, r["lines"], "application/json; charset=utf-8")
             if what == "paper":
                 if not r or not r["paper"]:
-                    return self._send(404, "论文还没推上来".encode("utf-8"), "text/plain; charset=utf-8")
+                    return self._send(404, "论文加载中…".encode("utf-8"), "text/plain; charset=utf-8")
                 return self._send(200, r["paper"], "text/html; charset=utf-8")
             if what == "fig" and len(rest) == 2 and r:
                 a = r["assets"].get(rest[1])
@@ -908,9 +908,9 @@ class Handler(BaseHTTPRequestHandler):
         with LOCK:                                 # 收 50 MB 之前先看收不收得下: 会没在开、排满了就不收
             r = _room(room)
             if not _live(r):
-                return self._json(409, {"error": "会议没在开"})
+                return self._json(409, {"error": "会议已结束"})
             if what == "upload" and len(r["uploads"]) >= MAX_UPLOADS:
-                return self._json(429, {"error": "传得太快了, 稍等再传"})
+                return self._json(429, {"error": "上传过于频繁，请稍后重试"})
             err = _fits(r, 0, n) if what == "upload" else None
         if err:
             return self._json(503 if err == "busy" else 413, {"error": err})
@@ -924,7 +924,7 @@ class Handler(BaseHTTPRequestHandler):
         if what == "upload":
             name = os.path.basename(str(q.get("name", [""])[0]).replace("\\", "/")).strip()[:120]
             if not name or not name.lower().endswith(UP_EXT) or not body:
-                return self._json(415, {"error": "只收 PDF、Word、Markdown、LaTeX、纯文本"})
+                return self._json(415, {"error": "仅支持 PDF、Word、PPT、Markdown、LaTeX、TXT"})
             act = {"id": aid, "by": by, "path": "upload", "body": {"upload": aid, "name": name, "size": len(body)}, "at": time.time()}
         else:
             try:
@@ -933,24 +933,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": "bad json"})
             path = str(obj.get("path") or "")
             if path not in ACT_PATHS or not isinstance(obj.get("body", {}), dict):
-                return self._json(403, {"error": "这个做不了"})
+                return self._json(403, {"error": "不支持此操作"})
             act = {"id": aid, "by": by, "path": path, "body": obj.get("body") or {}, "at": time.time()}
         with LOCK:
             r = _room(room)
             if not _live(r):
-                return self._json(409, {"error": "会议没在开"})
+                return self._json(409, {"error": "会议已结束"})
             if act["path"] in COHOST_PATHS and not _is_cohost(r, by):
                 return self._json(403, {"error": "cohost_only"})
             _sweep(r)
             if what == "upload":
                 if len(r["uploads"]) >= MAX_UPLOADS:
-                    return self._json(429, {"error": "传得太快了, 稍等再传"})
+                    return self._json(429, {"error": "上传过于频繁，请稍后重试"})
                 err = _fits(r, 0, len(body))
                 if err:
                     return self._json(503 if err == "busy" else 413, {"error": err})
                 r["uploads"][aid] = (act["body"]["name"], body, by, time.time())
             if len(r["inbox"]) >= MAX_INBOX:
-                return self._json(429, {"error": "太快了"})
+                return self._json(429, {"error": "操作过于频繁"})
             r["inbox"].append(act)
         _log_line(f"act room={room} by={_q(_clean(by, 40))} path={act['path']} id={aid}")
         return self._json(200, {"ok": True, "id": aid})

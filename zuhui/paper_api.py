@@ -70,7 +70,7 @@ def get(viewer, raw_path: str) -> tuple[int, bytes | dict, str]:
         a, b = (q.get("a") or [""])[0], (q.get("b") or ["cur"])[0]
         page, why = paper_versions.diff_page(pid, a, b, ui)
         if page is None:
-            msg = "找不到这一版" if why == "not_found" else "对比生成失败"
+            msg = "版本不存在" if why == "not_found" else "版本对比生成失败"
             return 404, msg.encode("utf-8"), "text/plain; charset=utf-8"
         if "embed=1" in raw_path:
             from .view import _embed, _inject

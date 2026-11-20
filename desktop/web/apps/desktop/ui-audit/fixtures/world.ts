@@ -89,6 +89,9 @@ export interface RelayState {
   lv?: string;
   /** 第 8 批: the host is recording (the join card's line, the bar's marker) */
   rec?: 'screen' | 'audio' | null;
+  /** a meeting without a paper: mode "chat", paper false (no paper page, the AI stays out) */
+  mode?: 'chat' | 'paper';
+  paper?: boolean;
 }
 
 export interface World {
@@ -263,6 +266,7 @@ export function baseWorld(lang: Lang, stress = false): World {
 
   const current: Current = {
     backend: true,
+    mode: 'paper',
     meeting: {
       id: 'm-live', title, started: isoAgo(started), ended: null, state: 'live', duration_s: started - 3, lang, title_auto: true, papers, active_paper: 'p1',
     },
@@ -679,6 +683,79 @@ export function withComments(w: World): World {
   if (w.relay.state) (w.relay.state as { comments?: PaperComment[] }).comments = clone(c);
   return w;
 }
+// ------------------------------------------------------------------------------------------------ no paper (mode "chat")
+// A meeting without a paper keeps only the transcript: no paper column, the AI not among the people, no AI lines, no
+// board; its name is the backend's "组会 · <date>" (it is the meeting's name: listed as user content)
+const humanOnly = (ps: Participant[] | null | undefined) => (ps ?? []).filter((p) => p.id !== 'claude');
+const humanLines = (ls: Line[]) => ls.filter((l) => l.who !== 'student');
+/** the lobby with no paper picked (the next meeting keeps only the transcript); everything else ready */
+export function noPaper(w: World): World {
+  idle(w);
+  const c = w.current;
+  c.paper = null;
+  c.papers = [];
+  c.active_paper = null;
+  c.mode = 'chat';
+  return w;
+}
+/** the lobby whose chosen paper's file is gone (moved or renamed): its name, 文件找不到了, 开始会议 off until 更换 / 移除 */
+export function paperMissing(w: World): World {
+  idle(w);
+  const c = w.current;
+  const name = c.paper?.name ?? 'FooBench.md';
+  c.paper = { path: `C:\\Users\\maya\\Documents\\${name}`, name, exists: false };
+  c.mode = 'chat';
+  return w;
+}
+/** in a meeting without a paper: the host and the guests talk, the transcript takes the page */
+export function chatLive(w: World): World {
+  const T = L(w.lang);
+  const c = w.current;
+  const title = T('组会 · 11月18日', 'Meeting · Nov 18');
+  c.mode = 'chat';
+  c.meeting = { ...c.meeting!, title, mode: 'chat', papers: [], active_paper: null };
+  c.paper = null;
+  c.papers = [];
+  c.active_paper = null;
+  c.participants = humanOnly(c.participants);
+  c.transcript = humanLines(c.transcript);
+  c.brain = null;
+  c.board = { counts: {}, tasks: [] };
+  c.anchor = null;
+  c.comments = [];
+  c.ready = { ...c.ready!, working: 0, queued: 0 };
+  const r = w.relay;
+  if (r.state) {
+    Object.assign(r.state, {
+      title, mode: 'chat', paper: false, papers: [], active_paper: null, brain: null, anchor: null,
+      meeting: { ...r.state.meeting, title },
+      participants: humanOnly(r.state.participants),
+    });
+  }
+  r.transcript = humanLines(r.transcript);
+  r.board = null;
+  w.userStrings.push(title);
+  return w;
+}
+/** 回顾: the newest past meeting was held without a paper (纪要, transcript, recording; no 修订对比, no board) */
+export function chatPast(w: World): World {
+  const T = L(w.lang);
+  const title = T('组会 · 11月17日', 'Meeting · Nov 17');
+  const m = w.meetings[0];
+  Object.assign(m, { title, mode: 'chat', papers: [], has_diff: false, n_tasks: 0, n_done: 0 });
+  const d = w.details[m.id];
+  d.meeting = { ...d.meeting, title, mode: 'chat', papers: [], active_paper: null };
+  d.diff_url = null;
+  d.board = { counts: {}, tasks: [] };
+  d.participants = humanOnly(d.participants);
+  d.transcript = humanLines(d.transcript);
+  d.talk = (d.talk ?? []).filter((x) => x.who !== 'student');
+  d.comments = [];
+  d.carry_done = [];
+  if (d.summary) d.summary = { ...d.summary, title, speakers: d.summary.speakers.filter((s) => s !== w.profile.assistant_default && s !== w.profile.assistant) };
+  w.userStrings.push(title);
+  return w;
+}
 /** a fresh install: no paper, no meeting, no model source picked */
 export function fresh(w: World): World {
   idle(w);
@@ -687,6 +764,7 @@ export function fresh(w: World): World {
   c.paper = null;
   c.papers = [];
   c.active_paper = null;
+  c.mode = 'chat';
   w.provider = { ...w.provider, kind: 'unset', base_url: '', fast: '', main: '', key_set: false, key_tail: '', active: false };
   w.usageMonth = { month: w.usageMonth.month, mode: 'none', models: [], tokens: 0, costs: {} };
   w.meetings = [];

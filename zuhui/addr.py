@@ -21,8 +21,22 @@ import threading
 import time
 from pathlib import Path
 
+from .config import STATE
+
 log = logging.getLogger(__name__)
 WORKER = Path(__file__).with_name("addr_worker.py")
+WORKER_LOG = STATE / "addr_worker.log"        # 子进程的输出、每次拉起和退出（退出码）。测试的 ZUHUI_HOME 里写自己那份
+
+
+def _rc(p: subprocess.Popen | None) -> str:
+    """子进程的退出码（等它最多 5 秒）。Windows 上的崩溃码写成十六进制（0xc0000005）。"""
+    if p is None:
+        return "未知"
+    try:
+        rc = p.wait(timeout=5)
+    except Exception:
+        return "未知"
+    return hex(rc & 0xFFFFFFFF) if rc < 0 or rc > 255 else str(rc)
 
 
 def ago(s: float | None) -> str:
@@ -52,37 +66,94 @@ class AddrModel:
         self._seq = 0
         self._proc: subprocess.Popen | None = None
         self._closed = False                      # release() 关过：还在载入的子进程起来后也马上关掉，不留孤儿
-        threading.Thread(target=self._start, name="addr-load", daemon=True).start()
+        self._stop = threading.Event()            # close() 置位：等着重试的马上不等了
+        self.tries = 0                            # 重试过几次（不算第一次）
+        self.gave_up = False                      # 重试用完了还是起不来（下一场会开会时 get(fresh=True) 换一个新的再试）
+        threading.Thread(target=self._run, name="addr-load", daemon=True).start()
 
-    def _start(self) -> None:
+    # 子进程起不来、或者开着会退出了：过 RETRY_S 秒再拉起，最多再试 RETRIES 次。
+    # 以前一次不成就整场不再试，日志里只有"子进程退出了"、没有退出码（2026-11-19 组会上开会时退出过一次）
+    RETRIES = 2
+    RETRY_S = 5.0
+
+    def _run(self) -> None:
+        try:
+            while not self._closed:
+                p, again = self._start()
+                if p is not None:
+                    self._read(p)                 # 一直读到子进程退出
+                if self._closed or not again or self.tries >= self.RETRIES:
+                    break
+                self.tries += 1
+                log.warning("addr model: retry %d/%d in %.0fs", self.tries, self.RETRIES, self.RETRY_S)
+                if self._stop.wait(self.RETRY_S):
+                    break
+        finally:
+            self.gave_up = not self._closed and not self.ready
+
+    def _note(self, text: str) -> None:
+        try:
+            with open(WORKER_LOG, "a", encoding="utf-8") as f:
+                f.write(f"== {time.strftime('%m-%d %H:%M:%S')} {text}\n")
+        except OSError:
+            pass
+
+    def _start(self) -> tuple[subprocess.Popen | None, bool]:
+        """拉起一次子进程、等它报就绪。→ (就绪的子进程, 起不来时值不值得再试)。"""
+        p = None
         try:
             if not self.path.exists():
-                raise FileNotFoundError(str(self.path))
-            errlog = open(Path.home() / ".zuhui" / "addr_worker.log", "a", encoding="utf-8")   # 模拟会几场同时开，追加不覆盖
-            errlog.write(f"\n== {time.strftime('%m-%d %H:%M:%S')} 后端进程 {os.getpid()} 拉起\n")
-            errlog.flush()
-            self._proc = subprocess.Popen(
-                [sys.executable, "-X", "utf8", "-u", str(WORKER), str(self.path), self.device],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errlog, text=True, encoding="utf-8",
-                bufsize=1, creationflags=0x08000000 if os.name == "nt" else 0)      # CREATE_NO_WINDOW
-            first = self._proc.stdout.readline()
-            msg = json.loads(first) if first.strip() else {"ready": False, "error": "子进程退出了，看 ~/.zuhui/addr_worker.log"}
+                self.error = repr(FileNotFoundError(str(self.path)))[:300]
+                log.warning("addr model failed: %s", self.error)
+                return None, False                # 模型文件不在：再试也没用
+            self.error = None                     # 界面上这一阵显示"加载中"
+            try:
+                WORKER_LOG.parent.mkdir(parents=True, exist_ok=True)
+                errlog = open(WORKER_LOG, "a", encoding="utf-8")   # 模拟会几场同时开，追加不覆盖
+            except OSError:
+                errlog = subprocess.DEVNULL
+            try:
+                if errlog is not subprocess.DEVNULL:
+                    errlog.write(f"\n== {time.strftime('%m-%d %H:%M:%S')} 后端进程 {os.getpid()} 拉起"
+                                 + (f"（第 {self.tries} 次重试）" if self.tries else "") + "\n")
+                    errlog.flush()
+                p = self._proc = subprocess.Popen(
+                    [sys.executable, "-X", "utf8", "-u", str(WORKER), str(self.path), self.device],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errlog, text=True, encoding="utf-8",
+                    bufsize=1, creationflags=0x08000000 if os.name == "nt" else 0)      # CREATE_NO_WINDOW
+            finally:
+                if errlog is not subprocess.DEVNULL:
+                    errlog.close()                # 子进程拿着自己那份句柄，这边不留着（以前每拉一次漏一个）
+            first = p.stdout.readline()
+            if not first.strip():
+                raise RuntimeError(f"子进程退出了，退出码 {_rc(p)}（看 {WORKER_LOG}）")
+            msg = json.loads(first)
             if not msg.get("ready"):
                 raise RuntimeError(msg.get("error"))
             self.dev = msg.get("dev")
-            threading.Thread(target=self._read, name="addr-read", daemon=True).start()
             self.ready = True
             if self._closed:
                 self.close()
-                return
+                return None, False
             log.info("addr model ready on %s", self.dev)
-        except Exception as e:                    # 没装 torch / 模型文件不在 / 子进程起不来：照旧走老办法
+            return p, True
+        except Exception as e:                    # 没装 torch / 子进程起不来：照旧走老办法，过几秒再试
+            self.ready = False
+            if self._closed:                      # 载入时被 release() 关掉的：不算起不来
+                return None, False
             self.error = repr(e)[:300]
             log.warning("addr model failed: %s", self.error)
-            self.close()
+            self._note(f"起不来：{self.error}")
+            if p is not None:
+                if self._proc is p:
+                    self._proc = None
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+            return None, True
 
-    def _read(self) -> None:
-        p = self._proc
+    def _read(self, p: subprocess.Popen) -> None:
         try:
             for line in p.stdout:
                 try:
@@ -92,7 +163,13 @@ class AddrModel:
         except Exception:
             pass
         self.ready = False
-        self.error = self.error or "子进程退出了"
+        if self._proc is p:
+            self._proc = None                     # 退出了：散会释放显存时不算它
+        if self._closed:
+            return
+        self.error = f"子进程退出了，退出码 {_rc(p)}"
+        log.warning("addr model exited: %s", self.error)
+        self._note(self.error)
 
     def prob(self, before: list[str], name: str, role: str, text: str, since_claude: float | None) -> float | None:
         """该接的概率（0–1）；模型没好、超时、出错都返回 None。"""
@@ -126,6 +203,7 @@ class AddrModel:
 
     def close(self) -> None:
         self._closed = True
+        self._stop.set()
         self.ready = False
         p, self._proc = self._proc, None
         if p is not None:
@@ -162,12 +240,17 @@ def model_path(cfg: dict) -> str:
     return zh
 
 
-def get(cfg: dict) -> AddrModel | None:
-    """配置里开了才加载（addr.enabled）；路径见 model_path。测试用环境变量 ZUHUI_ADDR_DEVICE 指定 cpu / cuda。"""
+def get(cfg: dict, fresh: bool = False) -> AddrModel | None:
+    """配置里开了才加载（addr.enabled）；路径见 model_path。测试用环境变量 ZUHUI_ADDR_DEVICE 指定 cpu / cuda。
+    fresh=True（开会时）：上次重试用完了还没起来的，换一个新的从头再试。"""
     a = cfg.get("addr") or {}
     if not a.get("enabled"):
         return None
     path = model_path(cfg)
+    old = _insts.get(path)
+    if fresh and old is not None and old.gave_up:
+        old.close()
+        _insts.pop(path, None)
     if path not in _insts:
         _insts[path] = AddrModel(path, os.environ.get("ZUHUI_ADDR_DEVICE") or a.get("device") or "auto")
     return _insts[path]

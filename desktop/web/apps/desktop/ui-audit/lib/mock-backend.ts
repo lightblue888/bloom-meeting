@@ -142,6 +142,17 @@ async function zuhui(route: Route, w: World, rec: Recorder) {
     }
     case 'GET /api/devices':
       return json(route, clone(w.devices));
+    // Settings → Speech → Microphone (zuhui/mic_prefs.py): not during a meeting; the lobby's 麦克风 row follows the pick
+    case 'GET /api/mic/device':
+      return json(route, { ...clone(w.micChoice), live: w.current.meeting?.state === 'live' });
+    case 'POST /api/mic/device': {
+      if (w.current.meeting?.state === 'live') return json(route, { ok: false, error: 'live' }, 409);
+      const v = String((body as { mic?: string }).mic ?? '').trim();
+      if (v.length > w.micChoice.max) return json(route, { ok: false, error: 'too_long' }, 400);
+      Object.assign(w.micChoice, { mic: v, missing: !!v && !w.micChoice.devices.includes(v) });
+      Object.assign(w.devices, { mic: v || w.micChoice.default, missing: w.micChoice.missing });
+      return json(route, { ...clone(w.micChoice), live: false });
+    }
     case 'POST /api/mic/mute':
       w.mic.muted = !!(body as { muted?: boolean }).muted;
       return json(route, { muted: w.mic.muted });

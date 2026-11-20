@@ -56,6 +56,7 @@ export const SECTIONS: Record<string, Key> = {
   'general.autosave': 'settings.general.autosave',
   'general.app': 'settings.general.app',
   'general.about': 'settings.general.about',
+  'speech.mic': 'settings.speech.mic',
   'speech.models': 'speech.section.models',
   'speech.voice': 'settings.speech.voice',
   'speech.hotwords': 'settings.speech.hotwords',
@@ -81,6 +82,7 @@ export const ENTRIES: Entry[] = [
   row('general.base_url', 'general.model_source', 'settings.general.base_url'),
   row('general.fast_model', 'general.model_source', 'settings.general.fast_model'),
   row('general.main_model', 'general.model_source', 'settings.general.main_model'),
+  row('general.effort', 'general.model_source', 'settings.general.effort'),
   row('general.provider_check', 'general.model_source', 'settings.general.provider_check'),
   row('general.lit', 'general.model_source', 'settings.general.lit', { more: 'settings.general.lit.more' }),
   row('general.usage_month', 'general.model_source', 'settings.general.usage_month'),
@@ -99,6 +101,7 @@ export const ENTRIES: Entry[] = [
   row('general.guide', 'general.app', 'settings.general.guide'),
   whole('general.about'),
   // Models
+  row('speech.mic', 'speech.mic', 'settings.speech.mic_row'),
   whole('speech.models', 'speech.models.footer'),
   row('speech.voice', 'speech.voice', 'settings.speech.voice_engine'),
   row('speech.voice_name', 'speech.voice', 'settings.speech.voice_name'),

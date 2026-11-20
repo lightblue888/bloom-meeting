@@ -232,12 +232,35 @@ export interface Models {
   asr?: string;
 }
 export type ModelPart = 'dialog' | 'edit' | 'effort';
+/** 思考强度 in the app's language (the backend's labels are English: Low … Max) */
+const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+const localModels = <T extends Models | null>(m: T): T =>
+  !m?.effort ? m : ({ ...m, effort: { ...m.effort, options: m.effort.options.map((o) => (EFFORTS.has(o.id) ? { ...o, label: t(`meeting.effort.${o.id}`) } : o)) } } as T);
 
 /** this machine's microphone and speaker (only the host's own card shows them) */
 export interface Devices {
   mic?: string | null;
   speaker?: string | null;
   probing?: boolean;
+  /** Settings → Speech → Microphone picked this one, and it isn't on this PC now */
+  missing?: boolean;
+  /** record.mic says not to record the microphone (only a hand-edited config says so) */
+  off?: boolean;
+}
+
+/** Settings → Speech → Microphone (GET/POST /api/mic/device, zuhui/mic_prefs.py): the one the meeting records */
+export interface MicChoice {
+  /** '' = the system's default; 'off' (hand-edited); else the device's name */
+  mic: string;
+  /** this PC's input devices, by the names the recorder finds them by */
+  devices: string[];
+  /** the system's default input now */
+  default: string | null;
+  /** the picked one isn't on this PC now */
+  missing: boolean;
+  /** a meeting is on: it can't be changed */
+  live: boolean;
+  max: number;
 }
 
 export type TaskStatus = 'queued' | 'working' | 'done' | 'failed';
@@ -1022,7 +1045,7 @@ export const meetingApi = {
     if (guestT) return guestT.models();
     const r = await fetch(`${ZUHUI_BASE}/api/models`, { signal: AbortSignal.timeout(4000), cache: 'no-store' });
     if (!r.ok) return null;
-    return (await r.json()) as Models;
+    return localModels((await r.json()) as Models);
   },
   /** Claude's card: switch one part; answers the models as they are now */
   setModel: async (part: ModelPart, value: string): Promise<Models> => {
@@ -1035,10 +1058,25 @@ export const meetingApi = {
     });
     const j = (await r.json().catch(() => ({}))) as Models & { ok?: boolean; error?: string };
     if (!r.ok || j.ok === false) throw new Error(j.error || `HTTP ${r.status}`);
-    return j;
+    return localModels(j);
   },
   /** the host's own card: microphone and speaker (asks the system again; `probing` = the answer is on its way) */
   devices: () => (guestT ? guestT.devices() : get<Devices>('/api/devices', 4000)),
+  /** Settings → Speech → Microphone: the picked one and this PC's inputs (the backend asks the system: a second or so) */
+  micDevice: () => get<MicChoice>('/api/mic/device', 30000),
+  /** '' = the system's default; the error is a code the page words (live, bad, too_long, unreadable, failed) */
+  setMicDevice: async (mic: string): Promise<MicChoice> => {
+    const r = await fetch(`${ZUHUI_BASE}/api/mic/device`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mic }),
+      signal: AbortSignal.timeout(30000),
+    });
+    const j = (await r.json().catch(() => ({}))) as Partial<MicChoice> & { error?: string };
+    if (!r.ok || typeof j.mic !== 'string') throw new Error(j.error || 'failed');
+    window.dispatchEvent(new Event(PROFILE_EVENT)); // the lobby's 麦克风 row asks again
+    return j as MicChoice;
+  },
   /** the host mutes / unmutes their microphone (a click on the level bars beside their avatar); the state as saved */
   setMicMuted: async (muted: boolean): Promise<boolean> => {
     if (guestT) return guestT.setMicMuted(muted);

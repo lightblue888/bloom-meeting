@@ -162,7 +162,7 @@ class EditFlow(Base):
         prog = t["progress"]
         self.assertEqual(prog["step"], "已完成")
         self.assertEqual(prog["edits"], 1)
-        self.assertIn("读论文", prog["log"])
+        self.assertIn("读文档", prog["log"])
         self.assertTrue(any("改第 1 处" in s for s in prog["log"]), prog["log"])
         self.assertIn("检查修改", prog["log"])
         ch = json.loads((HOME / "changes" / f"{t['id']}.json").read_text(encoding="utf-8"))
@@ -236,7 +236,7 @@ class EditFlow(Base):
         t = self.run_task("先别改，记一下表二要补样本期", "表二补样本期", note_job=True)
         self.assertEqual(self.paper.read_bytes(), self.raw)
         self.assertEqual(t["status"], "done")
-        self.assertEqual(t["result"], "已记录，未修改论文")
+        self.assertEqual(t["result"], "已记录，未修改文档")
         self.assertEqual(t["plan"], "表 2 补一列 2015–2023 样本期")
         self.assertIsNone(t.get("need"))
         self.assertIn("准确率为 92.7%", Fake.seen[0]["body"]["messages"][0]["content"])
@@ -274,7 +274,7 @@ class Ask(Base):
                                         on_step=lambda k, v: steps.append((k, v)))
         self.assertIsNone(err)
         self.assertEqual(ans, "论文里写的是 92.7%，在 3 实验那一节。网上的我这边查不了。")
-        self.assertEqual(steps, [("读论文", "全文")])
+        self.assertEqual(steps, [("读文档", "全文")])
         body = Fake.seen[0]["body"]
         self.assertEqual(body["model"], "m")
         self.assertIn("查不了网", body["system"])
@@ -323,7 +323,7 @@ class NotSetUp(Base):
         self.assertEqual(self.hands.ask_paper("x", None, ""), ("", hands_api.UNSET))
         self.assertEqual(self.hands.ask_screen("x", None, None, ""), ("", hands_api.UNSET))
         n = self.run_task("记一下", "记一下", note_job=True)
-        self.assertEqual((n["status"], n["result"], n.get("plan")), ("done", "已记录，未修改论文", None))
+        self.assertEqual((n["status"], n["result"], n.get("plan")), ("done", "已记录，未修改文档", None))
         self.assertEqual(Fake.seen, [])                                  # 一个请求都没发
         self.assertEqual(self.paper.read_bytes(), self.raw)
 

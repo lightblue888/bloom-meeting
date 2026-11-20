@@ -419,28 +419,44 @@ function Status({ r, hasPaper }: { r: Readiness; hasPaper: boolean }) {
     </div>
   );
   const voice = r.voiceEngine === undefined ? '…' : r.voiceEngine === null ? t('ob.voice_off') : t(`ob.voice.${r.voiceEngine}`);
+  // every row's 更换 opens Settings at the row that changes it (flashed there). The models: their own rows under Model
+  // source (Claude Code's login, an API with model fields); no source yet, or Anthropic's API (fixed models): the source
+  const change = (link: string, id: string) => (
+    <button className="link" onClick={() => nav({ to: 'settings', link })} data-testid={`lobby-change-${id}`}>{t('lobby.change')}</button>
+  );
+  const modelLink = (rowId: string) => (pv && pv.kind !== 'unset' && pv.kind !== 'anthropic' ? `general/${rowId}` : 'general/source');
+  const mic = r.mic;
+  const micName = mic?.off ? t('lobby.mic_off') : mic?.mic || (!mic || mic.probing ? '…' : t('ob.mic_none'));
   return (
     <div className="lb-status" data-testid="lobby-status">
       {/* two models: the quick one answers in the meeting, the stronger one edits the paper (Settings → Model source) */}
       {row(t('lobby.st.fast'),
         <span className="lb-trunc" title={r.modelFast ?? undefined}>{!pv ? '…' : pv.kind === 'unset' ? t('ob.unset') : r.modelFast ?? (pv.label || '…')}</span>,
         model,
-        <button className="link" onClick={() => nav({ to: 'settings', link: 'general/source' })}>{t('lobby.change')}</button>)}
+        change(modelLink('fast_model'), 'fast'))}
       {row(t('lobby.st.main'),
         <span className="lb-trunc" title={r.model ?? undefined}>{!pv ? '…' : pv.kind === 'unset' ? t('ob.unset') : r.model ?? (pv.label || '…')}</span>,
-        model)}
+        model,
+        change(modelLink('main_model'), 'main'))}
       {/* coming down: not red (nothing to fix), as its line beside 开始会议 */}
       {row(t('lobby.st.asr'),
         <span className="lb-trunc">{r.asr === 'ok' ? r.asrName : r.asr === 'downloading' ? t('ob.downloading') : r.asr === 'missing' ? t('ob.not_downloaded') : '…'}</span>,
         r.asr === 'ok' ? 'ok' : r.asr === 'missing' ? 'block' : 'wait',
-        <button className="link" onClick={() => nav({ to: 'settings', link: 'speech' })}>{t('lobby.change')}</button>)}
+        change('speech/models', 'asr'))}
+      {/* the one picked in Settings → Speech → Microphone (the system's default: its name); picked but not plugged in: amber */}
       {row(t('lobby.st.mic'),
-        <span className="lb-trunc" title={r.mic?.mic || ''}>{r.mic?.mic || (!r.mic || r.mic.probing ? '…' : t('ob.mic_none'))}</span>,
-        r.mic?.mic ? 'ok' : !r.mic || r.mic.probing ? 'wait' : 'warn')}
+        <span className="lb-trunc" title={mic?.missing && mic.mic ? t('lobby.mic_missing', { a: mic.mic }) : mic?.mic || undefined}>{micName}</span>,
+        mic?.mic ? (mic.missing ? 'warn' : 'ok') : !mic || mic.probing ? 'wait' : 'warn',
+        change('speech/mic', 'mic'))}
+      {/* 试听 beside 更换: both always there (试听 hidden while there's no voice), so the cell keeps its width */}
       {row(t('lobby.st.voice'),
         <span className="lb-trunc">{say ?? voice}</span>,
         r.voiceEngine === undefined ? 'wait' : 'ok',
-        r.voiceEngine ? <button className="link" onClick={() => void test()}>{t('lobby.voice_test')}</button> : <button className="link" onClick={() => nav({ to: 'settings', link: 'speech' })}>{t('lobby.change')}</button>)}
+        <span className="lb-st-two">
+          <button className="link" onClick={() => void test()} disabled={!r.voiceEngine} style={r.voiceEngine ? undefined : { visibility: 'hidden' }}
+            data-testid="lobby-voice-test">{t('lobby.voice_test')}</button>
+          {change('speech/voice', 'voice')}
+        </span>)}
     </div>
   );
 }

@@ -842,6 +842,12 @@
   font-size: 12.5px;
   text-align: right;
 }
+/* 声音那一行：试听 + 更换，两个都一直在（没有声音时试听只是看不见），这一格不随状态变宽变窄 */
+.lb-st-two {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
 .lb-trunc {
   display: block;
   overflow: hidden;

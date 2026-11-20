@@ -1,4 +1,4 @@
-// Settings → Speech: the transcription models this PC can run (the meeting's live transcript is one of them, e.g.
+// Settings → Speech: the microphone a meeting records (MicSettings.tsx), the transcription models this PC can run (the meeting's live transcript is one of them, e.g.
 // Fun-ASR Nano), each with its size — installed, coming down (its progress and Stop where its button was), or Download;
 // then the AI's voice and the words transcription should know (VoiceSettings.tsx). One download at a time; a failed one
 // says so on its own row, with Try Again. The first-run guide shows the same groups.
@@ -8,6 +8,7 @@ import { Group, Line, Page, S } from '../settings/kit';
 import { mb, ModelProgress, useDictationModels } from './ModelDownload';
 import { HotwordsGroup, VoiceGroup } from './VoiceSettings';
 import { PronounceGroup } from './PronSettings';
+import { MicGroup } from './MicSettings';
 
 function StopDownload() {
   // the same size as the Download it replaced
@@ -17,6 +18,7 @@ function StopDownload() {
 export function ModelsPane() {
   return (
     <Page id="speech">
+      <MicGroup />
       <SpeechModelsGroup />
       <VoiceGroup />
       <HotwordsGroup />

@@ -812,6 +812,7 @@
 .st-row[data-setting='general.name'],
 .st-row[data-setting='general.provider_check'],
 .st-row[data-setting='speech.voice_test'],
+.st-row[data-setting='speech.mic'],
 .st-row[data-setting='general.relay_check'],
 .st-row[data-setting='general.summary_template'] {
   min-height: 64px;
@@ -854,6 +855,19 @@
 }
 .app .st-combo .st-combo-btn:hover:not(:disabled) {
   color: var(--ink);
+}
+/* 只有一个选项的（Claude Code 账号下的对话模型）：不能点的字，和下拉框一样宽，字和下拉框里的字对齐 */
+.st-fixed {
+  display: inline-block;
+  width: 240px;
+  height: var(--ctl-h);
+  line-height: var(--ctl-h);
+  padding: 0 11px;
+  box-sizing: border-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-2, var(--ink));
 }
 /* 本月用量：一行，太长省略号（悬停看每个型号） */
 .st-usage {

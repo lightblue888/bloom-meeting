@@ -148,11 +148,25 @@ def pick_mic(wanted: str | None) -> dict | None:
     mics = list_mics()
     if not mics:
         return None
+    missing = None
     if wanted is not None:
         for m in mics:
             if str(m["index"]) == str(wanted) or str(wanted).lower() in m["name"].lower():
                 return m
-        die(f"Microphone '{wanted}' not found. Available: {[m['name'] for m in mics]}")
+        # the mic picked in Settings is unplugged: record with the one we'd pick anyway rather than not at all
+        # (2026-11-20: a meeting with no sound is worse than one through the laptop's own mic)
+        print(f"Microphone '{wanted}' not found, using the default. Available: {[m['name'] for m in mics]}",
+              file=sys.stderr, flush=True)
+        missing = str(wanted)
+    picked = _auto_mic(mics)
+    return {**picked, "missing": missing} if missing and picked else picked
+
+
+def _auto_mic(mics: list[dict]) -> dict | None:
+    """The mic Bloom picks itself: not a virtual one, not a Bluetooth headset's while the sound goes to it, the
+    system default otherwise."""
+    if not mics:
+        return None
     virtual = lambda m: any(h in m["name"].lower() for h in VIRTUAL_MIC_HINTS)  # noqa: E731
     # Windows, the sound going to a Bluetooth headset: its own mic would switch it to hands-free (HFP) — mono,
     # narrowband, hollow, hissing — for as long as it is open. The computer's own mic instead, when there is one.

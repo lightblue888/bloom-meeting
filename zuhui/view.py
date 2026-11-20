@@ -1524,7 +1524,7 @@ def _briefs(tasks: list, me: str = "") -> list:
     return out
 
 
-INJECT_TEXT = {'connecting': ('组会 · 连接中', 'Meeting · connecting'), 'start': ('开始组会', 'Start meeting'), 'unfold_aria': ('展开/收起未修改段落', 'Show or hide unchanged paragraphs'), 'unfold': ('全文', 'Full text'), 'rec_ok': ('已开始录屏', 'Recording started'), 'rec_fail': ('录屏启动失败：请按 Alt+Shift+R', 'Could not start recording. Press Alt+Shift+R'), 'st_queued': ('排队 ', 'Queued '), 'st_working': (' · 修改中 ', ' · editing '), 'st_done': (' · 已修改 ', ' · done '), 'st_failed': (' · 失败 ', ' · failed '), 'st_rebuilding': (' · 更新中…', ' · updating…'), 'down': ('连接已断开', 'Disconnected'), 'toc_head': ('章节', 'Sections'), 'toc_n': (' 节', ''), 'toc_chg': (' 节已修改', ' changed'), 'toc_aria': ('收起/展开章节', 'Collapse or expand sections'), 's_queued': ('排队中', 'Queued'), 's_working': ('修改中', 'Editing'), 's_done': ('已修改', 'Done'), 's_failed': ('修改失败', 'Failed'), 's_note': ('会后改', 'After the meeting'), 's_note_ok': ('已处理', 'Handled'), 'tag_rerun': ('需重跑实验', 'Rerun experiments'), 'tag_data': ('需补数据', 'Needs new data'), 'tag_figure': ('需重画图表', 'Redo figures or tables'), 'tag_lit': ('需查文献', 'Check the literature'), 'tag_discuss': ('待讨论', 'Needs discussion'), 'plan': ('修改方案', 'Plan'), 'need': ('需补充', 'Needs'), 'plan_wait': ('正在生成修改方案…', 'Writing the plan…'), 'st_notes': (' · 标注 ', ' · notes '), 'reject_aria': ('撤回修改', 'Undo change'), 'ok_aria': ('确认修改', 'Accept change'), 'other_a': ('其他 ', ''), 'other_b': (' 句', ' more lines'), 'earlier_a': ('前面 ', ''), 'earlier_b': (' 句', ' earlier lines'), 'undo_fail': ('撤回失败', 'Undo failed'), 'edit': ('编辑', 'Edit'), 'edit_done': ('完成编辑', 'Done editing'), 'not_found': ('论文中未找到此段', 'Paragraph not found in the paper'), 'edit_hint': ('Ctrl+Enter 保存 · Esc 取消', 'Ctrl+Enter to save · Esc to cancel'), 'cancel': ('取消', 'Cancel'), 'save': ('保存', 'Save'), 'not_saved': ('保存失败', 'Save failed'), 'saved': ('已保存', 'Saved'), 'no_backend': ('Bloom 无响应', 'Bloom is not responding'), 'find': ('查找', 'Find'), 'prev': ('上一个', 'Previous'), 'next': ('下一个', 'Next'), 'close': ('关闭', 'Close'), 'zoom_tbl': ('放大表格', 'Enlarge table')}   # 键 → (中文, English)
+INJECT_TEXT = {'connecting': ('组会 · 连接中', 'Meeting · connecting'), 'start': ('开始组会', 'Start meeting'), 'unfold_aria': ('展开/收起未修改段落', 'Show or hide unchanged paragraphs'), 'unfold': ('全文', 'Full text'), 'rec_ok': ('已开始录屏', 'Recording started'), 'rec_fail': ('录屏启动失败：请按 Alt+Shift+R', 'Could not start recording. Press Alt+Shift+R'), 'st_queued': ('排队 ', 'Queued '), 'st_working': (' · 修改中 ', ' · editing '), 'st_done': (' · 已修改 ', ' · done '), 'st_failed': (' · 失败 ', ' · failed '), 'st_rebuilding': (' · 更新中…', ' · updating…'), 'down': ('连接已断开', 'Disconnected'), 'toc_head': ('章节', 'Sections'), 'toc_n': (' 节', ''), 'toc_chg': (' 节已修改', ' changed'), 'toc_aria': ('收起/展开章节', 'Collapse or expand sections'), 's_queued': ('排队中', 'Queued'), 's_working': ('修改中', 'Editing'), 's_done': ('已修改', 'Done'), 's_failed': ('修改失败', 'Failed'), 's_note': ('会后改', 'After the meeting'), 's_note_ok': ('已处理', 'Handled'), 'tag_rerun': ('需重跑实验', 'Rerun experiments'), 'tag_data': ('需补数据', 'Needs new data'), 'tag_figure': ('需重画图表', 'Redo figures or tables'), 'tag_lit': ('需查文献', 'Check the literature'), 'tag_discuss': ('待讨论', 'Needs discussion'), 'plan': ('修改方案', 'Plan'), 'need': ('需补充', 'Needs'), 'plan_wait': ('正在生成修改方案…', 'Writing the plan…'), 'st_notes': (' · 标注 ', ' · notes '), 'reject_aria': ('撤回修改', 'Undo change'), 'ok_aria': ('确认修改', 'Accept change'), 'other_a': ('其他 ', ''), 'other_b': (' 句', ' more lines'), 'earlier_a': ('前面 ', ''), 'earlier_b': (' 句', ' earlier lines'), 'undo_fail': ('撤回失败', 'Undo failed'), 'edit': ('编辑', 'Edit'), 'edit_done': ('完成编辑', 'Done editing'), 'not_found': ('文档中未找到此段', 'Paragraph not found in the paper'), 'edit_hint': ('Ctrl+Enter 保存 · Esc 取消', 'Ctrl+Enter to save · Esc to cancel'), 'cancel': ('取消', 'Cancel'), 'save': ('保存', 'Save'), 'not_saved': ('保存失败', 'Save failed'), 'saved': ('已保存', 'Saved'), 'no_backend': ('Bloom 无响应', 'Bloom is not responding'), 'find': ('查找', 'Find'), 'prev': ('上一个', 'Previous'), 'next': ('下一个', 'Next'), 'close': ('关闭', 'Close'), 'zoom_tbl': ('放大表格', 'Enlarge table')}   # 键 → (中文, English)
 
 
 def _inject(build: int | None, tasks: list, me: str, figs: dict | None = None, lang: str = "zh",
@@ -1835,10 +1835,11 @@ def align_video_times(lines: list[dict], segs: list[tuple[float, float, str]], o
 
 
 # 本机现在的默认麦克风 / 扬声器（参会人卡片"自己"那一张）：另起一个小进程问 PortAudio（后端进程里的 PortAudio
-# 在给访客放声音，不能为了刷新设备表去重启它）；WASAPI 的名字是全名，MME 的会截断
+# 在给访客放声音，不能为了刷新设备表去重启它）；WASAPI 的名字是全名，MME 的会截断。
+# inputs：同一个接口下所有的输入设备（设置 → 语音 → 麦克风的下拉，zuhui/mic_prefs.py）
 _DEVICE_PROBE = r"""
 import json
-out = {"mic": None, "speaker": None}
+out = {"mic": None, "speaker": None, "inputs": None}
 try:
     import sounddevice as sd
     apis = sd.query_hostapis()
@@ -1846,6 +1847,12 @@ try:
     for k, i in (("mic", h['default_input_device']), ("speaker", h['default_output_device'])):
         if i is not None and i >= 0:
             out[k] = sd.query_devices(i)['name']
+    names = []
+    for i in h['devices']:
+        d = sd.query_devices(i)
+        if d['max_input_channels'] > 0 and d['name'] not in names:
+            names.append(d['name'])
+    out["inputs"] = names
 except Exception:
     pass
 print(json.dumps(out, ensure_ascii=False))
@@ -1868,7 +1875,7 @@ class Viewer:
         self.build = 0
         self.building = False
         # 占位页也带轮询脚本：第一版生成好会自己刷新过去
-        self.html = PLACEHOLDER.format(msg="正在准备论文…").replace("</body>", _inject(0, [], "") + "</body>", 1)
+        self.html = PLACEHOLDER.format(msg="正在准备文档…").replace("</body>", _inject(0, [], "") + "</body>", 1)
         self._sig = None
         self._stop = threading.Event()
         self.ui_lang = "zh"                  # Bloom 窗口的界面语言（iframe 地址带 ui=zh / en）：对比页的界面字跟着它
@@ -2121,7 +2128,7 @@ class Viewer:
         try:
             src = _read_doc(self.mirror)[0]
         except (OSError, DocReadError, UnicodeDecodeError) as e:
-            return {"ok": False, "error": f"读取论文失败：{e}"}
+            return {"ok": False, "error": f"读取文档失败：{e}"}
         spans = self._spans(src)
         keys = [self._key(k) for _, _, k in spans]
         idx = next((i for i, k in enumerate(keys) if k == want), -1)
@@ -2140,7 +2147,7 @@ class Viewer:
             if score >= 0.82:
                 idx = best
         if idx < 0:
-            return {"ok": False, "error": "论文中未找到此段"}
+            return {"ok": False, "error": "文档中未找到此段"}
         return {"ok": True, "index": idx, "source": spans[idx][2].replace("\r\n", "\n")}
 
     def para_save(self, index, old: str, new: str) -> dict:
@@ -2154,7 +2161,7 @@ class Viewer:
             try:
                 src, bom, nl = _read_doc(self.mirror)
             except (OSError, DocReadError, UnicodeDecodeError) as e:
-                return {"ok": False, "error": f"读取论文失败：{e}"}
+                return {"ok": False, "error": f"读取文档失败：{e}"}
             spans = self._spans(src)
             try:
                 index = int(index)
@@ -2677,7 +2684,7 @@ class Viewer:
             try:
                 n = rewrite(mirror)
             except (OSError, DocReadError, UnicodeDecodeError) as e:
-                return {"ok": False, "error": f"读写论文失败：{e}"}
+                return {"ok": False, "error": f"读写文档失败：{e}"}
             if not n:
                 return {"ok": False, "error": "撤回失败：此处已被再次修改"}
             # 之前打过勾、已经并进基线的（它自己或连带撤下的那几条）：基线也撤回去
@@ -2871,9 +2878,9 @@ class Viewer:
             mirror = self.mirror
             sig = self.signature()
             if not mirror.exists():                   # 不带本机路径：这一页也会推给访客
-                out = PLACEHOLDER.format(msg="暂无论文")
+                out = PLACEHOLDER.format(msg="暂无文档")
             elif not HTMLDIFF.exists():
-                out = PLACEHOLDER.format(msg="论文页生成失败：缺少组件")
+                out = PLACEHOLDER.format(msg="文档页生成失败：缺少组件")
             else:
                 self.ensure_base()
                 ok, out = self._generate(final=False)
@@ -2884,7 +2891,7 @@ class Viewer:
                     self._fails += 1
                     if self._fails < 3 and self._shown == paper_id(mirror):
                         return False                  # 上一版好的页面先留着，等重试
-                    out = PLACEHOLDER.format(msg="论文页生成失败，正在重试<pre>" + html.escape(out[-1500:]) + "</pre>")
+                    out = PLACEHOLDER.format(msg="文档页生成失败，正在重试<pre>" + html.escape(out[-1500:]) + "</pre>")
             if not _same_file(mirror, self.mirror):
                 return ok                             # 算的时候又切走了：这一版不往屏幕上放
             self._install(out, mirror)
@@ -3011,7 +3018,7 @@ class Viewer:
                 except Exception as e:
                     ok = False
                     with self.lock:
-                        self.html = PLACEHOLDER.format(msg="论文页生成失败，正在重试<pre>" + html.escape(repr(e)) + "</pre>")
+                        self.html = PLACEHOLDER.format(msg="文档页生成失败，正在重试<pre>" + html.escape(repr(e)) + "</pre>")
                         self.build += 1
                 if ok:
                     fails, retry_at = 0, 0.0
@@ -3279,16 +3286,27 @@ class Viewer:
 
     def devices(self, refresh: bool = False) -> dict:
         """{"mic": 名字|None, "speaker": 名字|None, "at": 秒}。录音那边（helper A）要是把实际在用的设备写进
-        ~/.zuhui/devices.json（{"mic", "speaker"}）就用它；否则问系统默认设备（另起小进程，结果缓存，refresh 才重问）。"""
+        ~/.zuhui/devices.json（{"mic", "speaker"}）就用它；否则问系统默认设备（另起小进程，结果缓存，refresh 才重问）。
+        设置 → 语音 → 麦克风选了某一个（~/.blurt/config.json 的 record.mic，zuhui/mic_prefs.py）：mic 就是它，
+        missing = 现在找不到它；手改成不录的（"off"）：mic None、off True。"""
+        from . import mic_prefs
+        want = mic_prefs.chosen()
         d = _read_json(STATE / "devices.json")
-        if d.get("mic") or d.get("speaker"):
+        if not want and (d.get("mic") or d.get("speaker")):
             return {"mic": d.get("mic"), "speaker": d.get("speaker"), "at": time.time(), "source": "recorder"}
         at, val = self._dev
         if (refresh or val is None) and not self._dev_busy and time.time() - at > 4:
             self._dev_busy = True
             threading.Thread(target=self._probe_devices, name="view-devices", daemon=True).start()
         out = dict(val or {"mic": None, "speaker": None})
+        inputs = out.pop("inputs", None)
         out.update(at=at, source="system", probing=self._dev_busy)
+        if want == "off":
+            out.update(mic=None, off=True, source="setting")
+        elif want:
+            out.update(mic=want, source="setting", missing=isinstance(inputs, list) and not mic_prefs.present(want, inputs))
+            if d.get("speaker"):
+                out["speaker"] = d["speaker"]
         return out
 
     def _probe_devices(self) -> None:
@@ -3545,7 +3563,7 @@ class Viewer:
             # 再多的先不取（中继那边留着、满了让他稍等），免得一份份 50 MB 在内存里、磁盘上越堆越多
             with _GUEST_UP_LOCK:
                 if _GUEST_UP[0] >= self.GUEST_UPLOADS_PENDING:
-                    return {"ok": False, "error": "正在导入其他论文，请稍后重试"}
+                    return {"ok": False, "error": "正在导入其他文档，请稍后重试"}
                 _GUEST_UP[0] += 1
             try:
                 name, data = fetch_upload(str(body.get("upload") or ""))
@@ -3617,7 +3635,7 @@ class Viewer:
         with self.lock:
             raw = getattr(self, "_raw", None) or self.html or ""
         if PLACEHOLDER_MARK in raw:
-            return PLACEHOLDER.format(msg="正在准备论文…"), {}
+            return PLACEHOLDER.format(msg="正在准备文档…"), {}
         base = f"/view/{share_room()}/fig/"
         figs, assets = {}, {}
         for no, f in self.figures().items():
@@ -3712,7 +3730,7 @@ class Viewer:
         """大厅里点「移除」：现在没有论文（current_paper.json 记成"没有"、摊开的单子清空），对比页换成占位页。
         app 接上时由 app.clear_paper 调（它还要换掉快嘴、工人手里那篇）。开着会不能移除。"""
         if self.meetings and self.meetings.current():
-            raise RuntimeError("会议中无法移除论文")
+            raise RuntimeError("会议中无法移除文档")
         from .config import clear_paper as _clear, paper_path as _pp
         from .meetings import save_open_papers
         _clear()
@@ -4066,6 +4084,10 @@ class Viewer:
                         self._json({"ok": False, "error": repr(e)[:200]}, 500)
                 elif p == "/api/devices":        # 自己那张卡：麦克风、扬声器（点开卡片时重问一次系统）
                     self._json(viewer.devices(refresh=True))
+                elif p == "/api/mic/device":     # 设置 → 语音 → 麦克风：选的哪个、本机有哪些（zuhui/mic_prefs.py）
+                    from . import mic_prefs
+                    out, code = mic_prefs.http_get(viewer)
+                    self._json(out, code)
                 elif p == "/api/meetings":
                     rows = viewer.meetings.list()
                     for r in rows:
@@ -4380,6 +4402,10 @@ class Viewer:
                     except OSError:                # 文件被占着（Windows）之类：没换成，过一会儿再试
                         return self._json({"error": "failed"}, 500)
                     return self._json(_profile(viewer))
+                if p == "/api/mic/device":     # 设置 → 语音 → 麦克风 {"mic": ""（系统默认）| 设备名}：存进 ~/.blurt/config.json 的 record.mic；开着会 409
+                    from . import mic_prefs
+                    out, code = mic_prefs.http_post(viewer, body)
+                    return self._json(out, code)
                 if p == "/api/mic/mute":       # 主持人麦克风静音 {"muted": true|false} → {"muted": 现在是否静音}（见 Ears.set_muted）
                     fn = getattr(viewer, "mic_mute", None)
                     want = body.get("muted") if isinstance(body, dict) else None
@@ -4442,7 +4468,7 @@ class Viewer:
                 elif p == "/api/paper/switch":   # 会中切到摊开过的另一篇（加论文走 /api/paper：开会时就是加进这场会并切过去）
                     fn = getattr(viewer, "on_switch_paper", None)
                     if not callable(fn):
-                        return self._json({"ok": False, "error": "切换论文失败：服务未就绪"}, 503)
+                        return self._json({"ok": False, "error": "切换文档失败：服务未就绪"}, 503)
                     try:
                         self._json({"ok": True, "paper": fn(str(body.get("id") or ""))})
                     except (KeyError, ValueError, RuntimeError) as e:
@@ -4500,7 +4526,9 @@ class Viewer:
                     if not part or not value:
                         return self._json({"ok": False, "error": "缺 part 或 value"}, 400)
                     try:
-                        self._json(fn(part, value))
+                        out = fn(part, value)
+                        viewer._ready_cache = (0.0, None)     # 大厅"准备情况"里的型号马上跟着变
+                        self._json(out)
                     except ValueError as e:
                         self._json({"ok": False, "error": str(e)}, 400)
                     except PermissionError as e:

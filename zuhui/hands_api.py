@@ -371,7 +371,7 @@ def run_edit(hands, task: dict) -> None:
     try:
         text, _bom, _crlf = _read_raw(path)
     except (OSError, ValueError) as e:
-        fail(f"读取论文失败：{e}")
+        fail(f"读取文档失败：{e}")
         return
     before = hands._read_paper()
     en = _en(hands)
@@ -413,7 +413,7 @@ def run_edit(hands, task: dict) -> None:
             try:
                 cur, bom, crlf = _read_raw(path)          # 现读：模型想的这一会儿，对比页可能动过稿子
             except (OSError, ValueError) as e:
-                fail(f"读取论文失败：{e}")
+                fail(f"读取文档失败：{e}")
                 return
             new_text, bad = _apply(cur, plan["edits"])
         if not bad:
@@ -452,7 +452,7 @@ def run_edit(hands, task: dict) -> None:
                 bom, crlf = bom2, crlf2
             _write(path, new_text, bom, crlf)
         except (OSError, ValueError) as e:
-            fail(f"写入论文失败：{e}")
+            fail(f"写入文档失败：{e}")
             return
         prog.on_event(_tool_ev("Read", {"file_path": str(path)}))       # → "检查修改"
         wrote = True
@@ -492,7 +492,7 @@ def run_annotate(hands, task: dict) -> None:
             nt = parse_note(reply or "") or {}
     hands.board.to_note(task["id"], plan=_none_if_empty(nt.get("plan")), need=_none_if_empty(nt.get("need")),
                         anchor=_none_if_empty(nt.get("anchor")), section=_none_if_empty(nt.get("section")),
-                        result=hands._en_text("已记录，未修改论文", "Noted only; the paper was not changed"))
+                        result=hands._en_text("已记录，未修改文档", "Noted only; the paper was not changed"))
 
 
 # ---------- 查论文、看屏幕 ----------
@@ -523,7 +523,7 @@ def ask_paper(hands, question: str, focus: dict | None, history: str, draft: str
     lit = lit_on() and not quick                 # 快查只在论文里找，不查文献
     if on_step is not None and text:
         try:
-            on_step("读论文", "全文")
+            on_step("读文档", "全文")
         except Exception:
             pass
     tools_line = ((LIT_NOTE + "除此之外不能联网，也读不到论文以外的文件（别的项目、记录）。\n") if lit else

@@ -234,7 +234,7 @@ class Board:
             return dict(task)
 
     def add_note(self, remark: str, title: str, section: str | None = None, focus: dict | None = None,
-                 result: str = "已记录，未修改论文", plan_job: bool = False, paper: dict | None = None) -> dict:
+                 result: str = "已记录，未修改文档", plan_job: bool = False, paper: dict | None = None) -> dict:
         """只记不改的一条（"先别改，记一下""put it on the list""flag that number"）：进任务板，note=True 让任务板和汇报都说"记着、没改"。
         三人英文会评审：嘴上说 "I'll flag it"，任务板上什么都没有。
         plan_job=True（标注模式，2026-11-14）：先排队交给工人只读地看一遍原文，写出钉在哪一段、怎么改、要补什么（mode=annotate），
@@ -433,7 +433,7 @@ class Board:
             t = self._find(task_id)
             if not t or t["status"] != "queued":
                 return False
-            t.update(status="done", rejected=True, finished=_now(), result="已撤回，未修改论文")
+            t.update(status="done", rejected=True, finished=_now(), result="已撤回，未修改文档")
             self._save()
             return True
 

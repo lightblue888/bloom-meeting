@@ -316,7 +316,7 @@ class HttpTest(unittest.TestCase):
         self.assertEqual((a["mode"], a["exists"], a["papers"], a["ready_paper"]), ("chat", False, [], False))
         self.assertEqual(a["paper_path"], "")                       # 没选论文：不给路径
         self.assertNotIn("claude", a["ids"])
-        self.assertIn("暂无论文", r["placeholder"])
+        self.assertIn("暂无文档", r["placeholder"])
         self.assertNotIn(r["state"], r["placeholder"])              # 占位页不带本机路径
         self.assertNotIn("no-paper", r["placeholder"])
         lv = r["live"]

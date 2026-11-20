@@ -252,7 +252,7 @@ def ask_step(name: str, inp: dict, paper_name: str = "", sections=None) -> tuple
     if name == "Grep":
         raw = " ".join(str(inp.get("pattern") or "").split())
         pat = _pat_words(raw) or raw
-        where = "论文" if (not fname or fname == paper_name) else fname
+        where = "文档" if (not fname or fname == paper_name) else fname
         return (f"搜索{where}", pat)
     if name == "Read":
         if fname.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")):
@@ -265,7 +265,7 @@ def ask_step(name: str, inp: dict, paper_name: str = "", sections=None) -> tuple
             a = _section_at(sections, int(off))
             b = _section_at(sections, int(off) + int(lim or 0)) if lim else a
             sec = a if a == b or not b else f"{a} → {b}"
-        return (("读论文" if mine else f"读 {fname}"), rng + (f"（{sec}）" if sec else ""))
+        return (("读文档" if mine else f"读 {fname}"), rng + (f"（{sec}）" if sec else ""))
     if name == "Glob":
         return ("查找文件", str(inp.get("pattern") or ""))
     if name == "WebSearch":
@@ -314,12 +314,12 @@ class WorkerProgress:
             elif self._edited:
                 step = "检查修改"
             elif not fname or fname == self.paper_file.name:
-                step = "读论文"
+                step = "读文档"
             else:
                 step = f"读 {fname}"
         elif name == "Grep":
             pat = " ".join(str(inp.get("pattern") or "").split())[:12]
-            step = "检查修改" if self._edited else (f"查找“{pat}”" if pat else "搜索论文")
+            step = "检查修改" if self._edited else (f"查找“{pat}”" if pat else "搜索文档")
         elif name == "Glob":
             step = "查找文件"
         elif name in ("Edit", "MultiEdit", "Write"):
@@ -542,7 +542,7 @@ class Hands:
             self.board.finish(task["id"], result=f"（演练）已按意见改了第 {task['idx']} 处")
             return
         if not self.paper_file.exists():
-            self.board.finish(task["id"], error=f"论文文件不存在：{self.paper_file}")
+            self.board.finish(task["id"], error=f"文件不存在：{self.paper_file}")
             return
 
         if task.get("mode") == "annotate":       # 标注：只读地看一遍原文，写钉在哪一段、怎么改、要补什么，不改论文
@@ -804,7 +804,7 @@ class Hands:
         nt = parse_note((data or {}).get("result") if isinstance((data or {}).get("result"), str) else "") or {}
         self.board.to_note(task["id"], plan=_none_if_empty(nt.get("plan")), need=_none_if_empty(nt.get("need")),
                            anchor=_none_if_empty(nt.get("anchor")), section=_none_if_empty(nt.get("section")),
-                           result=self._en_text("已记录，未修改论文", "Noted only; the paper was not changed"))
+                           result=self._en_text("已记录，未修改文档", "Noted only; the paper was not changed"))
 
     def _ask(self, prompt: str, read_dirs, sect: dict, label: str, cancel=None, web: bool = False,
              on_step=None) -> tuple[str, str | None]:

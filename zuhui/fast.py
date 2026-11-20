@@ -1047,24 +1047,24 @@ class GroundCheck:
         for t in self._latin_tokens(s):
             in_user = re.sub(r"\s+", "", t.lower()) in self.user_sq
             if not idx.has_latin(t) and (loc or not in_user):
-                return (f"not found in the paper: \"{t}\"" if self.en else f"论文里找不到“{t}”")
+                return (f"not found in the paper: \"{t}\"" if self.en else f"文档里找不到“{t}”")
         # 2. 小节号、表号、图号：论文里得有这一节 / 这张表
         if idx.top:
             for m in re.finditer(rf"第({_N})[节章]", s):
                 n = cn_int(m.group(1))
                 if n is not None and str(n) not in idx.top:
-                    return (f"the paper has no section {n}" if self.en else f"论文没有第{n}节")
+                    return (f"the paper has no section {n}" if self.en else f"文档没有第{n}节")
             for m in re.finditer(rf"({_N})点({_N})(?=节|小节|那|这|里|中)", s):
                 a, b = cn_int(m.group(1)), cn_int(m.group(2))
                 if a and b is not None and f"{a}.{b}" not in idx.secs:
-                    return (f"the paper has no section {a}.{b}" if self.en else f"论文没有{a}.{b}节")
+                    return (f"the paper has no section {a}.{b}" if self.en else f"文档没有{a}.{b}节")
         for kind, have in (("表", idx.tables), ("图", idx.figs)):
             if not have:
                 continue
             for m in re.finditer(rf"{kind}({_N})", s):
                 n = cn_int(m.group(1))
                 if n is not None and n not in have:
-                    return (f"the paper has no {kind} {n}" if self.en else f"论文没有{kind}{n}")
+                    return (f"the paper has no {kind} {n}" if self.en else f"文档没有{kind}{n}")
         # 3. 加了引号的词：说是论文里的，就得在论文里（对方自己说过的不算）
         for m in _QUOTED.finditer(s):
             x = m.group(1)
@@ -1073,7 +1073,7 @@ class GroundCheck:
             if re.search(r"(那|这|一|的)?(段|节|章|部分|小节)$", x):   # "现实错配那段"：说的是位置（中文意译），不是论文里的词
                 continue
             if not idx.has_phrase(x):
-                return (f"not found in the paper: \"{x}\"" if self.en else f"论文里找不到“{x}”")
+                return (f"not found in the paper: \"{x}\"" if self.en else f"文档里找不到“{x}”")
         # 4. "论文里提到了某某""摘要里写了某某"：某某得在论文里
         for m in _CLAIM.finditer(s):
             if re.match(r"[我你他她它咱]", m.group("x")):   # "第三节的定义我拆成了三小点"：说的是自己做了什么，不是论文里写了什么
@@ -1083,10 +1083,10 @@ class GroundCheck:
             for part in re.split(r"[和与及、跟或]", x):         # "夏普比率和最大回撤"：一样一样地查
                 part = part.strip()
                 if len(re.sub(r"[^一-鿿A-Za-z]", "", part)) >= 3 and not idx.has_phrase(part):
-                    return (f"not found in the paper: \"{part}\"" if self.en else f"论文里找不到“{part}”")
+                    return (f"not found in the paper: \"{part}\"" if self.en else f"文档里找不到“{part}”")
         # 5. "论文里夏普比率是一点二"：说论文里某个东西是多少，这个东西得在论文里
         for m in _ISCLAIM.finditer(s):
             x = m.group("x").strip()
             if len(x) >= 2 and not re.match(r"[我你他她它咱这那]", x) and not idx.has_phrase(x):
-                return (f"not found in the paper: \"{x}\"" if self.en else f"论文里找不到“{x}”")
+                return (f"not found in the paper: \"{x}\"" if self.en else f"文档里找不到“{x}”")
         return None

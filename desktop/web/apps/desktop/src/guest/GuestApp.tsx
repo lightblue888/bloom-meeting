@@ -326,7 +326,7 @@ export function GuestApp() {
         if (!r.ok || !d.id) { toast(L(`上传失败：${d.error ? relayErr(d.error) : r.status}`, `Upload failed: ${d.error ? relayErr(d.error) : r.status}`)); return; }
         toast(L('已上传，正在导入…', 'Uploaded, importing…'));
         const res = await waitResult(d.id, 10 * 60_000);
-        toast(res.ok === false ? L(`导入失败：${relayErr(res.error)}`, `Import failed: ${relayErr(res.error)}`) : L('论文已添加', 'Paper added'));
+        toast(res.ok === false ? L(`导入失败：${relayErr(res.error)}`, `Import failed: ${relayErr(res.error)}`) : L('文档已添加', 'Paper added'));
       } catch (e) {
         toast(L(`上传失败：${String((e as Error)?.message ?? e)}`, `Upload failed: ${String((e as Error)?.message ?? e)}`));
       }
@@ -537,7 +537,7 @@ export function GuestApp() {
         {!chat && (
         <nav className="g-mtabs" role="tablist" aria-label={L('切换', 'Switch')}>
           <button role="tab" aria-selected={mtab === 'paper'} className={mtab === 'paper' ? 'is-sel' : ''} onClick={() => setMtab('paper')} data-testid="guest-tab-paper">
-            {L('论文', 'Paper')}
+            {L('文档', 'Paper')}
           </button>
           <button role="tab" aria-selected={mtab === 'talk'} className={mtab === 'talk' ? 'is-sel' : ''} onClick={() => setMtab('talk')} data-testid="guest-tab-talk">
             <span className="g-mtab-t">

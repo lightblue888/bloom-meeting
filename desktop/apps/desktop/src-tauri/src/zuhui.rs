@@ -45,8 +45,8 @@ fn python_for(dir: &std::path::Path) -> String {
 #[tauri::command(async)]
 pub fn zuhui_pick_paper(app: tauri::AppHandle) -> Option<String> {
     let f = crate::island::folder_dialog(&app)
-        .set_title("选一篇论文")
-        .add_filter("论文", &["pdf", "md", "markdown", "tex", "docx", "pptx", "txt"])
+        .set_title("选择文档")
+        .add_filter("文档", &["pdf", "md", "markdown", "tex", "docx", "pptx", "txt"])
         .blocking_pick_file()?;
     f.into_path().ok().map(|p| p.to_string_lossy().into_owned())
 }

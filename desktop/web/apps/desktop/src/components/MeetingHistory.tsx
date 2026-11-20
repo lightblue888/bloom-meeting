@@ -7,8 +7,7 @@
 // cleaned transcript arrive after the meeting ends.
 // Across meetings: the list filters by paper (the papers each meeting had open); 提问 turns the right pane into a
 // question box over the past meetings (the model runs only when asked; the answer names its sources, a click opens
-// that meeting at that moment); 阶段汇总 turns the list's rows into picks and the right pane into the digests (one is
-// written from the picked meetings when asked; they are saved, and copy as Markdown).
+// that meeting at that moment). (阶段汇总 was taken out on 2026-11-20: "不要这个阶段汇总".)
 // Switching is kept cheap: the list stays mounted (hidden) while a meeting is open, the last opened meeting stays
 // mounted (hidden) after 返回 so opening it again is instant (its paper and recording are still loaded), and the polls
 // keep unchanged data identical (useDismiss.keep) so nothing re-renders for them.
@@ -18,8 +17,6 @@ import { i18n, t } from '../i18n';
 import {
   ASK_MAX,
   cleanTitle,
-  DIGEST_MAX,
-  DIGEST_MIN,
   exportName,
   exportReason,
   fmtDay,
@@ -28,8 +25,6 @@ import {
   isChat,
   meetingApi,
   splitCites,
-  type Digest,
-  type DigestBrief,
   type ExportKind,
   type Line,
   type MeetingBrief,
@@ -82,10 +77,8 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
   const [confirm, setConfirm] = useState<string | null>(null);
   /** only the meetings that had this paper open (its name, lower-cased); null = all */
   const [paperF, setPaperF] = useState<string | null>(null);
-  /** the right pane: the picked meeting, the question box, or the digests (the list's rows are picks then) */
-  const [mode, setMode] = useState<'preview' | 'ask' | 'digest'>('preview');
-  /** 阶段汇总: the meetings picked for the next one */
-  const [picks, setPicks] = useState<string[]>([]);
+  /** the right pane: the picked meeting or the question box */
+  const [mode, setMode] = useState<'preview' | 'ask'>('preview');
   /** where to go once a meeting opens (an answer's source, a left-over item in the lobby) */
   const [jump, setJump] = useState<{ id: string; sec: number; k: number } | null>(null);
   const lang = i18n().lang;
@@ -250,9 +243,7 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
     if (typeof sec === 'number') setJump((j) => ({ id: mid, sec, k: (j?.k ?? 0) + 1 }));
     void show(mid);
   };
-  const togglePick = (id: string) => setPicks((ps) => (ps.includes(id) ? ps.filter((x) => x !== id) : [...ps, id]));
   const goSource = useCallback((s: PastSource) => goToRef.current(s.mid, s.sec), []);
-  const goMeeting = useCallback((mid: string) => goToRef.current(mid, null), []);
   const goToRef = useRef(goTo);
   goToRef.current = goTo;
 
@@ -369,11 +360,6 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
             <Icon name="help-circle" size={13} />
             {t('meeting.history.ask')}
           </button>
-          <button className={`mt-btn mt-hmode ${mode === 'digest' ? 'is-on' : ''}`} aria-pressed={mode === 'digest'} disabled={!list?.some((m) => !m.sample)}
-            onClick={() => setMode((m) => (m === 'digest' ? 'preview' : 'digest'))} data-testid="history-digest">
-            <Icon name="list" size={13} />
-            {t('meeting.history.digest')}
-          </button>
         </div>
         {paperMenu.node}
       </header>
@@ -393,17 +379,17 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
           </div>
         ) : (
           <div className={`mt-hsplit is-${mode}`}>
-            <ul className="mt-hlist" role="listbox" aria-label={t('meeting.history.title')} aria-multiselectable={mode === 'digest' || undefined}>
+            <ul className="mt-hlist" role="listbox" aria-label={t('meeting.history.title')}>
               {shown.map((m) => (
                 <li key={m.id} className="mt-hitem" role="none">
                   <button
-                    className={`mt-hrow ${(mode === 'digest' ? picks.includes(m.id) : m.id === picked) ? 'is-sel' : ''}`}
+                    className={`mt-hrow ${m.id === picked ? 'is-sel' : ''}`}
                     role="option"
-                    aria-selected={mode === 'digest' ? picks.includes(m.id) : m.id === picked}
-                    onMouseDown={(e) => mode !== 'digest' && e.button === 0 && setSel(m.id)}
+                    aria-selected={m.id === picked}
+                    onMouseDown={(e) => e.button === 0 && setSel(m.id)}
                     // hovering only lights the row and fetches the meeting quietly; the choice changes on a click
                     onMouseEnter={() => void prefetch(m.id)}
-                    onClick={() => (mode === 'digest' ? togglePick(m.id) : setSel(m.id))}
+                    onClick={() => setSel(m.id)}
                     onDoubleClick={() => void show(m.id)}
                     onKeyDown={(e) => {
                       if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
@@ -417,14 +403,10 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
                     }}
                     data-testid={`history-${m.id}`}
                   >
-                    {/* one slot for the state dot and, while picking meetings for a digest, the tick box */}
+                    {/* the state dot's slot: a dot only where it says something (on now, or its post-meeting work still
+                        running); the slot stays, so a title never moves when its dot comes or goes */}
                     <span className="mt-hslot" aria-hidden="true">
-                      {mode === 'digest' ? (
-                        <span className={`mt-hpick ${picks.includes(m.id) ? 'is-on' : ''}`}>{picks.includes(m.id) && <Icon name="check" size={11} />}</span>
-                      ) : (
-                        // a dot only where it says something: on now, or its post-meeting work still running
-                        <span className={`mt-state-dot is-${m.state === 'live' ? 'live' : m.processing ? 'post' : m.state ?? 'ended'}`} />
-                      )}
+                      <span className={`mt-state-dot is-${m.state === 'live' ? 'live' : m.processing ? 'post' : m.state ?? 'ended'}`} />
                     </span>
                     <span className="mt-hrow-main">
                       <span className="mt-hrow-title">{cleanTitle(m.title) || m.id}</span>
@@ -442,9 +424,6 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
               <AskPane mids={paperOn ? ofPaper.map((m) => m.id) : null}
                 scope={paperOn ? t('meeting.history.ask.scope_paper', { a: paperName ?? '', n: i18n().formatNumber(ofPaper.length) }) : t('meeting.history.ask.scope_all', { n: i18n().formatNumber(list.length) })}
                 onClose={() => setMode('preview')} onSource={goSource} />
-            )}
-            {mode === 'digest' && (
-              <DigestPane picks={picks} onClear={() => setPicks([])} onClose={() => setMode('preview')} onToast={onToast} onMeeting={goMeeting} active={active && !opened} />
             )}
             <section className={`mt-hpreview ${mode === 'preview' ? '' : 'is-off'}`} aria-live="polite" data-testid="history-preview" hidden={mode !== 'preview' || undefined}>
               {brief && (
@@ -748,215 +727,6 @@ function AskPane({ mids, scope, onClose, onSource }: {
           </>
         ) : null}
       </div>
-    </section>
-  );
-}
-
-/** 回顾 → 阶段汇总: the meetings picked in the list, 生成 (the model runs, in the background), the saved digests
- *  (newest first; one being written shows so in its row) and the one opened, which copies as Markdown. A failure
- *  to start is said in a toast; a digest that failed says so in its own row. */
-function DigestPane({ picks, onClear, onClose, onToast, onMeeting, active }: {
-  picks: string[];
-  onClear: () => void;
-  onClose: () => void;
-  onToast: (msg: string) => void;
-  /** a meeting named in the digest clicked: open it */
-  onMeeting: (mid: string) => void;
-  active: boolean;
-}) {
-  const [list, setList] = useState<DigestBrief[] | null>(null);
-  const [cur, setCur] = useState<string | null>(null);
-  const [doc, setDoc] = useState<Digest | null>(null);
-  const [starting, setStarting] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const lang = i18n().lang;
-  const running = (list ?? []).some((d) => d.state === 'running');
-  useEffect(() => {
-    if (!active) return;
-    let alive = true;
-    const load = () =>
-      meetingApi.digests().then(
-        (l) => alive && setList(Array.isArray(l) ? l : []),
-        () => alive && setList((x) => x ?? []),
-      );
-    void load();
-    // while one is being written: every 2 s, until it is done
-    const h = running ? window.setInterval(load, 2000) : undefined;
-    return () => {
-      alive = false;
-      if (h) clearInterval(h);
-    };
-  }, [active, running]);
-  const shownId = cur && (list ?? []).some((d) => d.id === cur) ? cur : (list ?? []).find((d) => d.state === 'done')?.id ?? null;
-  const shownState = (list ?? []).find((d) => d.id === shownId)?.state;
-  useEffect(() => {
-    if (!shownId || shownState !== 'done') return;
-    let alive = true;
-    meetingApi.digest(shownId).then(
-      (d) => alive && setDoc(d),
-      () => {},
-    );
-    return () => {
-      alive = false;
-    };
-  }, [shownId, shownState]);
-  const n = picks.length;
-  const ok = n >= DIGEST_MIN && n <= DIGEST_MAX;
-  const go = async () => {
-    if (!ok || starting) return;
-    setStarting(true);
-    try {
-      const d = await meetingApi.startDigest(picks);
-      setList((l) => [d, ...(l ?? []).filter((x) => x.id !== d.id)]);
-      setCur(d.id);
-      onClear();
-    } catch (e) {
-      const c = String((e as Error)?.message ?? e);
-      // (the catalog can't have keys ending in _few / _many: those are plural forms there)
-      const known: Record<string, string> = { too_few: 'min', too_many: 'max', not_found: 'not_found', busy: 'busy' };
-      onToast(t('meeting.history.digest.failed', { a: known[c] ? t(`meeting.history.digest.err.${known[c]}`) : c }));
-    } finally {
-      setStarting(false);
-    }
-  };
-  const copy = async () => {
-    if (!doc?.markdown) return;
-    try {
-      await navigator.clipboard.writeText(doc.markdown);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    } catch {
-      /* no clipboard here */
-    }
-  };
-  const span = (ms: { started: string | null }[]) =>
-    ms.length ? `${fmtDay(ms[0].started, lang)} – ${fmtDay(ms[ms.length - 1].started, lang)} · ${t('meeting.history.digest.meetings', { n: i18n().formatNumber(ms.length) })}` : '';
-  const showing = doc && doc.id === shownId ? doc : null;
-  const r = showing?.result;
-  const days = (ids: number[]) =>
-    ids
-      .map((i) => showing?.meetings[i - 1])
-      .filter((m): m is NonNullable<typeof m> => !!m)
-      .map((m) => (
-        <button key={m.id} className="mt-dg-day" onClick={() => onMeeting(m.id)} title={cleanTitle(m.title)}>
-          {fmtDay(m.started, lang)}
-        </button>
-      ));
-  const busy = starting || running;
-  return (
-    <section className="mt-hpreview mt-hpane mt-dg" data-testid="history-digest-pane">
-      <div className="mt-hp-head">
-        <div className="mt-hp-titles">
-          <h2 className="mt-hp-title">{t('meeting.history.digest.title')}</h2>
-          <div className="mt-hrow-sub">
-            <span className="mt-dg-picked" data-testid="history-digest-picked">{t('meeting.history.digest.picked', { n: i18n().formatNumber(n) })}</span>
-          </div>
-        </div>
-        <div className="mt-hp-acts">
-          <button className="mt-btn is-primary mt-dg-go" disabled={!ok || busy} aria-busy={busy || undefined} onClick={() => void go()}
-            title={ok ? undefined : t('meeting.history.digest.range')} data-testid="history-digest-go">
-            <span className="mt-wstack">
-              <span className={busy ? 'is-ghost' : undefined} aria-hidden={busy || undefined}>{t('meeting.history.digest.go')}</span>
-              <span className={busy ? undefined : 'is-ghost'} aria-hidden={busy ? undefined : true}>
-                <span className="mw-spinner sm" aria-hidden="true" />
-                {t('meeting.history.digest.writing')}
-              </span>
-            </span>
-          </button>
-          <button className="mt-btn" onClick={onClose} data-testid="history-digest-close">
-            <Icon name="close" size={12} />
-            {t('meeting.history.close')}
-          </button>
-        </div>
-      </div>
-      <h3 className="mt-hp-h">{t('meeting.history.digest.saved')}</h3>
-      {list === null ? (
-        <p className="mt-hp-none">…</p>
-      ) : !list.length ? (
-        <p className="mt-hp-none">{t('meeting.history.digest.none')}</p>
-      ) : (
-        <ul className="mt-dg-list" data-testid="history-digest-list">
-          {list.map((d) => (
-            <li key={d.id}>
-              <button className={`mt-dg-row ${d.id === shownId ? 'is-sel' : ''}`} onClick={() => setCur(d.id)} disabled={d.state !== 'done'} data-testid="history-digest-row">
-                <span className={`mt-dg-row-t is-${d.state}`} title={d.state === 'failed' ? d.error ?? undefined : d.title || undefined}>
-                  {d.state === 'running' ? (
-                    <>
-                      <span className="mw-spinner sm" aria-hidden="true" />
-                      {t('meeting.history.digest.writing')}
-                    </>
-                  ) : d.state === 'failed' ? (
-                    t('meeting.history.digest.failed', { a: d.error ?? '' })
-                  ) : (
-                    d.title || t('meeting.history.digest.title')
-                  )}
-                </span>
-                <span className="mt-dg-row-m">{span(d.meetings)}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      {showing && r && (
-        <article className="mt-dg-doc" data-testid="history-digest-doc">
-          <div className="mt-dg-doc-head">
-            <h3 className="mt-dg-doc-t">{r.title}</h3>
-            <button className="mt-btn mt-dg-copy" onClick={() => void copy()} data-testid="history-digest-copy">
-              <span className="mt-wstack">
-                <span className={copied ? 'is-ghost' : undefined} aria-hidden={copied || undefined}>
-                  <Icon name="copy" size={13} />
-                  {t('meeting.history.digest.copy')}
-                </span>
-                <span className={copied ? undefined : 'is-ghost'} aria-hidden={copied ? undefined : true}>
-                  <Icon name="check" size={13} />
-                  {t('meeting.history.digest.copied')}
-                </span>
-              </span>
-            </button>
-          </div>
-          <p className="mt-dg-range">{span(showing.meetings)}</p>
-          {r.overview && <p className="mt-hp-abstract">{r.overview}</p>}
-          {r.issues.length > 0 && (
-            <>
-              <h4 className="mt-hp-h">{t('meeting.history.digest.issues')}</h4>
-              <ul className="mt-dg-items">
-                {r.issues.map((x, i) => (
-                  <li key={i}>
-                    <span>{x.text}</span>
-                    <span className="mt-dg-days">{days(x.meetings)}</span>
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-          {r.feedback.length > 0 && (
-            <>
-              <h4 className="mt-hp-h">{t('meeting.history.digest.feedback')}</h4>
-              <ul className="mt-dg-items">
-                {r.feedback.map((x, i) => (
-                  <li key={i}>
-                    <span>{x.by ? `${x.by}：${x.text}` : x.text}</span>
-                    <span className="mt-dg-days">{days(x.meetings)}</span>
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-          {r.open.length > 0 && (
-            <>
-              <h4 className="mt-hp-h">{t('meeting.history.digest.open')}</h4>
-              <ul className="mt-dg-items is-open">
-                {r.open.map((x, i) => (
-                  <li key={i}>
-                    <span>{x.who ? `${x.text}（${x.who}）` : x.text}</span>
-                    <span className="mt-dg-days">{days(x.meeting ? [x.meeting] : [])}</span>
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-        </article>
-      )}
     </section>
   );
 }

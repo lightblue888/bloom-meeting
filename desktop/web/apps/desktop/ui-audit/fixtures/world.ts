@@ -8,6 +8,7 @@ import type {
   Brain,
   Current,
   Devices,
+  MicChoice,
   Invite,
   Line,
   MeetingBrief,
@@ -105,6 +106,8 @@ export interface World {
   /** null: /api/models answers 503 (can't switch) */
   models: Models | null;
   devices: Devices;
+  /** Settings → Speech → Microphone (/api/mic/device): '' = the system's default; `live` comes from current.meeting */
+  micChoice: Omit<MicChoice, 'live'>;
   mic: { muted: boolean; talk: string[] };
   profile: Profile;
   provider: Provider;
@@ -519,6 +522,12 @@ export function baseWorld(lang: Lang, stress = false): World {
     asr: 'Fun-ASR Nano',
   };
 
+  // this PC's inputs as Windows names them (Settings → Speech → Microphone): the default one, a headset, a virtual cable
+  const mics = stress
+    ? [STRESS.mic, 'Headset Microphone (Jabra Evolve2 85 - Microsoft Teams Certified Edition) Hands-Free AG Audio', 'CABLE Output (VB-Audio Virtual Cable)']
+    : [current.ready!.devices!.mic!, T('耳机 (WH-1000XM5)', 'Headset (WH-1000XM5)'), 'CABLE Output (VB-Audio Virtual Cable)'];
+  const micChoice: Omit<MicChoice, 'live'> = { mic: '', devices: mics, default: current.ready!.devices!.mic ?? null, missing: false, max: 200 };
+
   const relayState: RelayState = {
     title, host, live: true, started: isoAgo(started), v: 2,
     meeting: { id: 'm-live', title, started: isoAgo(started), duration_s: started, lang },
@@ -533,6 +542,7 @@ export function baseWorld(lang: Lang, stress = false): World {
   return {
     lang, stress, backendUp: true, current, meetings, details, models,
     devices: { mic: current.ready!.devices!.mic, speaker: current.ready!.devices!.speaker },
+    micChoice,
     mic: { muted: false, talk: [] },
     profile, provider, usageMonth,
     providerModels: stress ? Array.from({ length: 60 }, (_, i) => `${STRESS.modelMain}-${i}`) : ['gemma3:4b', 'llama3.1:8b', 'qwen3:8b', 'qwen3:14b'],
@@ -622,7 +632,7 @@ export function baseWorld(lang: Lang, stress = false): World {
     askAnswer,
     askError: null,
     digests,
-    userStrings: [...tasks.map((x) => x.title), ...tasks.map((x) => x.plan ?? '').filter(Boolean), ...tasks.map((x) => x.result ?? '').filter(Boolean), ...tasks.map((x) => x.remark).filter(Boolean), ...summary.conclusions.map(itemText), host, ai, ...guests, title, fast, main, effort, ...papers.map((p) => p.name), STRESS.mic, STRESS.speaker, current.ready!.devices!.mic!, current.ready!.devices!.speaker!, 'DeepSeek V4 Pro', 'DeepSeek V4 Flash', 'CosyVoice 3', 'Fun-ASR Nano', ...meetings.map((m) => m.title), STRESS.url, provider.base_url,
+    userStrings: [...mics, ...tasks.map((x) => x.title),...tasks.map((x) => x.plan ?? '').filter(Boolean), ...tasks.map((x) => x.result ?? '').filter(Boolean), ...tasks.map((x) => x.remark).filter(Boolean), ...summary.conclusions.map(itemText), host, ai, ...guests, title, fast, main, effort, ...papers.map((p) => p.name), STRESS.mic, STRESS.speaker, current.ready!.devices!.mic!, current.ready!.devices!.speaker!, 'DeepSeek V4 Pro', 'DeepSeek V4 Flash', 'CosyVoice 3', 'Fun-ASR Nano', ...meetings.map((m) => m.title), STRESS.url, provider.base_url,
       ...carryDemo.map((x) => x.text), ...bookmarks.map((b) => b.note).filter(Boolean), ...askAnswer.sources.map((x) => x.text), ...askAnswer.sources.map((x) => x.title), ...digests.map((d) => d.title), ...digests.map((d) => d.error ?? '').filter(Boolean)],
   };
 }

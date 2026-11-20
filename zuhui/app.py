@@ -857,11 +857,11 @@ class Meeting:
             cur = self.meetings.current()
             if cur and mode_of(cur) == "chat":
                 # 没有论文的会：这场只记逐字稿，开着会不能加论文（散会后在大厅里选）
-                raise RuntimeError(self._L("此会议不能添加论文", "Papers can't be added to this meeting"))
+                raise RuntimeError(self._L("此会议不能添加文档", "Papers can't be added to this meeting"))
             if cur:
                 return self._add_paper_live(path)
             if self.board.counts().get("working"):
-                raise RuntimeError(self._L("AI 正在修改论文，请稍后切换", "The AI is editing the paper. Try again later"))
+                raise RuntimeError(self._L("AI 正在修改文档，请稍后切换", "The AI is editing the paper. Try again later"))
             return self._add_paper_idle(path)
 
     def clear_paper(self) -> dict:
@@ -869,9 +869,9 @@ class Meeting:
         重新选 / 拖一篇论文（set_paper）就恢复成有论文。开着会不能移除。"""
         with self._paper_lock:
             if self.meetings.current():
-                raise RuntimeError(self._L("会议中无法移除论文", "Can't remove the paper during a meeting"))
+                raise RuntimeError(self._L("会议中无法移除文档", "Can't remove the paper during a meeting"))
             if self.board.counts().get("working"):
-                raise RuntimeError(self._L("AI 正在修改论文，请稍后移除", "The AI is editing the paper. Remove it later"))
+                raise RuntimeError(self._L("AI 正在修改文档，请稍后移除", "The AI is editing the paper. Remove it later"))
             from .config import clear_paper
             clear_paper()
             save_open_papers([], None)
@@ -1087,14 +1087,14 @@ class Meeting:
                 papers = self._open_list()
                 entry = next((p for p in papers if p["id"] == str(pid or "")), None)
                 if entry is None:
-                    raise ValueError(self._L("论文未打开", "This paper is not open"))
+                    raise ValueError(self._L("文档未打开", "This paper is not open"))
                 if self.board.counts().get("working"):
-                    raise RuntimeError(self._L("AI 正在修改论文，请稍后切换", "The AI is editing the paper. Switch later"))
+                    raise RuntimeError(self._L("AI 正在修改文档，请稍后切换", "The AI is editing the paper. Switch later"))
                 return self._show_idle(entry, papers, new=False)
             papers = papers_of(cur) or [self._paper_now()]
             entry = next((p for p in papers if p["id"] == str(pid or "")), None)
             if entry is None:
-                raise ValueError(self._L("本场会议中没有此论文", "This paper is not in the meeting"))
+                raise ValueError(self._L("本场会议中没有此文档", "This paper is not in the meeting"))
             return self._activate(entry, papers, new=False)
 
     def _activate(self, entry: dict, papers: list[dict], new: bool) -> dict:
@@ -2995,7 +2995,7 @@ class Meeting:
                     tr = getattr(self.fast, "last_trace", None) or {}
                     if head0 in ("#ask", "#deep"):          # 思考：它参照的是哪一节、手里有没有全文
                         ex["steps"] = [{"t": self.meetings.clock(), "k": "对照",
-                                        "v": ("论文全文" if tr.get("full") else "论文目录") +
+                                        "v": ("文档全文" if tr.get("full") else "文档目录") +
                                              (f"，重点 {tr['section']}" if tr.get("section") else "")}]
                     elif status_turn:
                         ex["steps"] = [{"t": self.meetings.clock(), "k": "查看修改进度"}]
@@ -3485,7 +3485,7 @@ class Meeting:
             remark = (f"共同主持人{guest}说：{u.text}" if guest and roles.is_cohost(guest) else
                       f"参会者{guest}说：{u.text}" if guest else u.text)
             task = self.board.add_note(remark=remark, title=title, plan_job=False, paper=self._paper_now(),
-                                       result=self._L("软件意见，散会后改软件，论文没动", "App feedback, to fix in the app after the meeting. The paper was not changed"))
+                                       result=self._L("软件意见，散会后改软件，文档没动", "App feedback, to fix in the app after the meeting. The paper was not changed"))
             self.board.annotate(task["id"], app=True, kind="app")
         except Exception as e:
             self.log("fast_error", error=self._L(f"软件意见记进待办出错：{e!r}", f"adding app feedback to the to-do list failed: {e!r}"))
@@ -3857,7 +3857,7 @@ class Meeting:
             remark = (f"共同主持人{guest}说：{u.text}" if guest else u.text) + pick_note
             # 标注模式（2026-11-14）：先排队交给工人只读地看一遍原文，写出钉在哪一段、怎么改、要补什么（不改论文，写好也不再念）
             task = self.board.add_note(remark=remark, title=title, section=sec, focus=focus,
-                                       result=self._L("已记录，未修改论文", "Noted only; the paper was not changed"), plan_job=True,
+                                       result=self._L("已记录，未修改文档", "Noted only; the paper was not changed"), plan_job=True,
                                        paper=self._paper_now())
             self.hands.notify()
             self.log("task_added", id=task["id"], title=f"{task['id']} {title}", note=True)
@@ -4227,7 +4227,7 @@ class Meeting:
                 # 出处也记论文以外读过的文件（"读 round1_report.log"）：2026-11-14 那场"同一套 507 句测试集上 68.8%"
                 # 是从项目记录里读来的（68.8% 其实是调参集 613 句上的），快嘴的上下文里没写出处，当成论文事实转述了
                 src = "；".join(_short(f"{x.get('k')} {x.get('v') or ''}".strip(), 60) for x in steps
-                               if x.get("k") in ("打开网页", "联网搜索", "读论文", "搜索论文")
+                               if x.get("k") in ("打开网页", "联网搜索", "读文档", "搜索文档", "读论文", "搜索论文")
                                or str(x.get("k") or "").startswith(("读 ", "搜索")))[:300]
                 outside = any(str(x.get("k") or "").startswith("读 ") for x in steps)
                 job["src"], job["outside"] = src, outside

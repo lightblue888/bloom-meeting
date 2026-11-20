@@ -104,7 +104,8 @@ def pick_input(sd) -> int | None:
         mics = [(i, d) for i, d in enumerate(devs) if d["max_input_channels"] > 0
                 and apis[d["hostapi"]]["name"] in ("MME", "Windows WASAPI")]
         try:
-            want = (json.loads((_P.home() / ".blurt" / "config.json").read_text(encoding="utf-8")).get("record") or {}).get("mic")
+            from .mic_prefs import chosen            # 设置 → 语音 → 麦克风（$BLURT_HOME/config.json 的 record.mic）
+            want = chosen()
         except Exception:
             want = None
         if isinstance(want, str) and want not in ("", "default", "off", "none"):

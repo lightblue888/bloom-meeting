@@ -235,8 +235,9 @@ function wireFindings(rec: Recorder, screen: Screen, base: { screen: string; lan
   }
   for (const b of rec.badStatus) {
     // answered so on purpose: no photo of your own (404), a backend that can't switch models (503), a name the
-    // "name rejected" transition makes the backend refuse (400)
+    // "name rejected" transition makes the backend refuse (400), a microphone picked while a meeting is on (409)
     if (/\/avatars\/me/.test(b.url) || /\/__zuhui\/api\/models/.test(b.url) || (b.status === 400 && /\/__zuhui\/api\/profile$/.test(b.url))) continue;
+    if (b.status === 409 && /\/__zuhui\/api\/mic\/device$/.test(b.url)) continue;
     if (/not mocked/.test(b.url)) continue;
     out.push({ ...base, check: 'http-error', detail: `HTTP ${b.status} ${b.url.replace(/^https?:\/\/[^/]+/, '')}`, url: b.url });
   }

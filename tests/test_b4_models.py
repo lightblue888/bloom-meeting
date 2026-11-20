@@ -484,7 +484,7 @@ class HandsLit(Base):
         ans, err = self.hands.ask_paper("别的论文是怎么做图基准的？", None, "", on_step=lambda k, v: steps.append((k, v)))
         self.assertIsNone(err)
         self.assertTrue(ans.startswith("查到了："))
-        self.assertEqual(steps, [("读论文", "全文"), ("查文献", "graph benchmark")])
+        self.assertEqual(steps, [("读文档", "全文"), ("查文献", "graph benchmark")])
         body = [x for x in Fake.seen if x["method"] == "POST"][0]["body"]
         self.assertIn("search_papers", json.dumps(body["tools"]))
         self.assertIn("查文献的工具", body["messages"][0]["content"])

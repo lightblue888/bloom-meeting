@@ -1377,7 +1377,7 @@ def on_demand(app) -> dict:
     try:
         md = Path(app.paper.path)
     except Exception:
-        return {"ok": False, "error": "没有打开的论文"}
+        return {"ok": False, "error": "没有打开的文档"}
     if not conv_meta(md) and md.suffix.lower() != ".tex":
         return {"ok": False, "error": "这篇不是从 Word 或 LaTeX 来的，没有可写回的"}
     res = run_for_app(app, None, why="手动")          # 不在开会：只有屏幕上这篇

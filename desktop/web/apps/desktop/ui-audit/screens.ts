@@ -72,6 +72,32 @@ const withUpdate = (u: Partial<UpdateStatus>) => (w: World): World => {
   if (u.error) w.userStrings.push(u.error);
   return w;
 };
+/** Claude Code's own login (Settings → Model source): its models as /api/models has them, the conversation model with
+ *  one choice; nothing picked in the lobby's world otherwise */
+const withClaude = (w: World): World => {
+  idle(w);
+  Object.assign(w.provider, { kind: 'claude', base_url: '', fast: '', main: '', key_set: false, key_tail: '', active: false, label: '' });
+  w.models = {
+    dialog: { current: 'claude-haiku-5-5', options: [{ id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5' }] },
+    edit: { current: 'claude-opus-5-5', options: [{ id: 'claude-opus-5-5', label: 'Claude Opus 5.5' }, { id: 'claude-opus-4-6[1m]', label: 'Claude Opus 4.6' }] },
+    effort: { current: 'xhigh', options: [['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra'], ['max', 'Max']].map(([id, label]) => ({ id, label })) },
+    tts: 'CosyVoice 3',
+    asr: 'Fun-ASR Nano',
+  };
+  w.current.ready = { ...w.current.ready!, models: { fast: 'Claude Haiku 5.5', hands: 'Claude Opus 5.5 · Extra', tts: 'CosyVoice 3', asr: 'Fun-ASR Nano' } };
+  w.usageMonth = { ...w.usageMonth, mode: 'claude', models: [], tokens: 0, costs: {} };
+  w.userStrings.push('Claude Haiku 5.5', 'Claude Opus 5.5', 'Claude Opus 4.6');
+  return w;
+};
+/** Settings → Speech → Microphone picked a USB microphone that isn't plugged in now */
+const withMicMissing = (w: World): World => {
+  const name = w.stress ? 'USB Microphone (Blue Yeti X Professional Condenser for Streaming and Podcasting)' : 'USB Microphone (Blue Yeti)';
+  Object.assign(w.micChoice, { mic: name, missing: true });
+  Object.assign(w.devices, { mic: name, missing: true });
+  w.current.ready = { ...w.current.ready!, devices: { ...w.current.ready!.devices, mic: name, missing: true } };
+  w.userStrings.push(name);
+  return w;
+};
 const goHistory = async (c: Ctx) => {
   await c.page.getByTestId('nav-history').click();
   await c.page.getByTestId('history-preview').waitFor();
@@ -133,13 +159,6 @@ const askPast = async (c: Ctx) => {
   const q = c.world.stress ? '问'.repeat(300) : c.T('上次老师对第三章的消融实验怎么说的？', 'What was said about the chapter 3 ablation last time?');
   await c.page.getByTestId('history-ask-input').fill(q);
   await c.page.getByTestId('history-ask-go').click();
-};
-const goDigest = async (c: Ctx) => {
-  await goHistory(c);
-  await c.page.getByTestId('history-digest').click();
-  await c.page.getByTestId('history-m-001').click();
-  await c.page.getByTestId('history-m-002').click();
-  await c.page.getByTestId('history-digest-doc').waitFor();
 };
 const goSummarySettings = async (c: Ctx) => {
   await goSettings(c);
@@ -479,6 +498,15 @@ export const SCREENS: Screen[] = [
         expect: ['[data-testid="lobby-title"]'],
       },
       {
+        // 准备情况 → 声音: 试听 beside 更换 (the cell keeps its width); the voice row's text says it's playing
+        name: 'play the voice (试听; only the voice row’s text changes)',
+        act: async (c) => {
+          await c.page.getByTestId('lobby-voice-test').click();
+          await c.settle(400);
+        },
+        expect: ['[data-testid="lobby-status"] .lb-st-v', '[data-testid="lobby-status"] .lb-st-v *'],
+      },
+      {
         // 第 5 批: the last meeting's 散会后自动保存 failed (its folder is gone): said once, in the toast
         name: 'auto-save after the meeting fails (a toast)',
         act: async (c) => {
@@ -503,6 +531,14 @@ export const SCREENS: Screen[] = [
         note: 'the paper row keeps its height; 选择 takes 更换\u2019s place at the row\u2019s end (one button, as wide as the longer word)',
       },
     ],
+  },
+  {
+    // every 准备情况 row has 更换 (the voice row 试听 too); the picked microphone isn't plugged in: an amber dot
+    name: 'lobby-claude-mic-missing',
+    what: 'Lobby with Claude Code’s login (its model names) and a picked microphone that isn’t plugged in',
+    page: 'main',
+    world: (w) => withMicMissing(withClaude(w)),
+    ready: '[data-testid="lobby-change-mic"]',
   },
   {
     name: 'lobby-no-paper',
@@ -1062,41 +1098,6 @@ export const SCREENS: Screen[] = [
     ready: '[data-testid="history-ask-error"]',
   },
   {
-    name: 'history-digest',
-    what: 'History → Digest: two meetings picked, the saved digests, one open',
-    page: 'main',
-    go: goDigest,
-    ready: '[data-testid="history-digest-doc"]',
-    transitions: [
-      {
-        name: 'pick one more meeting (the count changes, nothing moves)',
-        act: async (c) => {
-          await c.page.getByTestId('history-m-003').click();
-          await c.settle(200);
-        },
-        expect: ['.mt-hlist *', '[data-testid="history-digest-picked"]'],
-      },
-      {
-        name: 'write a digest (the button says so; the new one tops the saved list)',
-        act: async (c) => {
-          await c.page.getByTestId('history-digest-go').click();
-          await c.page.locator('[data-testid="history-digest-go"][aria-busy="true"]').waitFor();
-          await c.settle(200);
-        },
-        expect: ['[data-testid="history-digest-go"] *', '.mt-hlist *', '[data-testid="history-digest-picked"]'],
-        byDesign: 'a new digest joins the saved list at the top, so the rows and the open digest below it move down one row',
-      },
-    ],
-  },
-  {
-    name: 'history-digest-stress',
-    what: 'History → Digest with 40 meetings, 60-character titles and long digest lines',
-    page: 'main',
-    stress: true,
-    go: goDigest,
-    ready: '[data-testid="history-digest-doc"]',
-  },
-  {
     name: 'review-recording',
     what: 'An opened past meeting on its recording tab',
     page: 'main',
@@ -1420,6 +1421,116 @@ export const SCREENS: Screen[] = [
       await c.page.getByTestId('settings').waitFor();
     },
     ready: '[data-testid="provider-key"]',
+  },
+  // 准备情况 → 改稿模型 → 更换 with Claude Code's login: Settings opens at Model source, where the models are now
+  // listed under the source (the conversation model as text: one choice; the editing model and effort as menus)
+  {
+    name: 'settings-model-source-claude',
+    what: 'Model source: Claude Code account, reached from the lobby’s 改稿模型 → 更换 (its row flashed): 对话模型 as text, 改稿模型 and 思考强度 menus',
+    page: 'main',
+    world: withClaude,
+    go: async (c) => {
+      await c.page.getByTestId('lobby-change-main').click();
+      await c.page.locator('[data-setting="general.main_model"] .st-popup-btn').waitFor();
+      await c.settle(1800);                 // the flash on the row fades
+    },
+    reapply: scrollTo('[data-setting="general.model_source"]'),
+    ready: '[data-setting="general.effort"] .st-popup-btn',
+    transitions: [
+      {
+        name: 'pick 思考强度 Max (only the menu’s text changes)',
+        act: async (c) => {
+          await c.page.locator('[data-setting="general.effort"] .st-popup-btn').click();
+          await c.page.locator('.mw-menu [role="menuitemcheckbox"]', { hasText: 'Max' }).click();
+          await c.settle(300);
+        },
+        expect: ['[data-setting="general.effort"] .st-popup-btn *', '.mw-menu'],
+      },
+      {
+        name: 'switching the editing model fails (said in the connection row; nothing moves)',
+        act: async (c) => {
+          c.world.models = null;
+          await c.page.locator('[data-setting="general.main_model"] .st-popup-btn').click();
+          await c.page.locator('.mw-menu [role="menuitemcheckbox"]', { hasText: 'Claude Opus 4.6' }).click();
+          await c.page.locator('[data-setting="general.provider_check"] .st-detail.warn').waitFor();
+        },
+        expect: ['[data-setting="general.provider_check"] *', '.mw-menu'],
+        note: 'the connection row keeps room for its message',
+      },
+    ],
+  },
+  {
+    name: 'settings-model-source-claude-menu',
+    what: 'Model source: Claude Code account, the 改稿模型 menu open',
+    page: 'main',
+    world: withClaude,
+    go: async (c) => {
+      await goSettings(c);
+      await scrollTo('[data-setting="general.model_source"]')(c);
+      await c.page.locator('[data-setting="general.main_model"] .st-popup-btn').click();
+      await c.page.locator('.mw-menu').waitFor();
+    },
+    ready: '.mw-menu',
+  },
+  // 准备情况 → 麦克风 → 更换: Settings → Speech at 麦克风 (new): 系统默认 or one of this PC's inputs
+  {
+    name: 'settings-from-lobby-mic',
+    what: 'Lobby 麦克风 → 更换 → Settings → Speech at 麦克风 (flashed): 系统默认, the default device named under the row',
+    page: 'main',
+    world: idle,
+    go: async (c) => {
+      await c.page.getByTestId('lobby-change-mic').click();
+      await c.page.locator('[data-testid="mic-pick"] .st-popup-btn:not([disabled])').waitFor();
+      await c.settle(1800);
+    },
+    ready: '[data-setting="speech.mic"] .st-detail',
+    transitions: [
+      {
+        name: 'pick the headset (the line under the row goes; nothing moves)',
+        act: async (c) => {
+          await c.page.locator('[data-testid="mic-pick"] .st-popup-btn').click();
+          await c.page.locator('.mw-menu [role="menuitemcheckbox"]', { hasText: c.T('耳机', 'Headset') }).click();
+          await c.page.locator('[data-setting="speech.mic"] .st-detail').waitFor({ state: 'detached' });
+        },
+        expect: ['[data-setting="speech.mic"] *', '.mw-menu'],
+        note: 'the row keeps the height of its second line',
+      },
+      {
+        name: 'saving fails: a meeting started meanwhile (said under the row; nothing moves)',
+        act: async (c) => {
+          c.world.current.meeting = { ...c.world.current.meeting!, state: 'live' };
+          await c.page.locator('[data-testid="mic-pick"] .st-popup-btn').click();
+          await c.page.locator('.mw-menu [role="menuitemcheckbox"]').first().click();
+          await c.page.locator('[data-setting="speech.mic"] .st-detail.warn').waitFor();
+        },
+        expect: ['[data-setting="speech.mic"] *', '.mw-menu'],
+      },
+    ],
+  },
+  {
+    name: 'settings-speech-mic-menu',
+    what: 'Settings → Speech → 麦克风: the menu open (系统默认 with the default device under it, then this PC’s inputs)',
+    page: 'main',
+    world: idle,
+    go: async (c) => {
+      await goSettings(c);
+      await c.page.getByTestId('settings-tab-speech').click();
+      await c.page.locator('[data-testid="mic-pick"] .st-popup-btn:not([disabled])').click();
+      await c.page.locator('.mw-menu').waitFor();
+    },
+    ready: '.mw-menu',
+  },
+  {
+    name: 'settings-speech-mic-missing',
+    what: 'Settings → Speech → 麦克风: the picked USB microphone isn’t plugged in (未连接 under the row); long device names',
+    page: 'main',
+    stress: true,
+    world: (w) => withMicMissing(idle(w)),
+    go: async (c) => {
+      await goSettings(c);
+      await c.page.getByTestId('settings-tab-speech').click();
+    },
+    ready: '[data-setting="speech.mic"] .st-detail.warn',
   },
   {
     name: 'settings-summary',

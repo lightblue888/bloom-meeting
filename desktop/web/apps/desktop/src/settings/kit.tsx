@@ -38,7 +38,7 @@ function useFlash(root: React.RefObject<HTMLDivElement | null>) {
           void el.offsetWidth;
           el.classList.add('st-flash');
           pendingFlash = null;
-        } else if (n++ < 20) setTimeout(tick, 60);
+        } else if (n++ < 50) setTimeout(tick, 60);   // rows that wait for the backend (the model source's) show up late
       };
       tick();
     };

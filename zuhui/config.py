@@ -26,7 +26,7 @@ def local_path(key: str) -> str:
 DEFAULTS = {
     "paper": {
         "file": "paper/paper.md",          # 论文的本地 Markdown 镜像（相对仓库根）
-        "title": "论文",
+        "title": "文档",
     },
     "fast": {                               # 快嘴：秒回的对话模型（套餐里的常驻 Claude Code 进程，见 cli_brain.py）
         "model": "claude-haiku-5-5",        # 快嘴只用套餐里的 Haiku（2026-11-12 起 Bloom 里去掉了 DeepSeek，不能换）
@@ -389,4 +389,4 @@ def paper_title(cfg: dict) -> str:
     cur = current_paper()
     if cur:
         return str(cur.get("name") or Path(cur["path"]).stem)
-    return "" if no_paper(cfg) else str(cfg["paper"].get("title") or "论文")
+    return "" if no_paper(cfg) else str(cfg["paper"].get("title") or "文档")

@@ -1643,10 +1643,39 @@ body.mw-resizing .mt-diff {
 }
 .mt-hp-acts {
   position: relative;
-  display: flex;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
   align-items: center;
   gap: 8px;
   flex: none;
+}
+/* 三个按钮一样宽、一样高（2026-11-20 用户："大小不一致"）：保存那个包在 .mt-share 里，让它占满自己的格子 */
+.mt-hp-acts > .mt-btn,
+.mt-hp-acts > .mt-share,
+.mt-hp-acts > .mt-share > .mt-share-btn {
+  width: 100%;
+}
+.mt-hp-acts .mt-btn {
+  justify-content: center;
+}
+/* 小一号（2026-11-20 用户："都改小点 太丑了"）：矮一点、边距和图标小一点；删除点一下变成"确认"（两个字），三个按钮按它排得一样窄 */
+.app .mt-hp-acts .mt-btn {
+  min-height: 26px;
+  height: 26px;
+  padding: 0 10px;
+  gap: 4px;
+  font-size: 12.5px;
+}
+.app .mt-hp-acts .mt-btn svg {
+  width: 12px;
+  height: 12px;
+}
+.mt-hp-acts {
+  gap: 6px;
+}
+.mt-hp-acts .mt-swap > span {
+  gap: 4px;
 }
 /* 删除：点一下变成红色的"确认删除"，再点才删。两种字叠在同一格里，按长的那个占宽，旁边的按钮不动 */
 .mt-swap {
@@ -3604,28 +3633,13 @@ html:root[data-theme="light"] .mt-sum-at {
   border-color: color-mix(in srgb, var(--brand-ink) 55%, transparent);
   background: color-mix(in srgb, var(--brand-ink) 10%, var(--panel));
 }
-/* 列表每行开头一个定宽的格子：平时是状态点，挑阶段汇总的会时换成勾选框（换的时候标题不动） */
+/* 列表每行开头一个定宽的格子放状态点（只有开会中、整理中才有点；格子一直在，点出现、消失时标题不动） */
 .mt-hslot {
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 14px;
-}
-.mt-hpick {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  box-sizing: border-box;
-  width: 14px;
-  height: 14px;
-  color: var(--on-brand-button);
-  border: 1.5px solid color-mix(in srgb, var(--mute) 75%, transparent);
-  border-radius: 3px;
-}
-.mt-hpick.is-on {
-  background: var(--brand-button);
-  border-color: var(--brand-button);
 }
 /* 提问 */
 .mt-ask-scope {

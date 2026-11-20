@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Icon } from '@blurt/icons';
 import { Group, Popup, Row, S, Switch } from '../settings/kit';
-import { meetingApi, type MonthUsage, type Provider, type ProviderKind } from '../meetingApi';
+import { meetingApi, PROFILE_EVENT, type ModelChoice, type ModelPart, type Models, type MonthUsage, type Provider, type ProviderKind } from '../meetingApi';
 import { Menu, type MenuAt } from './Menu';
 import { usageBreakdown, usageLine } from '../usageText';
 
@@ -74,6 +74,77 @@ function ModelCombo({ value, set, disabled, testid, label, list }: {
         />
       )}
     </span>
+  );
+}
+
+/** Claude Code's own login: the conversation model, the editing model and its thinking effort, as /api/models has them.
+ *  A part with one choice (the conversation model) is plain text; the others are menus, saved at once — in a meeting
+ *  or not (the next reply / the next edit uses it). A failure is said in the connection row (`onError`). */
+function ClaudeModels({ onError, disabled }: { onError: (text: string | null) => void; disabled: boolean }) {
+  const [m, setM] = useState<Models | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    let timer = 0;
+    const load = () =>
+      meetingApi.models().then(
+        (x) => {
+          if (!alive) return;
+          if (x) setM(x);
+          else timer = window.setTimeout(load, 4000);
+        },
+        () => {
+          if (alive) timer = window.setTimeout(load, 4000);
+        },
+      );
+    void load();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, []);
+  const pick = async (part: ModelPart, v: string) => {
+    setBusy(true);
+    onError(null);
+    try {
+      setM(await meetingApi.setModel(part, v));
+      window.dispatchEvent(new Event(PROFILE_EVENT)); // the lobby's status rows name the new model
+    } catch {
+      onError(S('settings.provider.err.failed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+  /** the choices; a current one that isn't among them (a test override) is listed too, so the menu never lies */
+  const choices = (c?: ModelChoice): [string, string][] => {
+    const o = (c?.options ?? []).map((x) => [x.id, x.label] as [string, string]);
+    if (c?.current && !o.some(([id]) => id === c.current)) o.unshift([c.current, c.current]);
+    return o;
+  };
+  const line = (id: string, part: ModelPart, label: string) => {
+    const c = m?.[part];
+    const ch = choices(c);
+    // not read yet, or nothing to choose from: the name as text, in the menus' column
+    if (ch.length < 2) {
+      const name = !m ? '…' : ch[0]?.[1] ?? '—';
+      return (
+        <Row id={id}>
+          <span className="st-fixed" title={m ? name : undefined} data-testid={`provider-${part}`}>{name}</span>
+        </Row>
+      );
+    }
+    return (
+      <Row id={id}>
+        <Popup wide label={label} value={c?.current ?? ''} choices={ch} disabled={busy || disabled} onChange={(v) => void pick(part, v)} />
+      </Row>
+    );
+  };
+  return (
+    <>
+      {line('general.fast_model', 'dialog', S('settings.general.fast_model'))}
+      {line('general.main_model', 'edit', S('settings.general.main_model'))}
+      {line('general.effort', 'effort', S('settings.general.effort'))}
+    </>
   );
 }
 
@@ -238,6 +309,10 @@ export function ProviderGroup({ title, usage: showUsage = true }: { title?: stri
         <Popup wide label={S('settings.general.source')} value={kind} choices={SOURCES.map((k) => [k, name(k)] as [ProviderKind, string])} dividers={[5, 7, 9]}
           onChange={choose} disabled={!p || busy} />
       </Row>
+      {/* Claude Code's login: the models it uses, changeable here (an API source has its model fields below instead) */}
+      {kind === 'claude' && p?.kind === 'claude' && (
+        <ClaudeModels disabled={busy} onError={(text) => setMsg(text ? { text, warn: true } : null)} />
+      )}
       {needsKey && (
         <Row id="general.api_key">
           <input

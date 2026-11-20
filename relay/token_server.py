@@ -751,7 +751,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, r["lines"], "application/json; charset=utf-8")
             if what == "paper":
                 if not r or not r["paper"]:
-                    return self._send(404, "论文加载中…".encode("utf-8"), "text/plain; charset=utf-8")
+                    return self._send(404, "文档加载中…".encode("utf-8"), "text/plain; charset=utf-8")
                 return self._send(200, r["paper"], "text/html; charset=utf-8")
             if what == "fig" and len(rest) == 2 and r:
                 a = r["assets"].get(rest[1])

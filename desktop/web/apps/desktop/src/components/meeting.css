@@ -525,8 +525,11 @@
 }
 
 /* ------------------------------------------------------------ the Summary (纪要 after 散会) */
+/* centered in its pane: left-aligned, a wide window left a big empty strip on the right and the page looked lopsided
+   (2026-11-21, the user: "为什么是歪的") */
 .mt-summary {
   max-width: 760px;
+  margin: 0 auto;
 }
 .mt-sum-title {
   margin: 0 0 6px;
@@ -591,8 +594,12 @@
 }
 .mt-sum-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 10px;
+}
+/* an odd one out at the end (one card alone, or the third of three) takes the whole row, not half of it */
+.mt-sum-cards > :last-child:nth-child(odd) {
+  grid-column: 1 / -1;
 }
 .mt-sum-card {
   background: var(--panel);
@@ -2862,7 +2869,7 @@ html:root[data-theme="dark"] .mt-bubble {
 .mt-card.is-note { border-color: color-mix(in srgb, #d99a2b 55%, transparent); }
 .mt-card-flag { color: #d99a2b; display: inline-grid; place-items: center; flex: none; margin-top: 2px; }
 .mt-now-notes { color: #d99a2b; }
-.mt-todos { padding: 16px 22px 28px; max-width: 1000px; }
+.mt-todos { padding: 16px 22px 28px; max-width: 1000px; margin-inline: auto; box-sizing: border-box; }
 .mt-todos-head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
 .mt-todos-head h2 { margin: 0; font-size: 17px; }
 .mt-todos-n { color: var(--mute); font-size: 12.5px; }

@@ -173,6 +173,8 @@ _NOTE_PROMISE = re.compile(r"(?:^|[，,。！!；;：:\s])(?:好|行|嗯|OK|ok)?
                            r"|\bI(?:'ll|\s+will)\s+(?:put|add)\s+(?:it|that|this|those|them)\s+(?:on|to)\s+(?:the|my)\s+(?:list|board|task\s+board|to-?do)"
                            r"|\bI(?:'ll|\s+will)\s+keep\s+(?:it|that|this)\s+in\s+mind\b|\bI(?:'ve|\s+have)\s+(?:noted|flagged|logged)\s+(?:it|that|this)\b)")
 _SOFTWARE_NOTE = re.compile(r"软件|散会后你改|(?i:\bsoftware\b|\bthe\s+app\b)")
+# 快嘴把这句当这场会的总纲收下了（"好，这场会的范围是 5.3 到 5.5 全部，我知道了"）：补漏检查别再补成改稿
+_SCOPE_ACK = re.compile(r"(?:这场|这次|今天|本次)(?:会|会议)?的?(?:范围|总纲|大纲)|范围是|大纲是|总纲是|(?i:\bscope\b|\bagenda\b)")
 # 回话里说的是"已经记了的那条"（问进度、追问"怎么没记"时）："记了，是第十四条，标在简介那儿"。"记下了""记上了"是现在才记，不算
 _ALREADY_NOTED = re.compile(r"(?<![要会再先忘])记(?:了|过|好了)(?![下上着])|已经(?:记|标)|已(?:记|标)[了过在上下]|早(?:就)?记|"
                             r"是第[一二三四五六七八九十两百\d]+条|(?:清单|任务板)(?:里|上)(?:有|已经)|"
@@ -4224,6 +4226,7 @@ class Meeting:
     PENDING_S = 30.0                                 # 上一句被打断、一个字没回：这么久之内的下一句连它一起看
     LONG_SILENT = 20                                 # 这么多字以上的话判了 #silent：是没说完，不是半句话、口头禅
     RETRACT_S = 60.0                                 # 刚记的改稿这么久之内说"先别派""等一下"：撤掉（_retract_recent）
+    REPORT_RETRACT_S = 60.0                          # 刚开始汇报的那条这么久之内说"先不改"：也撤掉
     SUPPLEMENT_S = 300.0                             # 补充、加限制只并进这么久之内记的、还没改完的那一条
 
     def _continuation(self, u: Utterance, guest: str | None, is_part: bool) -> dict | None:
@@ -4579,6 +4582,14 @@ class Meeting:
             recent = [t for t in self.board.tasks() if not t.get("rejected") and not t.get("app") and here(t)
                       and t.get("mode") != "annotate" and t.get("status") in ("queued", "working", "done")
                       and spoke - self._ts(t.get("created")) <= self.RETRACT_S and self._ts(t.get("created")) >= since]
+            if not recent:
+                # 刚在汇报的那条（念完了、或者刚开口就被打断）："先不改，先不改"说的是它。补漏检查补记的任务不算哪一轮记的，
+                # 上面按轮次找不到（2026-11-21 晚上 T3：汇报念了"5.3 那"，他说"先不改"，快嘴回"已经在修改清单里了"）
+                last = getattr(self, "_last_report", None) or {}
+                t = self.board.get((last.get("task") or {}).get("id")) if last else None
+                if (t and spoke - float(last.get("t") or 0) <= self.REPORT_RETRACT_S and not t.get("rejected")
+                        and not t.get("app") and here(t) and t.get("mode") != "annotate"):
+                    recent = [t]
         if not recent:
             return False
         if self.mouth.speaking:
@@ -4995,6 +5006,10 @@ class Meeting:
                     if (_rules.holds_off(spoken_text) or _rules.asked_back(spoken_text)
                             or turn.get("vague") is not None):
                         continue                     # 嘴上说了先不动、在反问，或者他没说改哪一处：不替它记（2026-11-21 下午 T4、T6）
+                    if _SCOPE_ACK.search(spoken_text or "") or _rules.agenda_text(words):
+                        # 快嘴已经当这场会的范围收下了（"好，这场会的范围是 5.3 到 5.5 全部，我知道了"）：那是总纲，不是改稿
+                        # （2026-11-21 晚上 T3 "5.3 全部都改掉"：补记成改稿，工人没法改，进了修改清单）
+                        continue
                     if self._join_supplement(u, what, spoken_text, mark=False) is not None:
                         continue                     # 是在补充正在改、排队的那条：并进去，不另记（2026-11-21 组会 T6）
                     if evidence and self._same_task(what) is None:
@@ -5929,11 +5944,15 @@ class Meeting:
                           "v": _short(" ".join(x for x in (where, task.get("title") or "") if x), 60)})
             if err:
                 steps.append({"t": self.meetings.clock(), "k": "失败", "v": err})
+        # 进了修改清单、正文没动的（标注、没改成）：那一行的步骤不写"已修改"（2026-11-21 晚上 T3 写着"已修改 5.3 全部都改掉"）
+        noted = bool(task.get("note"))
         line = self._speech_line("#report", extra={"task": f"T{task.get('idx')}" if task.get("idx") else task.get("id"),
                                                     "title": str(task.get("title") or ""),
-                                                    "ok": task.get("status") == "done", "steps": steps})
+                                                    "ok": task.get("status") == "done" and not noted,
+                                                    "noted": noted or None, "steps": steps})
         if isinstance(getattr(line, "box", None), dict):   # 被打断时认得出是哪条的汇报（_cut_memory：没出声就留着再报，"删吧"答已经改好）
             line.box["report"] = task
+        self._last_report = {"t": time.time(), "task": task}   # "先不改"说的是这条（_retract_recent）
         try:
             for kind, val in gen:
                 if cancel is not None and cancel.is_set():

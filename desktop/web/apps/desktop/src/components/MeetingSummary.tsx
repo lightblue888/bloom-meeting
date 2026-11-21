@@ -677,28 +677,33 @@ export function SummaryTools({ meetingId, summary, job, busy, onStarted, onToast
     }
   };
   const menu = useMenu();
+  // 自定义 only when its words are written (Settings › 纪要): a greyed-out item nobody can pick read as unfinished
+  // (2026-11-21, the user: "自定义是什么")
+  const shown = SUMMARY_TEMPLATES.filter((k) => k !== 'custom' || !!prefs?.custom.trim() || (!!summary && cur === 'custom'));
   const openMenu = (e: ReactMouseEvent<HTMLButtonElement>) =>
     menu.open(
-      SUMMARY_TEMPLATES.map((k) => ({
+      shown.map((k) => ({
         label: t(`meeting.summary.template.${k}`),
         checked: !!summary && k === cur,
-        disabled: k === 'custom' && !!prefs && !prefs.custom.trim(),
         run: () => void go(k),
         testId: `summary-template-${k}`,
       })),
       { x: 0, y: 0, anchor: e.currentTarget, align: 'start', minWidth: 180 },
       t('meeting.summary.format'),
     );
-  const label = summary ? 'meeting.summary.regen' : 'meeting.summary.gen';
+  // the button says the format the 纪要 is in ("格式：论文讨论"); picking another writes it again in that one. It used to
+  // say 重新生成, a menu of formats behind it ("重新生成这个也太奇怪了")
+  const label = summary ? `fmt:${cur}` : 'gen';
+  const words = (k: string) => (k === 'gen' ? t('meeting.summary.gen') : t('meeting.summary.format_btn', { a: t(`meeting.summary.template.${k.slice(4)}`) }));
   return (
     <div className="mt-ptools mt-sum-tools" data-testid="summary-tools">
-      {/* the words stacked in one box as wide as the widest: 重新生成 → 生成中… never changes its size */}
+      {/* the words stacked in one box as wide as the widest: 格式：论文讨论 → 生成中… never changes its size */}
       <button className="mt-pbtn mt-sum-regen" onClick={openMenu} disabled={running || busy} aria-haspopup="menu" aria-expanded={menu.isOpen}
         aria-busy={running || undefined} data-testid="summary-regen">
         <span className="mt-wstack">
-          {(['meeting.summary.regen', 'meeting.summary.gen'] as const).map((k) => (
+          {['gen', ...SUMMARY_TEMPLATES.map((k) => `fmt:${k}`)].map((k) => (
             <span key={k} className={!running && k === label ? undefined : 'is-ghost'} aria-hidden={!running && k === label ? undefined : true}>
-              {t(k)}
+              {words(k)}
               <Icon name="chevron-down" size={12} />
             </span>
           ))}

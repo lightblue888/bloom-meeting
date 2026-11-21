@@ -491,7 +491,8 @@ def _plain_sents(text: str) -> list[str]:
 
 def agenda_text(text: str) -> str:
     """这段话里说"这场改哪些"的那几句（这次 / 今天 / 这场 + 改 / 过一遍 + 第几章 / 整篇，没说具体怎么改）；没有返回空串。
-    紧跟着的、又说了这几章的一句（"一次性把第三章跟第五章全部改好"）也算。"""
+    紧跟着的、又说了这几章的一句（"一次性把第三章跟第五章全部改好"）也算。说的是一段小节（"五点三一直到五点五全部都改掉"）
+    也算，见 _agenda_range。"""
     out, on = [], False
     for s in _plain_sents(text):
         plain = (_AGENDA_SCOPE.search(s) and _AGENDA_VERB.search(s) and not has_edit(s) and not ASK_CUE.search(s)
@@ -501,13 +502,56 @@ def agenda_text(text: str) -> str:
             on = True
         else:
             on = False
-    return "。".join(x for x in out if x)
+    return "。".join(x for x in out if x) or _agenda_range(text)
+
+
+# 总纲说的是一段小节："这次会议呢……会议的大纲呢，就是把五点。三全部就五点三，一直到五点五，全部都改掉"（2026-11-21 晚上：
+# 小节号是念出来的"五点三"，识别还在"五点"后面断了句；上面只认"第几章"，没认出来，补漏检查把它补成了改稿 T3、进了修改清单）
+_CN_D = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+
+
+def _cn_num(s: str) -> str:
+    if s.isdigit():
+        return s
+    if s == "十":
+        return "10"
+    if "十" in s:
+        a, _, b = s.partition("十")
+        return str((_CN_D.get(a, 1) if a else 1) * 10 + (_CN_D.get(b, 0) if b else 0))
+    return "".join(str(_CN_D[c]) for c in s if c in _CN_D)
+
+
+def sec_digits(text: str) -> str:
+    """念出来的小节号写成数字："五点三"→"5.3"（识别在"点"后面断的句也接上："五点。三"）。"""
+    n = r"[零一二三四五六七八九十两\d]{1,3}"
+    return re.sub(rf"({n})\s*点\s*[。，,.]?\s*({n})(?=\D|$)", lambda m: f"{_cn_num(m.group(1))}.{_cn_num(m.group(2))}", text or "")
+
+
+_AGENDA_MARK = re.compile(r"大纲|总纲|这次(?:的)?会|这场会|今天(?:的)?会|这次|今天|这场|本次")
+_AGENDA_RANGE = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*(?:节)?\s*[，,]?\s*(?:到|至|一直到|直到|~|～|-|—)\s*(\d+(?:\.\d+)?)(?![\d.])")
+_AGENDA_ALL = re.compile(r"全部|全都|都|整个|整节|所有|一整")
+_AGENDA_SPECIFIC = re.compile(r"[这那上下首末前后]一?(?:段|句)|第\s*[一二三四五六七八九十两\d]+\s*(?:段|句|条)|原文|这个词|这句话|"
+                              r"改成|换成|删掉.{1,12}(?:句|段|词)|[“”「」\"]")
+
+
+def _agenda_range(text: str) -> str:
+    """整段话说的是这场要改的一段小节（有"这次 / 大纲"、有"X 到 Y"、有"全部 / 都"、有改，没点具体一处、不是在问）：
+    "5.3 到 5.5 全部改"；不是返回空串。"""
+    t = sec_digits(text)
+    m = _AGENDA_RANGE.search(t)
+    if not m or not _AGENDA_MARK.search(t) or not _AGENDA_ALL.search(t) or not _AGENDA_VERB.search(t):
+        return ""
+    if ASK_CUE.search(t) or _AGENDA_SPECIFIC.search(t):
+        return ""
+    return f"{m.group(1)} 到 {m.group(2)} 全部改"
 
 
 def agenda_only(text: str) -> bool:
     """整段话只是在说这场的总纲：有总纲那几句，别的句子里没有改法、没点具体一处。"""
     if not agenda_text(text):
         return False
+    if _agenda_range(text):
+        return True                              # 小节那种：_agenda_range 已经查过没点具体一处
     for s in _plain_sents(text):
         if has_edit(s) or _AGENDA_FINE.search(s):
             return False
@@ -517,6 +561,9 @@ def agenda_only(text: str) -> bool:
 def agenda_scope(text: str) -> str:
     """总纲里说的范围，按出现的顺序、去重："第三章和第五章"。"""
     seen = []
+    r = _AGENDA_RANGE.search(sec_digits(text or ""))
+    if r:
+        seen.append(f"{r.group(1)} 到 {r.group(2)}")
     for m in _AGENDA_SCOPE.finditer(text or ""):
         x = re.sub(r"\s+", "", m.group(0))
         if x not in seen:

@@ -412,7 +412,8 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
                       <span className="mt-hrow-title">{cleanTitle(m.title) || m.id}</span>
                       <span className="mt-hrow-sub">
                         <span>{fmtWhen(m.started, lang)}</span>
-                        <span>{fmtLen(m.duration_s)}</span>
+                        {/* on now: no length (it said "0 秒" the whole meeting) */}
+                        {m.state !== 'live' && <span>{fmtLen(m.duration_s)}</span>}
                         {m.sample && <span className="mt-hrow-sample" data-testid="history-sample-tag">{t('meeting.history.sample')}</span>}
                       </span>
                     </span>
@@ -433,7 +434,7 @@ export function MeetingHistory({ onToast, active = true }: { onToast: (msg: stri
                       <h2 className="mt-hp-title">{cleanTitle(brief.title) || brief.id}</h2>
                       <div className="mt-hrow-sub">
                         <span>{fmtWhen(brief.started, lang)}</span>
-                        <span>{fmtLen(brief.duration_s)}</span>
+                        {brief.state !== 'live' && <span>{fmtLen(brief.duration_s)}</span>}
                       </div>
                     </div>
                     <div className="mt-hp-acts">

@@ -25,6 +25,9 @@ mod sysaudio;
 /// a meeting's post-processing after its take (save → 转写 → 纪要), the island's one progress bar
 mod postmeeting;
 
+/// the longest a meeting's take runs before record.py stops it (see start_inner)
+const MEETING_MAX_MINUTES: f64 = 720.0;
+
 struct Take {
     session: PathBuf,
     job: Arc<JobWriter>,
@@ -180,6 +183,9 @@ impl Capture {
         opts.env.push(("BLURT_JOB".into(), job.id.clone().into()));
         // a meeting starts when 开会 is clicked: no 3-2-1
         opts.countdown = Some(0);
+        // record.py stops by itself after 120 min, which ended a 2-hour 组会 (2026-11-21). A meeting runs until 散会;
+        // 12 h only guards a meeting left on overnight (≈650 MB/h on disk, and audio.wav stays under the 4 GB WAV limit)
+        opts.max_minutes = Some(MEETING_MAX_MINUTES);
         let system_audio = settings::read_config().pointer("/record/system_audio").and_then(Value::as_bool).unwrap_or(false);
         // started before record.py, so it covers the first frame (record.py cuts it to each segment)
         #[cfg(windows)]

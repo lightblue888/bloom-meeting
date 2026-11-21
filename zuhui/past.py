@@ -217,6 +217,18 @@ def related(lib, paper: dict | None, exclude: str | None = None, limit: int | No
     return out
 
 
+def recent(lib, exclude: str | None = None, limit: int | None = None) -> list[dict]:
+    """最近开过的会（散了的、开着论文的），不分哪篇，新的在前。"""
+    out = []
+    for m in _metas(lib):
+        if m.get("id") == exclude or m.get("state") == "live" or not m.get("papers"):
+            continue
+        out.append(m)
+        if limit and len(out) >= limit:
+            break
+    return out
+
+
 def _summary(lib, mid: str) -> dict:
     s = _read(lib.root / mid / "summary.json")
     return s if isinstance(s, dict) else {}
@@ -295,7 +307,9 @@ def carry(lib, paper: dict | None, exclude: str | None = None, n: int = CARRY_ME
     [{id: "<会议编号>/<key>", mid, title, started, kind, text, who?, t?, sec?, section?}]，最多 CARRY_MAX 条。"""
     keys = paper_keys(paper)
     out, seen = [], set()
-    for m in related(lib, paper, exclude, limit=n):
+    # 没选论文（大厅里移除了）：最近几场会的都列出来，不分哪篇（2026-11-21：移除论文后遗留事项一条都没了）
+    metas = related(lib, paper, exclude, limit=n) if keys else recent(lib, exclude, limit=n)
+    for m in metas:
         done = _done_map(lib, m["id"])
         for it in items_of(lib, m, keys):
             k = _norm(it["text"])

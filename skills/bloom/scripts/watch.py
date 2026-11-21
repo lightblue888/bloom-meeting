@@ -28,6 +28,10 @@ BASE = os.environ.get("ZUHUI_URL", "http://127.0.0.1:47330").rstrip("/")
 SELF = os.path.abspath(__file__)
 
 BATCH_S = 8.0       # 一批最多攒这么久：一句一推太碎，读的人跟不上会的节奏
+# 一句写进逐字稿时人已经停了：这么久没有新句、也没人正说到一半（/api/current 的 partial），就推，不等攒满 BATCH_S
+# （2026-11-21 晚上没论文的会：每句都晚 9–11 秒才推过去，"反应有点慢"）
+QUIET_S = 1.5
+TICK_S = 0.5        # 多久看一次后端
 MAX_MIN = 28.0      # 一段最多跑这么久（Monitor 最长 30 分钟，留 2 分钟余量）
 OVERLAP_MIN = 2.0   # 到点前这么久喊接力：下一段先起来，两段一起跑这一会儿，由新的一段接着推
 BEAT_FRESH = 5.0    # 一段的心跳（每秒一次，单独一个线程打）多久没更新算它没了：上一段就接着推
@@ -41,6 +45,13 @@ def progress(name):
         return Progress(name, total=0)
     except Exception:
         return None
+
+
+def _talking(cur: dict) -> bool:
+    """此刻有人正说到一半（识别出了半句、还没成句）：先别推，等这句落地一起推。"""
+    p = cur.get("partial")
+    t = p.get("text") if isinstance(p, dict) else p
+    return bool(str(t or "").strip())
 
 
 def current(timeout=4.0):
@@ -304,6 +315,7 @@ def watch(since=None, max_minutes=MAX_MIN, after_sec=None, run=None, gen=1, over
     st = {"p": None, "leader": False}
     pend: dict = {}                       # 攒着的这一批：身份 -> 行（推之前再对一遍账本）
     batch_t0, urgent, asked, down_since, me = 0.0, False, False, None, "主持人"
+    last_add, speaking = 0.0, False       # 最后一次有新句（或接着说长了）的时刻；此刻有人正说到一半
     announced = False                     # "第 G 段接上了" 只说一次（上一段之后又接回来时不再说）
 
     def lead(on):
@@ -316,7 +328,9 @@ def watch(since=None, max_minutes=MAX_MIN, after_sec=None, run=None, gen=1, over
 
     def flush(force=False):
         nonlocal pend, batch_t0, urgent
-        if not pend or not (force or urgent or time.time() - batch_t0 >= BATCH_S):
+        now = time.time()
+        settled = now - last_add >= QUIET_S and not speaking
+        if not pend or not (force or urgent or settled or now - batch_t0 >= BATCH_S):
             return
         if not led.lock():
             return                        # 锁一时拿不到：下一轮再推，句子还在 pend 里
@@ -415,6 +429,7 @@ def watch(since=None, max_minutes=MAX_MIN, after_sec=None, run=None, gen=1, over
                 flush(force=True)         # 手里攒的先推掉（账本会挡掉下一段已经推过的）
                 lead(False)
 
+            speaking = _talking(cur)
             if st["leader"]:
                 pushed = led.read().get("pushed", {})
                 for ln in lines:
@@ -425,6 +440,7 @@ def watch(since=None, max_minutes=MAX_MIN, after_sec=None, run=None, gen=1, over
                         continue
                     if not pend:
                         batch_t0 = time.time()
+                    last_add = time.time()
                     pend[k] = ln
                     t = str(ln.get("text") or "")
                     # AI 开口了 / 有人点 AI 的名：马上推，别等攒满
@@ -458,7 +474,7 @@ def watch(since=None, max_minutes=MAX_MIN, after_sec=None, run=None, gen=1, over
                     st["p"]._closed = True        # 进度文件留给下一段
                     st["p"] = None
                 return 3
-            time.sleep(1.0)
+            time.sleep(TICK_S)
     finally:
         stop.set()
         led.drop_beat(gen)
@@ -491,7 +507,7 @@ def poll(since=None, wait=25.0):
         lines = cur.get("transcript") or []
         n = len(lines) if since is None else max(0, min(int(since), len(lines)))
         pushed = {_key(ln): _body(ln) for ln in lines[:n]}
-    t0, first_new, out = time.time(), None, []
+    t0, first_new, last_new, out = time.time(), None, 0.0, []
     while True:
         me = names(cur)
         for ln in cur.get("transcript") or []:
@@ -501,15 +517,19 @@ def poll(since=None, wait=25.0):
             text, more = d
             out.append(fmt(dict(ln, text=text), me, more))
             pushed[_key(ln)] = _body(ln)
+            last_new = time.time()
             if first_new is None:
-                first_new = time.time()
+                first_new = last_new
         now = time.time()
-        if (first_new is not None and now - first_new >= BATCH_S) or (first_new is None and now - t0 >= wait):
+        # 有了新句：停了 QUIET_S 秒、没人正说到一半就打出来（最多攒 BATCH_S）；没有新句最多等 wait 秒
+        if first_new is not None and ((now - last_new >= QUIET_S and not _talking(cur)) or now - first_new >= BATCH_S):
+            break
+        if first_new is None and now - t0 >= wait:
             break
         on, m2 = live(cur)
         if not on:
             break
-        time.sleep(1.0)
+        time.sleep(TICK_S)
         try:
             cur = current()
         except Exception:

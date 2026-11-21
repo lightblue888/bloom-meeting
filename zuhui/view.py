@@ -3970,13 +3970,14 @@ class Viewer:
                            source=cur.get("source") if same else None)
 
     def carry_items(self) -> dict:
-        """GET /api/carry：这篇论文最近几场会留下、还没勾掉的事（大厅里列出来，能勾掉）。"""
+        """GET /api/carry：这篇论文最近几场会留下、还没勾掉的事（大厅里列出来，能勾掉）。没选论文：最近几场会的都列出来。"""
         from . import past
-        if not self.meetings or not self.mirror.is_file():
+        if not self.meetings:
             return {"paper": None, "items": []}
         live = self.meetings.current()
-        here = self.paper_here()
-        return {"paper": here.get("name"), "items": past.carry(self.meetings, here, exclude=live.get("id") if live else None)}
+        here = self.paper_here() if self.mirror.is_file() else None
+        return {"paper": here.get("name") if here else None,
+                "items": past.carry(self.meetings, here, exclude=live.get("id") if live else None)}
 
     def past_ask(self, question, mids=None) -> dict:
         """POST /api/past/ask：回顾里问往期会议（调模型）。问题空的 / 太长 ValueError，模型没答出来 RuntimeError。"""

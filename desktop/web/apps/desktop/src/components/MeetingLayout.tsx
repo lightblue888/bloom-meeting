@@ -1724,7 +1724,9 @@ export function splitClaude(l: Line): ShownLine[] {
     // each step at its own time, under its own name; a failure says so once ("失败 修改超时 420 秒"), not again under the title
     const did = reportSteps(own);
     const why = l.ok === false && did.some((x) => x.k === '失败');
-    add(rest, 'claude', why ? did : [...did, at(l.ok === false ? t('meeting.ai.step.failed') : t('meeting.ai.step.report'), what)], true);
+    // a note / not done went on the to-do list with the text untouched: it says so, not "已修改" (2026-11-21 evening, T3)
+    const end = l.noted ? t('meeting.ai.step.noted') : l.ok === false ? t('meeting.ai.step.failed') : t('meeting.ai.step.report');
+    add(rest, 'claude', why ? did : [...did, at(end, what)], true);
   } else if (tag === '#deep') {
     add(hold, 'quick');
     // an old line (before 2026-11-12, no lat): the filler and then the background's answer, all in one line

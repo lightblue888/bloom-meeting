@@ -71,6 +71,8 @@ export interface Line {
   /** #report: which task ("T2") and whether it went through */
   task?: string;
   ok?: boolean;
+  /** #report: the text wasn't changed and it went on the to-do list (a note, or not done) — not "已修改" */
+  noted?: boolean;
   /** a person's line the AI didn't answer: why ("这句在跟周老师说"). Kept in the data for the logs; never shown — the
    *  transcript is what people said, not the AI's judgments about it */
   skip?: string;

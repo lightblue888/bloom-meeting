@@ -57,6 +57,7 @@ class Utterance:
     landed: float | None = None   # 最后一段文字落地的时刻
     sent: float | None = None     # 耳朵把这条发出来的时刻
     started: float | None = None  # 你开口说这句的时刻（墙上时间，按音频时钟估的）：逐字稿按它排顺序
+    segs: list | None = None      # 这句由哪几段转写拼成：[(墙上开始, 墙上结束), ...]（app 判这句能不能打断学生）
 
 
 # ---------------------------------------------------------------- 工具函数
@@ -462,6 +463,23 @@ def _voice_check() -> _VoiceCheck:
     return _VOICE
 
 
+def voice_sim_at(v, ws: float, we: float) -> tuple[float | None, float]:
+    """墙上时间 ws..we 这段录音里像人声的部分（学生正在出声也照取）：→ (和登记的你的声纹的余弦, 有声秒数)。
+    没登记声纹、模型没有、有声不够 VOICE_ECHO_MIN_S 秒 → 余弦是 None。放音时判一段字是你说的还是回声用（app._seg_verdict）。"""
+    try:
+        x = v.raw_voiced(v.audio_t(ws) - 0.1, v.audio_t(we) + 0.1)
+    except Exception:
+        log.exception("取有声段出错")
+        return None, 0.0
+    secs = 0.0 if x is None else len(x) / 16000.0
+    if x is None or secs < VOICE_ECHO_MIN_S:
+        return None, secs
+    chk = _voice_check()
+    if chk is None or not chk.ok:
+        return None, secs
+    return chk.sim(x), secs
+
+
 # ---------------------------------------------------------------- 放出去的声音（回声的参考）
 # 2026-11-14 那场（20261114-225356）：主持人出门，用手机以访客 x 进会，家里没人。家里电脑的扬声器放着 x 的声音、
 # 学生的配音、x 那边的环境声，麦克风又把它们录了进来——口喷鸡的回声消除只消掉约 19 dB，剩下的照样被转写，
@@ -484,6 +502,7 @@ BARGE_ECHO_SIM = 0.6          # 判"你打断学生"之前那半秒：花纹相�
 ECHO_MIN_FRAMES = 6           # 能比的帧（有声、又在放音）不到这么多（约 0.2 秒）就不判
 LAG_MIN, LAG_MAX = -0.1, 1.5  # 放出去 → 录音里出现（按耳朵估的墙上时间）的延迟找这个范围：播放器缓冲 + 口喷鸡回声消除的等待
 HOST_AWAY_BACK_TH = 0.55      # 主持人在别的设备上时，家里麦克风这段的声纹得这么像你、而且几乎没在放音，才算你回到电脑前了
+VOICE_ECHO_MIN_S = 0.6        # 放音时录到的一段，有声的部分够这么长才拿声纹比（见 voice_sim_at；再短 CAM++ 不准）
 
 
 class PlaybackRef:
@@ -810,6 +829,20 @@ class _AudioVAD:
     echo_gate = True             # 打断之前先和放出去的声音比一下（config ears.echo_gate = false 关掉）
     PENDING_FRAMES = 12          # 回话还没出声时，你连续说了约 0.38 秒 = 你还没说完
 
+    def set_barge(self, c: dict | None) -> None:
+        """config ears.barge：frames（连续几帧）、ratio（比回声中位数响几倍）、floor（音量至少多大，RMS）。
+        不同电脑的麦克风、音箱、回声消除差别很大，默认值是开发机上量的（2026-11-21：回声残留 0.01–0.075，你说话 0.025–0.15）。"""
+        c = c or {}
+        try:
+            if c.get("frames") is not None:
+                self.BARGE_FRAMES = max(2, int(c["frames"]))
+            if c.get("ratio") is not None:
+                self.barge_ratio = float(c["ratio"])
+            if c.get("floor") is not None:
+                self.barge_floor = float(c["floor"])
+        except (TypeError, ValueError):
+            log.warning("ears.barge 配置不对，照旧用默认值：%r", c)
+
     def _fire_barge(self, why: str) -> None:
         if self.on_barge is not None:
             try:
@@ -862,6 +895,26 @@ class _AudioVAD:
         if self._offs:
             return t + min(self._offs)
         return self.pump_wall - (self.audio_now - t)
+
+    def audio_t(self, w: float) -> float:
+        """墙上时间 → 录音里的秒（wall 反过来）。"""
+        if self._offs:
+            return w - min(self._offs)
+        return self.audio_now - (self.pump_wall - w)
+
+    def raw_voiced(self, t0: float, t1: float, max_s: float = 4.0):
+        """录音 t0..t1 秒里 Silero 判成人声的帧连起来（学生在出声时也算，最多最后 max_s 秒）；读不到 → None。"""
+        np = self._np
+        F = self.FRAME / 16000.0
+        ends = [t for t, p in self.probs if p >= self.threshold and t0 < t - F and t <= t1][-int(max_s / F):]
+        if np is None or not ends:
+            return None
+        x = self.read(ends[0] - F, ends[-1])
+        if x is None:
+            return None
+        base = ends[0] - F
+        parts = [x[int(round((t - F - base) * 16000)):int(round((t - base) * 16000))] for t in ends]
+        return np.concatenate(parts) if parts else None
 
     def echo_at(self, t0: float, t1: float, kinds=None) -> dict | None:
         """录音 t0..t1 秒这段和 Bloom 同一时间放出去的声音比花纹（见 echo_match）：
@@ -1155,6 +1208,7 @@ class _Collector:
         self.vad = None           # _AudioVAD：听得到音频时，靠它判你说完没有
         self.drop = drop          # drop(墙上开始, 墙上结束, 文字) → True 就丢掉这段（学生自己的声音漏进麦克风）
         self.buf: list[str] = []
+        self.segs: list = []      # buf 里每段的墙上起止（drop 判过的才有）：flush 时带进 Utterance.segs
         self.t0 = None
         self.last_wall = None
         self.last_end = None      # 上一段转写在录屏里的结束秒
@@ -1270,10 +1324,12 @@ class _Collector:
                     return
             except Exception:
                 log.exception("回声 / 静音判断出错")
+        wpair = None                                     # 这段的墙上起止：带给 app 判能不能打断学生
         if self.drop is not None and v is not None and v.knows:
             try:   # 录音时钟 → 墙上时间（v.wall：取最近 30 秒最稳的那个零点）
                 ws = v.wall(float(seg.get("start") or 0.0))
                 we = v.wall(float(seg.get("end") or seg.get("start") or 0.0))
+                wpair = (ws, we)
                 r = self.drop(ws, we, t)
                 if r is True:
                     return
@@ -1297,6 +1353,8 @@ class _Collector:
         if self.buf and gap >= 0.5 and self.buf[-1][-1:] not in PUNCT_ANY and t[:1] not in PUNCT_ANY:
             self.buf.append("，")
         self.buf.append(t)
+        if wpair is not None:
+            self.segs.append(wpair)
         self._p = None
         try:
             self.last_end = float(seg.get("end") or seg.get("start") or 0.0)
@@ -1308,7 +1366,10 @@ class _Collector:
             self.heard = self.last_wall - max(0.0, v.audio_now - self.last_end)
         if self.partial:
             try:
-                self.partial({"text": "".join(self.buf), "t": fmt_t(self.t0), "n": self.n + 1})
+                p = {"text": "".join(self.buf), "t": fmt_t(self.t0), "n": self.n + 1}
+                if wpair is not None:
+                    p["ws"], p["we"] = wpair             # 最新这段的墙上起止（app 判这段能不能打断学生，不显示）
+                self.partial(p)
             except Exception:
                 log.exception("partial 回调抛异常")
         if sum(len(x) for x in self.buf) >= MAX_CHARS:
@@ -1560,6 +1621,7 @@ class _Collector:
         except (TypeError, ValueError):
             started = None
         self.buf, self.t0, self.last_wall, self.last_end, self.heard = [], None, None, None, None
+        segs, self.segs = self.segs, []
         if not text:
             return
         if len(text) < self.min_chars or FILLER.match(text):
@@ -1579,7 +1641,7 @@ class _Collector:
             shot = str(self.session / "meeting" / f"shot-{self.n:04d}.png")
             threading.Thread(target=screenshot, args=(self.session, self.n), name="ears-shot", daemon=True).start()
         self.emit(Utterance(n=self.n, text=text, t=fmt_t(t0), shot=shot, session=str(self.session),
-                            heard=heard, landed=landed, sent=time.time(), started=started))
+                            heard=heard, landed=landed, sent=time.time(), started=started, segs=segs or None))
 
 
 def _parse_lines(lines: list[bytes]):
@@ -1689,6 +1751,7 @@ class Ears:
         self.en = str((cfg.get("meeting") or {}).get("lang") or "zh") == "en"
         # 回声比对（见 PlaybackRef）：config ears.echo_gate = false 整个关掉（退回只靠 app 的文字比对）；ears.echo_sim 改门槛
         self.echo_gate = e.get("echo_gate", True) is not False
+        self.barge_cfg = dict(e.get("barge") or {})      # 放音时听音量判你打断（frames / ratio / floor），见 _AudioVAD
         if e.get("echo_sim") is not None:
             global ECHO_SIM
             ECHO_SIM = float(e["echo_sim"])
@@ -1790,6 +1853,7 @@ class Ears:
                     if vad is not None:
                         vad.on_barge, vad.pending = self.on_barge, self.pending
                         vad.echo_gate = self.echo_gate
+                        vad.set_barge(self.barge_cfg)
                     self.vad = vad
                     n = _tail_session(session, from_start,
                                       lambda: job_running(job_file) and not self._stop.is_set(), c, vad, start_pos=start_pos)

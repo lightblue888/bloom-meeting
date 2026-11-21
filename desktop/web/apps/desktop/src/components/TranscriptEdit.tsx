@@ -129,30 +129,19 @@ export function EditTools({ editing, on, onToggle }: {
 /** a line's words in a field laid over the line itself: the paragraph stays (its words drawn again unseen give it its
  *  size, so it grows as you type), the field covers it with the same padding and font, so not one word moves. Enter or
  *  leaving it saves, Esc puts it back, Shift+Enter starts a new line in it */
-export function LineEditor({ text, onSave, onDone, pick, typed }: {
+export function LineEditor({ text, onSave, onDone, pick }: {
   text: string;
   onSave: (text: string) => Promise<boolean>;
   onDone: () => void;
   /** the line could be played (its box has the playable line's padding) */
   pick?: boolean;
-  /** the line was typed, not said: its "打字" tag stays in front of the words (the field starts after it) */
-  typed?: string;
 }) {
   const [v, setV] = useState(text);
   const [busy, setBusy] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
-  const tag = useRef<HTMLSpanElement>(null);
-  // the field's first line starts where the words started (after the tag)
-  const [indent, setIndent] = useState(0);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const g = tag.current;
-    if (g) {
-      const cs = getComputedStyle(el);
-      const left = el.getBoundingClientRect().left + parseFloat(cs.paddingLeft);
-      setIndent(g.getBoundingClientRect().right + parseFloat(getComputedStyle(g).marginRight) - left);
-    }
     el.focus();
     el.setSelectionRange(el.value.length, el.value.length);
   }, []);
@@ -179,13 +168,11 @@ export function LineEditor({ text, onSave, onDone, pick, typed }: {
     <p className={`mt-line-text is-editable is-editing ${pick ? 'is-pick' : ''}`}>
       {/* a last empty line (Shift+Enter) or no words at all still takes a line's height */}
       <span className="mt-line-mirror" aria-hidden="true">
-        {typed && <span className="mt-typed" ref={tag}>{typed}</span>}
         {!v || v.endsWith('\n') ? `${v}​` : v}
       </span>
       <textarea
         ref={ref}
         className="mt-line-edit"
-        style={indent ? { textIndent: indent } : undefined}
         value={v}
         rows={1}
         maxLength={EDIT_LINE_MAX}

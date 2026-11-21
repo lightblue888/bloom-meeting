@@ -7,12 +7,14 @@ import { Icon } from '@blurt/icons';
 import { mi18n as i18n, mt as t } from '../i18n';
 import { stepV } from './stepText';
 import {
+  DOC_EDIT_TAG,
   fmtDuration,
   itemText,
   meetingApi,
   multiPaper,
   SUMMARY_TEMPLATES,
   type Board,
+  type Line,
   type Participant,
   type SumItem,
   type Summary,
@@ -29,6 +31,7 @@ import { Names, nameStyle } from './Highlight';
 import { colorsByName, nameColor } from './Flower';
 import { useMenu } from './Menu';
 import { ticksToMove, todoKey } from '../todoTicks';
+import { ownWords } from '../ownWords';
 
 const COLUMNS: { status: TaskStatus[]; key: string; cls: string; note?: boolean }[] = [
   { status: ['queued'], key: 'meeting.board.queued', cls: 'queued' },
@@ -114,6 +117,7 @@ export function NoteTags({ task, state }: { task: Task; state?: boolean }) {
 
 function NoteCard({ task, multi }: { task: Task; multi: boolean }) {
   const where = whereOf(task, multi, task.section || task.focus?.section);
+  const said = ownWords(task.remark);
   return (
     <article className="mt-card is-note">
       <div className="mt-card-head">
@@ -122,7 +126,7 @@ function NoteCard({ task, multi }: { task: Task; multi: boolean }) {
         </span>
         <span className="mt-card-title">{task.title}</span>
       </div>
-      {task.remark && <p className="mt-card-quote">{t('meeting.board.teacher_said', { a: task.remark })}</p>}
+      {said && <p className="mt-card-quote">{t('meeting.board.teacher_said', { a: said })}</p>}
       {task.plan ? (
         <p className="mt-card-report">{t('meeting.todos.plan', { a: task.plan })}</p>
       ) : task.status !== 'done' ? (
@@ -139,6 +143,7 @@ function TaskCard({ task, multi }: { task: Task; multi: boolean }) {
   if (task.note) return <NoteCard task={task} multi={multi} />;
   const report = task.status === 'failed' ? task.error : task.result;
   const where = whereOf(task, multi, task.section);
+  const said = ownWords(task.remark);
   return (
     <article className={`mt-card is-${task.status}`}>
       <div className="mt-card-head">
@@ -146,7 +151,7 @@ function TaskCard({ task, multi }: { task: Task; multi: boolean }) {
         {task.status === 'working' && <span className="mw-spinner sm" aria-hidden="true" />}
         {task.status === 'failed' && <span className="mt-card-bad">{t('meeting.board.failed')}</span>}
       </div>
-      {task.remark && task.remark !== task.title && <p className="mt-card-quote">{t('meeting.board.teacher_said', { a: task.remark })}</p>}
+      {said && said !== task.title && <p className="mt-card-quote">{t('meeting.board.teacher_said', { a: said })}</p>}
       {task.status === 'working' && task.progress && <Progress p={task.progress} />}
       {report && <p className="mt-card-report">{t('meeting.board.student_said', { a: report })}</p>}
       {where && <span className="mt-card-section">{where}</span>}
@@ -174,10 +179,22 @@ function cmpRank(a: number[], b: number[]) {
 }
 function saidBy(remark: string): { who: string; text: string } {
   const m = remark.match(/^(?:参会的老师|参会者)(.+?)说[:：]\s*/);
-  return m ? { who: m[1], text: remark.slice(m[0].length) } : { who: '', text: remark };
+  return m ? { who: m[1], text: ownWords(remark.slice(m[0].length)) } : { who: '', text: ownWords(remark) };
 }
 
-export function TodoList({ board, meetingId, done }: { board: Board | null; meetingId: string | null; done?: string[] | null }) {
+/** a change typed straight into the paper (the transcript's #doc_edit line): 改前「…」→ 改后「…」, for the row's tooltip */
+const handDetail = (l: Line) =>
+  [l.before ? t('meeting.todos.hand_before', { a: l.before }) : '', l.after ? t('meeting.todos.hand_after', { a: l.after }) : '']
+    .filter(Boolean)
+    .join('\n');
+
+export function TodoList({ board, meetingId, done, hand }: {
+  board: Board | null;
+  meetingId: string | null;
+  done?: string[] | null;
+  /** the changes typed straight into the paper (#doc_edit lines): listed with 会上已改, after the AI's */
+  hand?: Line[];
+}) {
   const key = todoKey(meetingId);
   // a tick is saved with the meeting (carry.json, "note:<task id>"): ticked here, it is off the lobby's left-overs too.
   // What the server says, with the clicks still on their way laid over it
@@ -222,6 +239,7 @@ export function TodoList({ board, meetingId, done }: { board: Board | null; meet
   const tasks = board?.tasks ?? [];
   const notes = tasks.filter((x) => x.note);
   const edits = tasks.filter((x) => !x.note && x.status === 'done' && !x.rejected);
+  const byHand = (hand ?? []).filter((l) => l.tag === DOC_EDIT_TAG && l.text);
   const where = (x: Task) => x.section || x.focus?.section || '';
   // more than one paper in the meeting: grouped by paper (in the order they were opened), then by section
   const multi = multiPaper(tasks);
@@ -274,9 +292,10 @@ export function TodoList({ board, meetingId, done }: { board: Board | null; meet
         if (s.text) md.push(`  - ${s.who ? s.who + ' ' : ''}${s.text}`);
       }
     }
-    if (edits.length) {
+    if (edits.length || byHand.length) {
       md.push('', `## ${t('meeting.todos.done_in_meeting')}`);
       for (const x of edits) md.push(`- [x] ${multi && x.paper_name ? `${x.paper_name} · ` : ''}${x.title}`);
+      for (const l of byHand) md.push(`- [x] ${l.text}`, ...handDetail(l).split('\n').filter(Boolean).map((s) => `  - ${s}`));
     }
     try {
       await navigator.clipboard.writeText(md.join('\n'));
@@ -286,7 +305,7 @@ export function TodoList({ board, meetingId, done }: { board: Board | null; meet
       /* no clipboard here */
     }
   };
-  if (!notes.length && !edits.length)
+  if (!notes.length && !edits.length && !byHand.length)
     return (
       <div className="mt-empty">
         <p>{t('meeting.todos.empty')}</p>
@@ -296,7 +315,7 @@ export function TodoList({ board, meetingId, done }: { board: Board | null; meet
     <div className="mt-todos" data-testid="todos">
       <div className="mt-todos-head">
         <h2>{t('meeting.todos.title')}</h2>
-        <span className="mt-todos-n">{t('meeting.todos.count', { a: String(left), b: String(edits.length) })}</span>
+        <span className="mt-todos-n">{t('meeting.todos.count', { a: String(left), b: String(edits.length + byHand.length) })}</span>
         <button className="mt-btn mt-todos-copy" onClick={() => void copy()} data-testid="todos-copy">
           {copied ? t('meeting.todos.copied') : t('meeting.todos.copy')}
         </button>
@@ -335,7 +354,7 @@ export function TodoList({ board, meetingId, done }: { board: Board | null; meet
           })}
         </section>
       ))}
-      {edits.length > 0 && (
+      {(edits.length > 0 || byHand.length > 0) && (
         <section className="mt-todos-grp">
           <h3>{t('meeting.todos.done_in_meeting')}</h3>
           {edits.map((x) => (
@@ -343,6 +362,14 @@ export function TodoList({ board, meetingId, done }: { board: Board | null; meet
               <input type="checkbox" checked readOnly />
               <span className="mt-todo-t">{multi && x.paper_name ? `${x.paper_name} · ` : ''}{x.title}</span>
               <span className="mt-todo-tag is-edit">{t('meeting.todos.done_tag')}</span>
+            </label>
+          ))}
+          {/* typed straight into the paper by someone: the transcript's line, what changed on hover */}
+          {byHand.map((l) => (
+            <label key={`hand-${l.sec}-${l.text}`} className="mt-todo is-done is-edit" title={handDetail(l) || undefined} data-testid="todo-hand">
+              <input type="checkbox" checked readOnly />
+              <span className="mt-todo-t">{l.text}</span>
+              <span className="mt-todo-tag is-edit">{t('meeting.todos.hand_tag')}</span>
             </label>
           ))}
         </section>

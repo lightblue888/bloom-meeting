@@ -113,7 +113,8 @@ ui-audit/
 
 ## 已知限制
 
-- 论文 iframe 里是替身页面，真实的修订对比页（`zuhui/view.py`）由后端自己的浏览器测试覆盖（`tests/test_diff_page_browser.py`）。
+- 论文 iframe 里一般是替身页面，真实的修订对比页（`zuhui/view.py`）由后端自己的浏览器测试覆盖（`tests/test_diff_page_browser.py`、`tests/test_paper_reading_browser.py`）。
+  例外是 `paper-live-*` 几个屏幕（`paper-live.ts`：选中后的「引用」、写批注的框、改动落地后停在哪）：开跑前 `fixtures/paper_live.py` 用 `zuhui/view.py` 把一篇编出来的论文做成真页面（要 Python），放进 `out/paper-live/`。审计自己的检查不看 iframe 里面，这几个屏幕在自己的步骤里量，出问题记成 audit-step-failed。
 - 跑的是 Vite 开发模式（React 开发版）：会多报一些 React 的开发期警告，生产包里不会有。
 - 字体用的是本机的（微软雅黑 / Segoe UI），和用户的 Windows 一致；Mac 上的排版没覆盖。
 - 截图对比（baseline diff）没开：界面每天在改，基线会天天失效。界面定稿后可以在 `lib/audit.ts` 里给截图加 `expect(page).toHaveScreenshot()`。

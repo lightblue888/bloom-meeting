@@ -65,11 +65,28 @@ def who(line, me):
         return me
     if w == "student":
         return AI
+    if w == "system":
+        return "系统"
     return line.get("name") or "参会者"
+
+
+EDIT_TAG = "#doc_edit"   # 有人在论文里直接打字改了一段（Bloom 的 zuhui/doc_edits.py）：before / after 是改前改后的片段
+
+
+def edit_detail(line):
+    b, a = " ".join(str(line.get("before") or "").split()), " ".join(str(line.get("after") or "").split())
+    if b and not a:
+        return f"删掉「{b}」"
+    if a and not b:
+        return f"加上「{a}」"
+    return f"改前「{b}」，改后「{a}」" if a or b else ""
 
 
 def fmt(line, me, more=False):
     text = " ".join(str(line.get("text") or "").split())
+    if line.get("tag") == EDIT_TAG and not more:
+        d = edit_detail(line)
+        text += f"（直接改文档：{d}）" if d else "（直接改文档）"
     return f"[{line.get('t') or '--:--'}] {who(line, me)}: {'（接上句）' if more else ''}{text}"
 
 
@@ -108,6 +125,11 @@ def catchup():
         for t in tasks[-15:]:
             print(f"  - [{t.get('state')}] {t.get('title') or t.get('text') or ''}"[:200])
     lines = cur.get("transcript") or []
+    hand = [ln for ln in lines if ln.get("tag") == EDIT_TAG]
+    if hand:
+        print(f"直接在论文里改过的地方（{len(hand)} 处，不是 AI 改的）：")
+        for ln in hand[-20:]:
+            print(f"  - [{ln.get('t') or '--:--'}] {ln.get('text') or ''}：{edit_detail(ln)}"[:400])
     keep = lines[-400:]
     print(f"== 逐字稿（共 {len(lines)} 句{'，只列最后 400 句' if len(lines) > len(keep) else ''}）")
     for ln in keep:
@@ -121,12 +143,22 @@ def _key(ln):
     return json.dumps([ln.get("who"), ln.get("name"), ln.get("sec"), ln.get("in")], ensure_ascii=False)
 
 
+def _body(ln):
+    """账本里记的这一行：一般就是文字；直接改文档的那行连改前改后一起记（同一段接着改会并进这一行，改了要再推）"""
+    t = str(ln.get("text") or "")
+    if ln.get("tag") == EDIT_TAG:
+        t += "\x00" + str(ln.get("before") or "") + "\x00" + str(ln.get("after") or "")
+    return t
+
+
 def _delta(ln, pushed):
     """这一行还没推过的部分：(文字, 是不是接上句)；推过了（或改得不是往后接的）就 None"""
     t = str(ln.get("text") or "")
     old = pushed.get(_key(ln))
     if old is None:
         return (t, False) if t.strip() else None
+    if ln.get("tag") == EDIT_TAG:
+        return (t, False) if _body(ln) != old else None
     if t != old and t.startswith(old) and len(t) > len(old):
         return t[len(old):], True
     return None
@@ -256,7 +288,7 @@ class Ledger:
         """第一段（或账本丢了）：已经给过的句子记进账本，之后从下一句推起"""
         if self.lock():
             try:
-                self.write({"meeting": meeting_id, "pushed": {_key(ln): str(ln.get("text") or "") for ln in base}})
+                self.write({"meeting": meeting_id, "pushed": {_key(ln): _body(ln) for ln in base}})
             finally:
                 self.unlock()
 
@@ -297,7 +329,7 @@ def watch(since=None, max_minutes=MAX_MIN, after_sec=None, run=None, gen=1, over
                 if dl is None:            # 另一段刚推过
                     continue
                 out.append(fmt({**ln, "text": dl[0]}, me, more=dl[1]))
-                pushed[k] = str(ln.get("text") or "")
+                pushed[k] = _body(ln)
             if out:
                 print(f"== {time.strftime('%H:%M:%S')} 这一批 {len(out)} 句\n" + "\n".join(out), flush=True)
                 led.write(d)
@@ -458,7 +490,7 @@ def poll(since=None, wait=25.0):
     except (OSError, ValueError):
         lines = cur.get("transcript") or []
         n = len(lines) if since is None else max(0, min(int(since), len(lines)))
-        pushed = {_key(ln): str(ln.get("text") or "") for ln in lines[:n]}
+        pushed = {_key(ln): _body(ln) for ln in lines[:n]}
     t0, first_new, out = time.time(), None, []
     while True:
         me = names(cur)
@@ -468,7 +500,7 @@ def poll(since=None, wait=25.0):
                 continue
             text, more = d
             out.append(fmt(dict(ln, text=text), me, more))
-            pushed[_key(ln)] = str(ln.get("text") or "")
+            pushed[_key(ln)] = _body(ln)
             if first_new is None:
                 first_new = time.time()
         now = time.time()

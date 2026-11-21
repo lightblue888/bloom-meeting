@@ -94,9 +94,6 @@
 .mt-line-mirror {
   visibility: hidden;
 }
-.mt-line-mirror .mt-typed {
-  visibility: visible;
-}
 .app .mt-bubble textarea.mt-line-edit,
 .app .mt-bubble textarea.mt-line-edit:focus {
   position: absolute;

@@ -7,7 +7,10 @@
 - talk：这场会最近的对话，逐字稿原文，带说话人和 mm:ss，标出记下这条任务的那句，排队期间说的单独列；
 - session_tasks：本场同一篇文档上已经记过的任务（标题、状态、结果）；
 - toc：文档目录（标题和行号），工人不用再 Grep 标题；
-- original：这篇文档本场第一条修改之前的原稿，只读副本（存在 STATE 下，不往文档所在的文件夹里写）。
+- original：这篇文档本场第一条修改之前的原稿，只读副本（存在 STATE 下，不往文档所在的文件夹里写）；
+- hand_edits：本场有人在对比页里直接改过的地方（逐字稿上的系统行，doc_edits.py），talk 里也带着这几行；
+- past_meetings：同一篇文档往期几场会的要点和遗留项（past.brief）。第二场会里只说了句改标点，
+  工人不知道上一场定下的标点要求，又加回了上一场去掉的那种标点。
 都是纯函数（original 只写 STATE 下的副本），app.py / hands.py / hands_api.py 调。"""
 from __future__ import annotations
 
@@ -25,6 +28,8 @@ TRIGGER_MAX = 1200
 MERGE_BACK_S = 120.0           # 触发那句是几句并起来的：往前这么久里、原话里有的那几句也标成触发句
 
 _TAG_NOTE = {"#report": "（后台改稿的汇报）", "#deep-answer": "（后台深想的结论）"}
+_EDIT_TAG = "#doc_edit"         # doc_edits.TAG：有人在对比页里直接改了一段
+PAST_CHARS = 2000              # 往期会议那一节最长几个字
 
 
 def mmss(sec) -> str:
@@ -70,7 +75,7 @@ def talk(lines: list[dict], task: dict, ask_sec=None, said_sec=None, me: str = "
     if ask is None:
         ask = said
     rows = [ln for ln in lines or [] if isinstance(ln, dict) and str(ln.get("text") or "").strip()
-            and _who(ln, me, ai) is not None]
+            and (_who(ln, me, ai) is not None or ln.get("tag") == _EDIT_TAG)]   # 系统行只要"谁直接改了哪一段"
     start = max(0.0, ask - TALK_WINDOW_S)
     before = [ln for ln in rows if start <= float(ln.get("sec") or 0) <= said + 0.05]
     after = [ln for ln in rows if float(ln.get("sec") or 0) > said + 0.05]
@@ -96,6 +101,10 @@ def talk(lines: list[dict], task: dict, ask_sec=None, said_sec=None, me: str = "
                 break
 
     def fmt(ln, trig=False) -> str:
+        if ln.get("tag") == _EDIT_TAG:              # 有人在文档里直接改了一段（doc_edits）：带上改前改后
+            from .doc_edits import detail
+            d = detail(ln)
+            return f"{mmss(ln.get('sec'))} （直接改文档）{_clip(ln.get('text'), 80)}" + (f"：{_clip(d, LINE_MAX)}" if d else "")
         text = _clip(ln.get("text"), TRIGGER_MAX if trig else LINE_MAX)
         note = _TAG_NOTE.get(str(ln.get("tag") or ""), "")
         return f"{'▶ ' if trig else ''}{mmss(ln.get('sec'))} {_who(ln, me, ai)}：{note}{text}"
@@ -175,6 +184,29 @@ def session_tasks(tasks: list[dict], task: dict, max_items: int = 30, max_chars:
     if not rows:
         return ""
     return "\n".join(([f"（更早的 {dropped} 条略）"] if dropped else []) + rows)
+
+
+def hand_edits(lines: list[dict], task: dict) -> str:
+    """本场有人在文档里直接改过的地方（这条任务那一篇上的），一行一处带改前改后。没有返回 ""。"""
+    from .doc_edits import note
+    return note(lines, paper=task.get("paper") or None, limit=12, chars=2400)
+
+
+def past_meetings(lib, task: dict, exclude: str | None = None, budget: int = PAST_CHARS) -> str:
+    """同一篇文档往期几场会的纪要要点和遗留项（past.brief，去掉写给快嘴的那句开头）。没有往期会、出错返回 ""。
+    文档按任务记的那一篇认（编号、路径、名字；名字里的版本号不算，见 past.paper_keys）。"""
+    from . import past
+    paper = {"id": task.get("paper"), "path": task.get("paper_path"), "name": task.get("paper_name")}
+    if not any(paper.values()):
+        return ""
+    try:
+        carried = past.carry_in(lib, exclude) if exclude else None
+        text = past.brief(lib, paper, exclude=exclude, carried=carried, budget=budget + len(past.BRIEF_HEAD))
+    except Exception:
+        return ""
+    if text.startswith(past.BRIEF_HEAD):
+        text = text[len(past.BRIEF_HEAD):]
+    return text.strip()
 
 
 _MD_H = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")

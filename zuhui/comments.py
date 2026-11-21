@@ -255,9 +255,18 @@ INJECT = r"""
 #zh-cm-add.show { opacity: .9; pointer-events: auto; }
 @media (min-width: 900px) { .zh-cm-pin, #zh-cm-add { left: 18px; } }
 @media (min-width: 1200px) { .zh-cm-pin, #zh-cm-add { left: 34px; } }
-#zh-cm-card { position: absolute; z-index: 60; box-sizing: border-box; width: min(360px, calc(100vw - 24px)); max-height: min(70vh, 560px);
-  display: flex; flex-direction: column; background: var(--zh-ctl, var(--sheet)); border: 1px solid var(--zh-ctl-line, var(--rule)); border-radius: 8px;
-  box-shadow: 0 0 0 1px rgba(255,255,255,.06), 0 10px 28px rgba(0,0,0,.45); font: 400 13px/1.55 var(--sans); color: var(--ink); text-align: left; }
+/* 卡片和写批注的框（2026-11-21 重做）：颜色、圆角、焦点下划线、发送按钮照 Bloom 窗口里的输入框（对 AI 打字那个） */
+#zh-cm-card { --zh-cm-bg: #ffffff; --zh-cm-line: #e3e1d7; --zh-cm-in: #faf9f5; --zh-cm-in-line: rgba(0,0,0,.12); --zh-cm-focus: #2563eb;
+  --zh-cm-send: #2563eb; --zh-cm-chip: rgba(0,0,0,.05); --zh-cm-faint: rgba(0,0,0,.4); --zh-cm-shadow: 0 10px 28px rgba(0,0,0,.14); }
+@media (prefers-color-scheme: dark) { html:root:not([data-theme="light"]) #zh-cm-card { --zh-cm-bg: #1f1e1d; --zh-cm-line: #33332f;
+  --zh-cm-in: rgba(222,220,209,.06); --zh-cm-in-line: rgba(222,220,209,.14); --zh-cm-focus: #3b82f6; --zh-cm-send: #2f6fed;
+  --zh-cm-chip: rgba(222,220,209,.08); --zh-cm-faint: #8a887f; --zh-cm-shadow: 0 10px 28px rgba(0,0,0,.5); } }
+html:root[data-theme="dark"] #zh-cm-card { --zh-cm-bg: #1f1e1d; --zh-cm-line: #33332f; --zh-cm-in: rgba(222,220,209,.06);
+  --zh-cm-in-line: rgba(222,220,209,.14); --zh-cm-focus: #3b82f6; --zh-cm-send: #2f6fed; --zh-cm-chip: rgba(222,220,209,.08);
+  --zh-cm-faint: #8a887f; --zh-cm-shadow: 0 10px 28px rgba(0,0,0,.5); }
+#zh-cm-card { position: absolute; z-index: 60; box-sizing: border-box; width: min(340px, calc(100vw - 24px)); max-height: min(70vh, 560px);
+  display: flex; flex-direction: column; background: var(--zh-cm-bg); border: 1px solid var(--zh-cm-line); border-radius: 8px;
+  box-shadow: var(--zh-cm-shadow); font: 400 13px/1.55 var(--sans); color: var(--ink); text-align: left; }
 .zh-cm-list { overflow-y: auto; padding: 4px 12px; scrollbar-width: thin; }
 .zh-cm-list:empty { display: none; }
 .zh-cm-th { padding: 9px 0; }
@@ -281,21 +290,29 @@ html:root[data-theme="dark"] { --zh-nm: 100%; }
 .zh-cm-msg { margin: 2px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .zh-cm-rep { margin: 7px 0 0 12px; padding-left: 9px; border-left: 2px solid var(--zh-ctl-line, var(--rule)); }
 .zh-cm-acts { display: flex; gap: 2px; margin-top: 4px; }
-.zh-cm-new { border-top: 1px solid var(--zh-ctl-line, var(--rule)); padding: 9px 12px 10px; }
+.zh-cm-new { border-top: 1px solid var(--zh-cm-line); padding: 8px; }
 .zh-cm-list:empty + .zh-cm-new { border-top: 0; }
-.zh-cm-to { display: flex; align-items: center; gap: 6px; height: 20px; font-size: 12px; color: var(--muted); }
-.zh-cm-to span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zh-cm-to.off { visibility: hidden; }
-#zh-cm-card textarea { display: block; width: 100%; box-sizing: border-box; min-height: 64px; max-height: 180px; resize: vertical; margin-top: 2px;
-  font: 400 13px/1.5 var(--sans); color: var(--ink); background: var(--paper); border: 1px solid var(--zh-ctl-line, var(--rule)); border-radius: 6px;
-  padding: 7px 9px; outline: none; }
-#zh-cm-card textarea:focus { border-color: var(--zh-accent); }
-.zh-cm-bar { display: flex; align-items: center; gap: 6px; margin-top: 7px; }
-.zh-cm-n { width: 64px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
-.zh-cm-err { flex: 1; min-width: 0; color: var(--del); font-size: 12px; line-height: 1.35; height: 2.7em; overflow: hidden; display: -webkit-box;
-  -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.zh-cm-send { background: var(--zh-accent) !important; border-color: var(--zh-accent) !important; color: #fff !important; font-weight: 600; }
-.zh-cm-send:disabled { opacity: .5; cursor: default; }
+/* 一个框：上面打字（一行起，随字长高，最多约七行），下面一行左边放"回复 谁"、快到上限时的字数、出错的原因，右边发送。
+   这一行一直在，这几样出现、消失都不改变框的大小 */
+.zh-cm-box { border: 1px solid var(--zh-cm-in-line); border-radius: 6px; background: var(--zh-cm-in); transition: box-shadow .12s; }
+.zh-cm-box:focus-within { box-shadow: inset 0 -2px 0 var(--zh-cm-focus); }
+#zh-cm-card textarea { display: block; width: 100%; box-sizing: border-box; height: 30px; min-height: 30px; max-height: 160px; resize: none; margin: 0;
+  font: 400 13px/1.5 var(--sans); color: var(--ink); background: transparent; border: 0; padding: 7px 10px 2px; outline: none; overflow-y: auto; }
+#zh-cm-card textarea::placeholder { color: var(--zh-cm-faint); }
+.zh-cm-foot { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 4px 0 10px; }
+.zh-cm-info { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font-size: 12px; line-height: 1; color: var(--muted); white-space: nowrap; }
+.zh-cm-to { min-width: 0; display: inline-flex; align-items: center; gap: 2px; }
+.zh-cm-to span { overflow: hidden; text-overflow: ellipsis; }
+.zh-cm-to .zh-cm-x { width: 18px; height: 18px; font-size: 13px; }
+.zh-cm-n { flex: none; font-variant-numeric: tabular-nums; }
+.zh-cm-n.full { color: var(--del); }
+.zh-cm-err { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--del); }
+.zh-cm-info .off { display: none; }
+.zh-cm-send { flex: none; width: 26px; height: 26px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px;
+  background: var(--zh-cm-send); color: #fff; cursor: pointer; }
+.zh-cm-send:hover:not(:disabled) { filter: brightness(1.08); }
+.zh-cm-send:disabled { background: var(--zh-cm-chip); color: var(--zh-cm-faint); cursor: default; }
+.zh-cm-send svg { display: block; }
 </style>
 <script>
 (function(){
@@ -308,6 +325,9 @@ html:root[data-theme="dark"] { --zh-nm: 100%; }
   var T = __CM_T__;
   var ICON = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"/></svg>';
   var ICON_ADD = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"/><path d="M8 5.2v3.6M6.2 7h3.6"/></svg>';
+  /* 发送：和 Bloom 窗口里对 AI 打字那个框的发送按钮同一个图标 */
+  var ICON_SEND = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    + '<path d="M20.5 3.5l-16.9 6.1c-.22.1-.36.31-.36.55c0 .24.14.45.36.55l6.9 2.8l2.8 6.9c.1.22.31.36.55.36c.24 0 .45-.14.55-.36z"/><path d="M20.5 3.5l-10 10"/></svg>';
   var ST = {items: [], can: {add: false, del: false}, colors: {}};
   var card = null, cardRow = null, replyTo = null;
   function kOf(s){ return (s || '').replace(/[^0-9A-Za-zÀ-ɏͰ-Ͽ一-鿿]+/g, ''); }
@@ -366,13 +386,16 @@ html:root[data-theme="dark"] { --zh-nm: 100%; }
     Array.prototype.forEach.call(docs.querySelectorAll('.zh-cm-pin.on'), function(x){ x.classList.remove('on'); });
   }
   /* 卡片浮在那一段下面（放不下就放上面，都放不下贴着窗口底边），左边和正文对齐：批注的那段字一直看得见 */
-  function place(){
+  function place(keep){
     if (!card || !cardRow) return;
     var r = cardRow.getBoundingClientRect(), para = cardRow.querySelector('.para') || cardRow;
     var pr = para.getBoundingClientRect(), w = card.offsetWidth, h = card.offsetHeight, vh = window.innerHeight;
     var left = Math.max(12, Math.min(pr.left, window.innerWidth - w - 16));
     var below = r.bottom + 4, above = r.top - h - 4;
-    var y = below + h <= vh - 8 ? below : above >= 8 ? above : Math.max(8, vh - h - 8);
+    /* 打字时框长高：留在原来那一边（上面那张往上长），不来回换边 */
+    var side = keep && card.zhSide ? card.zhSide : below + h <= vh - 8 ? 'below' : above >= 8 ? 'above' : 'pin';
+    card.zhSide = side;
+    var y = side === 'below' ? below : side === 'above' ? Math.max(8, above) : Math.max(8, vh - h - 8);
     card.style.left = (left + window.scrollX) + 'px';
     card.style.top = (y + window.scrollY) + 'px';
   }
@@ -423,13 +446,24 @@ html:root[data-theme="dark"] { --zh-nm: 100%; }
     if (!its.length && !ST.can.add) close();
     else place();
   }
-  function showErr(s){ var e = card && card.querySelector('.zh-cm-err'); if (e) { e.textContent = s; e.title = s; } }
+  /* 框底下那一行左边：出错的原因 > "回复 谁" + 快到上限时的字数（400 字起） */
+  function info(){
+    if (!card) return;
+    var e = card.querySelector('.zh-cm-err'), to = card.querySelector('.zh-cm-to'), n = card.querySelector('.zh-cm-n'), ta = card.querySelector('textarea');
+    if (!e || !to || !n || !ta) return;
+    var bad = !!e.textContent, len = ta.value.length;
+    e.classList.toggle('off', !bad);
+    to.classList.toggle('off', bad || !replyTo);
+    n.textContent = len + '/500'; n.classList.toggle('full', len >= 500); n.classList.toggle('off', bad || len < 400);
+  }
+  function showErr(s){ var e = card && card.querySelector('.zh-cm-err'); if (e) { e.textContent = s; e.title = s; info(); } }
   function setTo(){
     if (!card) return;
     var to = card.querySelector('.zh-cm-to'), ta = card.querySelector('textarea'); if (!to || !ta) return;
-    to.classList.toggle('off', !replyTo);
     to.querySelector('span').textContent = replyTo ? T.ph_reply + replyTo.by : '';
+    to.title = replyTo ? T.ph_reply + replyTo.by : '';
     ta.placeholder = replyTo ? T.ph_reply + replyTo.by : T.ph_new;
+    info();
   }
   function mineOnly(list){ return (list || []).filter(function(x){ return !ST.paper || !x.paper || x.paper === ST.paper; }); }
   function take(list){
@@ -441,10 +475,11 @@ html:root[data-theme="dark"] { --zh-nm: 100%; }
     close();
     cardRow = el;
     card = document.createElement('div'); card.id = 'zh-cm-card'; card.setAttribute('role', 'dialog');
-    card.innerHTML = '<div class="zh-cm-list"></div>' + (ST.can.add ? '<div class="zh-cm-new"><div class="zh-cm-to off"><span></span>'
-      + '<button type="button" class="zh-cm-btn zh-cm-x" data-a="unreply" aria-label="' + T.cancel + '">×</button></div>'
-      + '<textarea maxlength="500" spellcheck="false"></textarea><div class="zh-cm-bar"><span class="zh-cm-n">0/500</span><span class="zh-cm-err"></span>'
-      + '<button type="button" class="zh-cm-btn" data-a="cancel">' + T.cancel + '</button><button type="button" class="zh-cm-btn zh-cm-send" data-a="send" disabled>' + T.send + '</button></div></div>' : '');
+    card.innerHTML = '<div class="zh-cm-list"></div>' + (ST.can.add ? '<div class="zh-cm-new"><div class="zh-cm-box">'
+      + '<textarea maxlength="500" rows="1" spellcheck="false"></textarea><div class="zh-cm-foot"><span class="zh-cm-info">'
+      + '<span class="zh-cm-to off"><span></span><button type="button" class="zh-cm-btn zh-cm-x" data-a="unreply" aria-label="' + T.cancel + '">×</button></span>'
+      + '<span class="zh-cm-n off"></span><span class="zh-cm-err off"></span></span>'
+      + '<button type="button" class="zh-cm-send" data-a="send" disabled aria-label="' + T.send + '" title="' + T.send + '">' + ICON_SEND + '</button></div></div></div>' : '');
     document.body.appendChild(card);
     card.addEventListener('click', function(e){ e.stopPropagation(); });
     card.addEventListener('mousedown', function(e){ e.stopPropagation(); });
@@ -452,14 +487,16 @@ html:root[data-theme="dark"] { --zh-nm: 100%; }
     Array.prototype.forEach.call(docs.querySelectorAll('.zh-cm-pin'), function(p){ p.classList.toggle('on', p.parentNode === el); });
     var ta = card.querySelector('textarea');
     if (ta) {
-      var n = card.querySelector('.zh-cm-n'), send = card.querySelector('[data-a="send"]');
-      var upd = function(){ n.textContent = ta.value.length + '/500'; send.disabled = !ta.value.trim(); };
+      var send = card.querySelector('[data-a="send"]');
+      /* 一行起，随字长高（最多 160 px，再多就在框里滚）；长高时卡片留在原来那一边 */
+      var grow = function(){ var h0 = ta.offsetHeight; ta.style.height = 'auto'; ta.style.height = Math.min(160, Math.max(30, ta.scrollHeight)) + 'px'; if (ta.offsetHeight !== h0) place(true); };
+      var upd = function(){ send.disabled = !ta.value.trim(); grow(); info(); };
       ta.placeholder = T.ph_new;
-      ta.addEventListener('input', function(){ upd(); showErr(''); });
+      ta.addEventListener('input', function(){ showErr(''); upd(); });
       var go = function(){
         var text = ta.value.trim(); if (!text || send.disabled) return;
         if (text.length > 500) { showErr(errText(T.send_fail, 'too_long')); return; }
-        send.disabled = true;
+        send.disabled = true; showErr('');
         var list = rows(), i = list.indexOf(el);
         var req = replyTo ? {op: 'reply', id: replyTo.id, text: text} : {op: 'add', paper: PAPER_ID(), anchor: anchorOf(el, i), text: text};
         api(req).then(function(d){
@@ -468,11 +505,11 @@ html:root[data-theme="dark"] { --zh-nm: 100%; }
         }).catch(function(){ upd(); showErr(errText(T.send_fail, 'failed')); });
       };
       send.onclick = go;
-      card.querySelector('[data-a="cancel"]').onclick = close;
       card.querySelector('[data-a="unreply"]').onclick = function(){ replyTo = null; setTo(); ta.focus(); };
+      /* 和对 AI 打字的框一样：回车发送，Shift+回车换行（输入法选字时的回车不算）；Esc 先取消"回复 谁"，再关卡片 */
       ta.addEventListener('keydown', function(e){
-        if (e.key === 'Escape') { e.preventDefault(); close(); }
-        else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); go(); }
+        if (e.key === 'Escape') { e.preventDefault(); if (replyTo) { replyTo = null; setTo(); } else close(); }
+        else if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); go(); }
         e.stopPropagation();
       });
       setTimeout(function(){ ta.focus(); }, 0);

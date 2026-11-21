@@ -12,6 +12,7 @@ import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import { relayApi } from '../setupApi';
 import { useDismiss } from './useDismiss';
 import { EditDock, editsOf, elapsed } from './EditDock';
+import { handOff } from './paperSwap';
 import { tidy, useMenu } from './Menu';
 import { isImeKey } from '../ime';
 import { Icon } from '@blurt/icons';
@@ -20,6 +21,7 @@ import { foldSteps, reportSteps, stepK, stepV, tidyStep } from './stepText';
 import {
   avatarUrl,
   cleanTitle,
+  DOC_EDIT_TAG,
   liveError,
   meetingApi,
   type Bookmark,
@@ -221,7 +223,8 @@ export function MeetingLayout({
   const showTabs = !!review;
   const videoSrc = meetingApi.videoUrl(video?.url);
   // 修改清单 (To-dos) shows once the meeting left something on the board: notes to do after it, edits made in it
-  const hasTodos = !!board?.tasks?.some((x) => x.note || (x.status === 'done' && !x.rejected));
+  const hasTodos = !!board?.tasks?.some((x) => x.note || (x.status === 'done' && !x.rejected))
+    || transcript.some((l) => l.tag === DOC_EDIT_TAG);    // or someone typed a change straight into the paper
   // a meeting without a paper has no 修订对比: its first tab is the 纪要
   const first: Tab = chat ? 'notes' : 'diff';
   const tabs: Tab[] = [...(chat ? [] : (['diff'] as Tab[])), 'notes', ...(hasTodos ? (['todos'] as Tab[]) : []), ...(videoSrc ? (['video'] as Tab[]) : [])];
@@ -243,7 +246,24 @@ export function MeetingLayout({
   const slotA = useRef<HTMLIFrameElement | null>(null);
   const slotB = useRef<HTMLIFrameElement | null>(null);
   const [slots, setSlots] = useState<{ a: string; b: string; vis: 'a' | 'b'; loading: boolean }>({ a: diffSrc, b: '', vis: 'a', loading: false });
-  useEffect(() => setSlots({ a: diffSrc, b: '', vis: 'a', loading: false }), [diffSrc]);
+  const slotsRef = useRef(slots);
+  slotsRef.current = slots;
+  // the hidden slot has loaded and is being handed the reading place (paperSwap.ts): which one, and how to call it off
+  const staged = useRef<{ which: 'a' | 'b'; cancel: (() => void) | null } | null>(null);
+  const safety = useRef(0);
+  useEffect(() => {
+    staged.current?.cancel?.();
+    staged.current = null;
+    window.clearTimeout(safety.current);
+    setSlots({ a: diffSrc, b: '', vis: 'a', loading: false });
+  }, [diffSrc]);
+  useEffect(
+    () => () => {
+      staged.current?.cancel?.();
+      window.clearTimeout(safety.current);
+    },
+    [],
+  );
   // the paper hasn't come up yet (a long paper typesets its formulas for seconds): a "loading" layer over it, not a black box
   const [diffReady, setDiffReady] = useState(false);
   useEffect(() => setDiffReady(false), [diffSrc]);
@@ -316,6 +336,23 @@ export function MeetingLayout({
     window.addEventListener('message', on);
     return () => window.removeEventListener('message', on);
   }, []);
+  // the page shows 「引用」 after a selection only to who can point the AI at a passage (2026-11-21: a selection no longer
+  // quotes by itself): it asks when it loads ({zhQuoteAsk}), and hears again when that changes (the meeting ends…)
+  const canQuote = !!tools && tools.live && tools.role !== 'guest' && !tools.noAi;
+  const quoteRef = useRef(canQuote);
+  quoteRef.current = canQuote;
+  useEffect(() => {
+    for (const s of [slotA.current, slotB.current]) s?.contentWindow?.postMessage({ zhQuote: { can: canQuote } }, '*');
+  }, [canQuote]);
+  useEffect(() => {
+    const on = (e: MessageEvent) => {
+      if (!(e.data as { zhQuoteAsk?: number } | null)?.zhQuoteAsk) return;
+      if (e.source !== slotA.current?.contentWindow && e.source !== slotB.current?.contentWindow) return;
+      (e.source as Window).postMessage({ zhQuote: { can: quoteRef.current } }, '*');
+    };
+    window.addEventListener('message', on);
+    return () => window.removeEventListener('message', on);
+  }, []);
 
   // ---------------------------------------------------------------- the paper's tools (the iframe's state)
   const [paper, setPaper] = useState<PaperState | null>(null);
@@ -333,10 +370,13 @@ export function MeetingLayout({
           return p.vis === 'a' ? { ...p, b: next, loading: true } : { ...p, a: next, loading: true };
         });
         // safety: the hidden slot never got ready (backend restarting…): reload the visible one instead of staying stale
-        window.setTimeout(
+        // (not while a loaded one waits for you to stop scrolling / selecting / writing: paperSwap.ts; an earlier
+        // version's timer goes when this one is set or a swap is done, so it can't reload a later one mid-read)
+        window.clearTimeout(safety.current);
+        safety.current = window.setTimeout(
           () =>
             setSlots((q) => {
-              if (!q.loading) return q;
+              if (!q.loading || staged.current) return q;
               const again = `${diffSrc}${diffSrc.includes('?') ? '&' : '?'}v=${Date.now()}`;
               return q.vis === 'a' ? { a: again, b: '', vis: 'a', loading: false } : { a: '', b: again, vis: 'b', loading: false };
             }),
@@ -361,23 +401,29 @@ export function MeetingLayout({
     window.addEventListener('message', on);
     return () => window.removeEventListener('message', on);
   }, [post, diffSrc]);
-  // the hidden slot finished loading: give the page a moment to put the reader back and typeset, then swap
-  const slotLoaded = useCallback(
-    (which: 'a' | 'b') => {
-      setSlots((p) => {
-        if (!p.loading || p.vis === which || !(which === 'a' ? p.a : p.b)) return p;
-        window.setTimeout(() => {
-          setSlots((q) => {
-            if (!q.loading || q.vis === which) return q;
-            return q.vis === 'a' ? { ...q, a: '', vis: which, loading: false } : { ...q, b: '', vis: which, loading: false };
-          });
-          window.setTimeout(() => (which === 'a' ? slotA : slotB).current?.contentWindow?.postMessage({ zhHello: 1 }, '*'), 50);
-        }, 700);
-        return p;
+  // the hidden slot finished loading: give the page a moment to typeset, then ask the page on screen where you are
+  // reading (and wait while you scroll, select or write in it), put the new page on that paragraph, swap (2026-11-21:
+  // a landed edit used to put the paper back where it was a second or two earlier, under your scrolling)
+  const slotLoaded = useCallback((which: 'a' | 'b') => {
+    const p = slotsRef.current;
+    if (!p.loading || p.vis === which || !(which === 'a' ? p.a : p.b)) return;
+    if (staged.current?.which === which) return; // already being handed over (the page reloaded itself for a newer version)
+    const st: { which: 'a' | 'b'; cancel: (() => void) | null } = { which, cancel: null };
+    staged.current = st;
+    const win = (k: 'a' | 'b') => (k === 'a' ? slotA : slotB).current?.contentWindow;
+    window.setTimeout(() => {
+      if (staged.current !== st) return;
+      st.cancel = handOff(win(which === 'a' ? 'b' : 'a'), win(which), () => {
+        if (staged.current === st) staged.current = null;
+        window.clearTimeout(safety.current);
+        setSlots((q) => {
+          if (!q.loading || q.vis === which) return q;
+          return q.vis === 'a' ? { ...q, a: '', vis: which, loading: false } : { ...q, b: '', vis: which, loading: false };
+        });
+        window.setTimeout(() => win(which)?.postMessage({ zhHello: 1 }, '*'), 50);
       });
-    },
-    [],
-  );
+    }, 700);
+  }, []);
   // Ctrl + 加号 / 减号 / 0 while the focus is in the shell: the paper zooms (inside the iframe the page catches them)
   const noPaper = !!left || chat;
   useEffect(() => {
@@ -693,7 +739,7 @@ export function MeetingLayout({
                 )}
                 {showTabs && tab === 'todos' && (
                   <div className={`${layer('todos')} mt-scroll`}>
-                    <TodoList board={board} meetingId={meeting?.id ?? null} done={carryDone ?? null} />
+                    <TodoList board={board} meetingId={meeting?.id ?? null} done={carryDone ?? null} hand={transcript} />
                   </div>
                 )}
                 {/* 录屏也一直挂着：切去看论文时接着放，逐字稿照样跟着亮 */}
@@ -1980,7 +2026,8 @@ export const Transcript = memo(function Transcript({
       const prev = last?.lines[last.lines.length - 1];
       // Claude's pieces each keep their own bubble and head (2026-11-13, the user: Haiku's "好的，我看看" in one bubble —
       // 随口 · Claude Haiku 5.5 Low — then "派任务 …", then Opus's answer in a new bubble — 思考 · Claude Opus 5.5 Extra)
-      if (last && prev && l.who !== 'system' && l.who !== 'student' && last.who === l.who && last.name === l.name && l.sec - prev.sec < 90)
+      // a typed line and a said one never share a turn: "文字" sits by the name, so it is said of the whole turn
+      if (last && prev && l.who !== 'system' && l.who !== 'student' && last.who === l.who && last.name === l.name && l.sec - prev.sec < 90 && !!l.typed === !!prev.typed)
         last.lines.push(l);
       else out.push({ who: l.who, name: l.name, t: l.t || fmtDuration(l.sec), lines: [l] });
     }
@@ -2150,6 +2197,7 @@ export const Transcript = memo(function Transcript({
       <header className="mt-turn-head">
         <Avatar person={personOf(w, name)} color={c} />
         {who}
+        {first?.typed && <span className="mt-typed" data-testid="transcript-typed">{t('meeting.line.typed')}</span>}
         {w === 'student' && first && <ClaudeChips l={first as ShownLine} />}
       </header>
     );
@@ -2303,8 +2351,7 @@ export const Transcript = memo(function Transcript({
                   {u.lines.map((l, k) => (
                     <Fragment key={k}>
                     {edLine && editable(l) && edLine.i === l.i && edLine.text === l.text ? (
-                      <LineEditor text={l.text} onSave={(v) => saveLine(l, v)} onDone={() => setEdLine(null)} pick={pickable(l)}
-                        typed={l.typed ? t('meeting.line.typed') : undefined} />
+                      <LineEditor text={l.text} onSave={(v) => saveLine(l, v)} onDone={() => setEdLine(null)} pick={pickable(l)} />
                     ) : editable(l) ? (
                       // 编辑 on: a click opens the line in place (the recording stays where it is)
                       <p
@@ -2318,7 +2365,6 @@ export const Transcript = memo(function Transcript({
                         aria-description={ut('meeting.tredit.line')}
                         data-testid="transcript-line"
                       >
-                        {l.typed && <span className="mt-typed">{t('meeting.line.typed')}</span>}
                         <Highlight text={l.text} q={q} />
                         {/* on hover, right of the bubble (transcript-edit.css) */}
                         <Icon name="pencil" size={13} className="mt-line-pen" />
@@ -2333,12 +2379,10 @@ export const Transcript = memo(function Transcript({
                         onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onPick!(l))}
                         data-testid="transcript-line"
                       >
-                        {l.typed && <span className="mt-typed">{t('meeting.line.typed')}</span>}
                         <Highlight text={l.text} q={q} />
                       </p>
                     ) : (
                       <p className={`mt-line-text${flashCls(l)}`} data-sec={l.sec}>
-                        {l.typed && <span className="mt-typed">{t('meeting.line.typed')}</span>}
                         <Highlight text={l.text} q={q} />
                       </p>
                     )}

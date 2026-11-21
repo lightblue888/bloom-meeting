@@ -204,6 +204,13 @@ export function baseWorld(lang: Lang, stress = false): World {
       text: T('表 2 改好了，加了一行 TimeGAN。', 'Table 2 is done: one row added for TimeGAN.'),
     },
     { t: '04:02', sec: 242, who: 'system', text: T(`${g1} 加入了会议`, `${g1} joined the meeting`) },
+    // someone typed a change straight into the paper (zuhui/doc_edits.py): a system line; 修改清单 lists it under 会上已改
+    {
+      t: '05:00', sec: 300, who: 'system', tag: '#doc_edit', by: host, where: T('3.2 第 2 段', '3.2 paragraph 2'),
+      text: T(`${host} 改了 3.2 第 2 段`, `${host} edited 3.2 paragraph 2`),
+      before: T('…数据按时间切分，前 80% 用于训练…', '…the data is split by time, the first 80% for training…'),
+      after: T('…数据按时间切分，前 70% 用于训练，中间 10% 用于验证…', '…the data is split by time, the first 70% for training, the next 10% for validation…'),
+    },
     { t: '19:58', sec: 1198, who: 'guest', name: g1, text: T('3.2 节的数据划分是按时间切的吗？', 'Is the data split in 3.2 by time?') },
     {
       t: '20:05', sec: 1205, who: 'student', tag: '#edit', lat: 1.2, title: T('改写 3.2 节第二段', 'Rewrite the second paragraph of 3.2'), model: fast,

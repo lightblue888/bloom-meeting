@@ -17,8 +17,9 @@ from datetime import datetime
 
 
 from .config import MODEL_OPTIONS, PROMPTS, assistant_name, model_label
-from .dialog_rules import scrub_labels
+from .dialog_rules import scrub_labels, scrub_task_ids, task_short_name
 
+_TID_ANY = re.compile(r"(?<![A-Za-z0-9\-])[Tt]\s?\d")
 TAG_RE = re.compile(r"^#\s*(edit|ask|status|undo|chat|end|silent|app|deep|find|look|note)\b[\s:：]*(.*)$", re.I)
 SENT_END = "。！？；\n"
 # 英文句末：. ? ! ; 后面跟着空白才算（"5.5""e.g. the""Prof. Chen""Table 3. " 里的缩写点不算），要等下一个字流到才能定。
@@ -361,6 +362,7 @@ class FastBrain:
     def _reply(self, text: str, light: bool = False):
         self._opened = False
         self.dropped_opener = None
+        self._tid_names = self._task_names()     # 念出口的话里的任务编号换成简称（_scrub）
         last = self.recent_replies(1)
         avoid = self.opener_of(last[-1]) if last else None          # 上一句用过的开头，这句不再用
         preset = set(o for o in (list((self.cfg.get("mouth") or {}).get("openers") or [])
@@ -434,7 +436,7 @@ class FastBrain:
                     if mj and (j < 0 or mj.start() < j):
                         j = mj.start()
                     if i >= 7 and (j < 0 or i < j):
-                        head, pending = scrub_labels(pending[:i + 1]), pending[i + 1:]
+                        head, pending = self._scrub(pending[:i + 1]), pending[i + 1:]
                         body += head
                         if head.strip():
                             yield ("sentence", head.strip())
@@ -475,7 +477,7 @@ class FastBrain:
         for x in extra:
             yield ("tag_extra", x)
         sents, pending = self._cut(pending)
-        sents.append(scrub_labels(pending) if pending.strip() else pending)   # 最后没标点的尾巴也念出来
+        sents.append(self._scrub(pending) if pending.strip() else pending)   # 最后没标点的尾巴也念出来
         for s in sents:
             body += s
             if s.strip():
@@ -493,8 +495,23 @@ class FastBrain:
         yield ("done", body)
 
     # ---------- 内部 ----------
-    @staticmethod
-    def _cut(buf: str) -> tuple[list[str], str]:
+    def _task_names(self) -> dict:
+        """任务编号 → 念出来的简称（"T5" → "全文标点按前后句改"）。"""
+        try:
+            return {str(t.get("id")): task_short_name(t.get("title")) for t in self.board.tasks() if t.get("id")}
+        except Exception:
+            return {}
+
+    def _scrub(self, s: str) -> str:
+        """念出口之前：内部上下文的名字（"【软件现状】里没写"）带着它的那一小截去掉（2026-11-14 念了好几次）；
+        任务编号换成那条的简称（2026-11-21 下午 [16:53]"T7 还在排队收尾"：对方看不到哪个编号是哪条）。不念的也不进历史。"""
+        s = scrub_labels(s)
+        names = getattr(self, "_tid_names", None)
+        if names and _TID_ANY.search(s):
+            s = scrub_task_ids(s, names, en=str((self.cfg.get("meeting") or {}).get("lang") or "zh") == "en")
+        return s
+
+    def _cut(self, buf: str) -> tuple[list[str], str]:
         """把 buf 里已凑满的句子切出来 → (句子列表（含标点）, 没凑满的尾巴)。"""
         out = []
         while True:
@@ -506,8 +523,7 @@ class FastBrain:
                 return out, buf
             while end + 1 < len(buf) and buf[end + 1] in SENT_END:   # “？！”“。\n” 这类连续标点一起带走
                 end += 1
-            # 内部上下文的名字（"【软件现状】里没写"）不念，也不进历史：带着它的那一小截去掉（2026-11-14 念了好几次）
-            out.append(scrub_labels(buf[:end + 1]))
+            out.append(self._scrub(buf[:end + 1]))
             buf = buf[end + 1:]
 
     @staticmethod
@@ -526,6 +542,9 @@ class FastBrain:
             return (f"{tag} {rest}" if rest else tag), tag, ""
         if tag == "#silent":
             return "#silent", tag, ""
+        if tag in ("#deep", "#find") and rest and rest[-1] in "？?" and not single_line:
+            # "#deep 要不要在第三章把表二的大类都介绍一遍？"：标签后面写的是要后台想的那个问题，不念，留在标签行
+            return f"{tag} {rest}", tag, ""
         # 非 edit 标签后面带的字：像整句话（有句末标点）就当要念的，否则当注记留在标签行
         if rest and (single_line or rest[-1] in "。！？；"):
             return tag, tag, (rest if single_line else rest + "\n")
@@ -696,7 +715,8 @@ class FastBrain:
         shown = set()
         for j in reversed(recent):
             st, age = j.get("state"), _t.time() - float(j.get("t0") or _t.time())
-            q = _strip_ctl(re.sub(r"^(?:【[^】]{0,400}】)+", "", str(j.get("q") or "")))[:60]
+            # 问的是哪个问题：交给深想时取出来的那个（"你让后台想一个答案"这种原话不是问题），没有才用原话
+            q = _strip_ctl(j.get("question") or re.sub(r"^(?:【[^】]{0,400}】)+", "", str(j.get("q") or "")))[:60]
             name = f"「{_strip_ctl(j.get('topic'))}」（问的是：{q}）" if j.get("topic") else f"「{q}」"
             if st == "running":
                 lines.append(f"查论文：对方 {age:.0f} 秒前问的{name}，后台的 Claude 正在论文里查，还没查完；查好了软件会自动念出来，"
@@ -774,6 +794,15 @@ class FastBrain:
             ch = ""
         if ch:
             lines.append("本场改过的地方（论文全文里已经是改后的样子：下面加进去的话是这场会改的，不是作者原文）：\n" + ch)
+        try:                                         # 有人在对比页里直接改的（app 接上 hand_edits_fn，见 doc_edits.py）
+            fn = getattr(self, "hand_edits_fn", None)
+            he = str(fn() or "").strip() if fn else ""
+        except Exception as e:
+            print(f"[fast] 手改记录读不出来：{e!r}", file=sys.stderr)
+            he = ""
+        if he:
+            lines.append("本场有人在文档里直接改过的地方（是他们自己打字改的，不是你派的任务；论文全文里已经是改后的样子，"
+                         "别说成是你改的，也别提议改回去）：\n" + "\n".join(_strip_ctl(x) for x in he.splitlines()))
         lines.append(f"现在时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}")
         pr = self._past_recall(text)
         if pr:                                       # 问到了以前的会：往期片段（只在这一轮附，不进历史）

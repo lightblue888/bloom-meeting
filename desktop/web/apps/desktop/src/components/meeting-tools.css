@@ -273,9 +273,10 @@
 }
 
 /* ------------------------------------------------------------ the transcript: typed lines, bookmarks */
+/* "文字": a turn that was typed, not said; by the name in the turn's head (not in front of the words) */
 .mt-typed {
   display: inline-block;
-  margin-right: 6px;
+  flex: none;
   padding: 0 6px;
   border-radius: 8px;
   background: var(--chip);

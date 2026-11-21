@@ -38,6 +38,14 @@ class _SafeDict(dict):
         return "{" + key + "}"
 
 
+def _same_file_key(p) -> str:
+    """同一个文件的比较键：对比页和工人拿到的路径写法可能不同（相对 / 绝对、大小写、8.3 短名）。"""
+    try:
+        return os.path.normcase(str(Path(p).resolve()))
+    except OSError:
+        return os.path.normcase(str(p))
+
+
 def _strip_claude_env() -> dict:
     """从 Claude Code 会话里再起 claude 会被拒，子进程 env 要删掉所有 CLAUDECODE / CLAUDE_CODE_* 变量。"""
     env = {k: v for k, v in os.environ.items() if not (k == "CLAUDECODE" or k.startswith("CLAUDECODE") or k.startswith("CLAUDE_CODE_"))}
@@ -646,6 +654,8 @@ class Hands:
         self.context_fn = None
         self._live: dict[str, dict] = {}         # 正在跑的改稿任务 → {"feed" 或 "pending"/"open", "prog"}：amend 往里送补充
         self._live_lock = threading.Lock()
+        # 正在跑的任务开工时的全文（记改动用）：跑的时候有人手改了一段，就把手改也并进来（note_hand_edit）
+        self._bases: dict[str, dict] = {}
         self._cv = threading.Condition()
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
@@ -770,9 +780,13 @@ class Hands:
             self._run_annotate(task)
             return
         before_text = self._read_paper()
+        with self._live_lock:
+            self._bases[task["id"]] = {"paper": _same_file_key(self.paper_file), "text": before_text}
         try:
             self._run_claude(task)
         finally:
+            with self._live_lock:
+                before_text = (self._bases.pop(task["id"], None) or {}).get("text", before_text)
             # 不管成没成功，都把这一条前后的文字差异记下来：对比页用「独有的新增文字」把改动挂到这条批注上
             try:
                 self._capture_changes(task, before_text, self._read_paper())
@@ -784,6 +798,23 @@ class Hands:
             return self.paper_file.read_text(encoding="utf-8-sig")
         except OSError:
             return ""
+
+    def note_hand_edit(self, paper, old: str, new: str) -> int:
+        """有人在对比页里直接改了一段（view.para_save）。这篇上正在改的任务：把这处手改也并进它开工时的全文，
+        这样它记下的改动里没有这处手改，以后撤回那条任务也不会把手改一起撤掉。返回并进了几条任务。
+        原段在开工时的全文里找不到（工人刚好也改了这一段）就不动。"""
+        old = (old or "").replace("\r\n", "\n").strip()
+        new = (new or "").replace("\r\n", "\n").strip()
+        if not old or old == new:
+            return 0
+        key, n = _same_file_key(paper), 0
+        with self._live_lock:
+            for b in self._bases.values():
+                if b.get("paper") != key or b["text"].count(old) != 1:
+                    continue
+                b["text"] = b["text"].replace(old, new, 1)
+                n += 1
+        return n
 
     def _capture_changes(self, task: dict, before: str, after: str) -> None:
         """段落级 + 字符级 diff，抽出这条任务独有的新增/删除文字片段，写 STATE/changes/<id>.json。"""
@@ -1409,7 +1440,8 @@ class Hands:
         except Exception as e:
             _log([f"[{datetime.now().isoformat(timespec='seconds')}] {task.get('id')} 存会前原稿失败：{e!r}"])
         return {"agenda": " ".join(str(got.get("agenda") or "").split()), "talk": str(got.get("talk") or "").strip(),
-                "tasks": worker_ctx.session_tasks(tasks, task), "toc": worker_ctx.toc(self.paper_file), "orig": orig}
+                "tasks": worker_ctx.session_tasks(tasks, task), "toc": worker_ctx.toc(self.paper_file), "orig": orig,
+                "edits": str(got.get("edits") or "").strip(), "past": str(got.get("past") or "").strip()}
 
     def _meeting_block(self, ctx: dict, api: bool = False) -> str:
         """提示词里"这场会的情况"那一节。"""
@@ -1422,6 +1454,12 @@ class Hands:
                        "不一定对）：\n" + ctx["talk"])
         if ctx.get("tasks"):
             out.append("- 本场在这篇文档上已经记过的任务（标题是小模型写的转述，结果是当时工人的汇报）：\n" + ctx["tasks"])
+        if ctx.get("edits"):
+            out.append("- 本场有人在文档里直接改过的地方（他们自己打字改的，稿子里已经是改后的样子；别改回去，"
+                       "和任务说法冲突时以他们改的为准）：\n" + ctx["edits"])
+        if ctx.get("past"):
+            out.append("- 往期会议（同一篇文档前几场会的纪要要点和遗留项）：前几场定下的写法要求（比如不用哪种标点、数字怎么写），"
+                       "这场没说取消就照样遵守；和这场的原话冲突时按这场的：\n" + ctx["past"])
         if ctx.get("orig"):
             out.append("- 会前原稿（这篇文档本场第一条修改之前的样子，只读）："
                        + ("附在后面那条消息里" if api else f"`{ctx['orig']}`，用 Read 打开，这个文件不能改"))

@@ -124,8 +124,29 @@ def _np(p) -> str:
         return os.path.normcase(str(p))
 
 
+# 文件名里的版本记号：每次开会导入的是新导出的一版（"论文第12版" → "论文第13版"、"draft_v3" → "draft_v4"），
+# 编号、路径、名字全变了，往期会就对不上（2026-11-21 第二场会的 AI 和改稿工人都没看到上一场定下的写法要求）
+_VERSION = re.compile(r"[_\-\s.·]*(?:第\s*\d+\s*(?:版|稿)|(?<![a-z0-9])(?:v|ver|rev|r)\s*\d+(?:\.\d+)*|(?<![a-z0-9])(?:final|copy)\s*\d*|"
+                      r"(?:终稿|定稿|最终版|修订版|修改稿|副本)\s*\d*|(?<!\d)20\d{2}[-_.]?\d{2}[-_.]?\d{2}|\d{1,2}月\d{1,2}日|"
+                      r"[（(]\s*\d{1,3}\s*[)）])$")
+
+
+def name_stem(name) -> str:
+    """名字去掉末尾的版本记号（第 N 版、v3、终稿、日期、"(2)"，可以连着几个）之后的样子，小写。
+    剩下太短、太常见：""（不拿它认）。"""
+    s = " ".join(str(name or "").split()).lower()
+    for _ in range(4):
+        t = _VERSION.sub("", s)
+        if t == s:
+            break
+        s = t
+    s = s.strip(" _-.·")
+    return "" if len(s) < 4 or s in _GENERIC else s
+
+
 def paper_keys(p: dict | None) -> set[str]:
-    """一篇论文认得出的几种叫法：编号、文件（镜像或原文件，路径规范化）、名字（太常见的不算）。"""
+    """一篇论文认得出的几种叫法：编号、文件（镜像或原文件，路径规范化）、名字（太常见的不算）、
+    名字去掉版本号（同一篇论文的新一版也算同一篇）。"""
     if not isinstance(p, dict):
         return set()
     out = set()
@@ -137,6 +158,9 @@ def paper_keys(p: dict | None) -> set[str]:
     name = " ".join(str(p.get("name") or "").split()).lower()
     if name and name not in _GENERIC:
         out.add("name:" + name)
+    stem = name_stem(name)
+    if stem:
+        out.add("stem:" + stem)
     return out
 
 
@@ -212,6 +236,8 @@ def _on_paper(t: dict, keys: set[str]) -> bool:
         tk.add("id:" + str(t["paper"]))
     if t.get("paper_path"):
         tk.add("file:" + _np(t["paper_path"]))
+    if name_stem(t.get("paper_name")):            # 同一篇论文的上一版上记的
+        tk.add("stem:" + name_stem(t.get("paper_name")))
     return not tk or not keys or bool(tk & keys)
 
 
@@ -399,7 +425,11 @@ def _by(x) -> str:
 def _meeting_block(lib, m: dict, cap: int) -> str:
     s = _summary(lib, m["id"])
     lines = [f"◆ {when(m)}《{_one(clean_title(m.get('title')), 40) or '组会'}》"]
-    conc = "；".join(_one(_text(x), 80) for x in (s.get("conclusions") or [])[:4] if _text(x))
+    cs = [x for x in (s.get("conclusions") or []) if _text(x)]
+    rules = [x for x in cs if re.match(r"\s*(写作要求|Writing rules?)\s*[：:]", _text(x), re.I)]   # 纪要里单列的写法要求：排最前、不截掉
+    if rules:
+        lines.append("；".join(_one(_text(x), 160) for x in rules[:2]))
+    conc = "；".join(_one(_text(x), 80) for x in [x for x in cs if x not in rules][:4])
     if conc:
         lines.append("结论：" + conc)
     for p in (s.get("people") or [])[:6]:

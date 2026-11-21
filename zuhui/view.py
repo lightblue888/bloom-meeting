@@ -178,33 +178,88 @@ INJECT = r"""
 (function(){
   var BUILD = __BUILD__;
   var st = document.getElementById('zh-st'), dot = document.getElementById('zh-dot');
-  /* 读到哪儿：屏幕最上面那一段（开头几个字、第几段、滑过了多少）。换版本前记下，新页面按"那一段"回去（不按像素：公式和图一排版就跳） */
+  /* 读到哪儿：屏幕最上面那一段（开头几个字、第几段、滑过了多少），按"那一段"回去（不按像素：公式和图一排版就跳）。
+     2026-11-21 改动一落地论文就回到最上面：外壳连不上后端几秒时整页重来，新页面没人告诉它读到哪。现在屏幕上的这一份
+     边读边记（zh-read@论文），怎么重新加载都回到那一段；换新版本时外壳先问旧的一份读到哪、让新的一份停到同一段再换上来，
+     你正在滚、在选字、在写批注时等一等再换（zhReadAsk → zhRead → zhGo → zhGone，见 MeetingLayout / paperSwap.ts） */
   function zhNorm(s){ return (s || '').replace(/\s+/g, ' ').trim(); }
   function zhTop(){ var b = document.querySelector('.bar'); return (b && getComputedStyle(b).display !== 'none' ? b.getBoundingClientRect().bottom : 0) + 8; }
+  function zhText(el){          /* 一段的字：不算段头"第 N 段 · 已修改"、删掉的字、批注、图钉（这一段改了状态照样认得出） */
+    var c = el.cloneNode(true);
+    Array.prototype.forEach.call(c.querySelectorAll('.rowhead, del, .notes, .zh-pins, .zh-note, .zh-cm-pin, #zh-cm-add, .zh-editor'), function(x){ x.parentNode.removeChild(x); });
+    return zhNorm(c.textContent);
+  }
   function zhReading(){
     var rows = document.querySelectorAll('.docs .row'), top = zhTop();
     for (var i = 0; i < rows.length; i++) { var r = rows[i].getBoundingClientRect();
-      if (r.bottom > top) return {i: i, text: zhNorm(rows[i].textContent).slice(0, 40), off: r.height > 0 ? (top - r.top) / r.height : 0, y: window.scrollY}; }
-    return {i: -1, y: window.scrollY};
+      if (r.bottom > top && r.height > 0) return {i: i, text: zhText(rows[i]).slice(0, 40), off: (top - r.top) / r.height, y: Math.round(window.scrollY)}; }
+    return {i: -1, y: Math.round(window.scrollY)};
   }
-  function zhBackTo(at){
+  function zhFind(at){          /* 开头的字对得上的那段（几段一样时取离原来位置最近的）；对不上按第几段 */
+    var rows = document.querySelectorAll('.docs .row'), key = zhNorm(at.text).slice(0, 24), best = null, gap = 1e9, i0 = at.i || 0;
+    if (key.length >= 6) for (var i = 0; i < rows.length; i++) { if (Math.abs(i - i0) < gap && zhText(rows[i]).indexOf(key) === 0) { best = rows[i]; gap = Math.abs(i - i0); } }
+    return best || (at.i >= 0 ? rows[at.i] || null : null);
+  }
+  /* 回到那一段之后的几秒里（你没动过）一直按它对齐：公式、图、字体排好以后上面的段落会变高 */
+  var pin = null;
+  function zhPlace(){
+    if (!pin || !pin.el.isConnected) return;
+    var r = pin.el.getBoundingClientRect(), y = Math.max(0, Math.round(r.top + window.scrollY - zhTop() + pin.off * r.height));
+    if (Math.abs(y - window.scrollY) > 1) window.scrollTo(0, y);
+  }
+  function zhBackTo(at, ms){
     if (!at) return;
-    var rows = document.querySelectorAll('.docs .row'), el = null, key = (at.text || '').slice(0, 24);
-    if (key.length >= 6) for (var i = 0; i < rows.length && !el; i++) { if (zhNorm(rows[i].textContent).indexOf(key) === 0) el = rows[i]; }
-    if (!el && at.i >= 0) el = rows[at.i] || null;
-    if (el) { var r = el.getBoundingClientRect(); window.scrollTo(0, Math.max(0, r.top + window.scrollY - zhTop() + (at.off || 0) * r.height)); }
-    else if (at.y) window.scrollTo(0, at.y);
+    var el = zhFind(at);
+    if (!el) { pin = null; if (at.y) window.scrollTo(0, at.y); return; }
+    pin = {el: el, off: Math.min(1, Math.max(0, at.off || 0)), until: performance.now() + (ms || 0)};
+    zhPlace();
+  }
+  try { new ResizeObserver(function(){ if (pin && performance.now() < pin.until) zhPlace(); }).observe(document.body); } catch (e) {}
+  /* 你在这一页上动了（滚轮、按键、点、拖）：不再替你对齐；刚动过、按着没放，外壳先别换版本 */
+  var lastIn = -1e9, downAt = 0, selAt = 0;
+  function zhInput(){ lastIn = performance.now(); pin = null; shown = true; }
+  ['wheel', 'keydown', 'touchstart'].forEach(function(k){ window.addEventListener(k, zhInput, {capture: true, passive: true}); });
+  window.addEventListener('pointerdown', function(){ zhInput(); downAt = performance.now(); }, true);
+  ['pointerup', 'pointercancel', 'blur'].forEach(function(k){ window.addEventListener(k, function(){ if (downAt) lastIn = performance.now(); downAt = 0; }, true); });
+  document.addEventListener('selectionchange', function(){ var s = window.getSelection(); if (s && !s.isCollapsed) { if (!selAt) selAt = performance.now(); } else selAt = 0; });
+  function zhBusy(){
+    var now = performance.now();
+    if (now - lastIn < 700 || (downAt && now - downAt < 8000)) return 'input';
+    if (document.querySelector('.zh-editor')) return 'edit';
+    var cm = document.querySelector('#zh-cm-card textarea');
+    if (cm && (cm.value.trim() || document.activeElement === cm)) return 'comment';
+    if (selAt && now - selAt < 15000) return 'select';            /* 选了字（可能正要点「引用」）：最多等 15 秒 */
+    return '';
   }
   var PAPER = __PAPER__;   /* 这一页是哪篇论文（会中能来回切）：读到哪按论文各记各的 */
+  /* 新旧两份是不是同一篇（访客那份没有论文编号：认第一个标题） */
+  var DOC = PAPER || zhNorm((document.querySelector('.docs .sect') || {}).textContent).slice(0, 60);
+  /* 在屏幕上的这一份才记（外壳的 zhHello、你动过它）：后面那个槽里还没换上来的那份不记 */
+  var shown = window.parent === window, keepT = 0;
+  function zhKeep(){ if (!PAPER || !shown) return; try { var rd = zhReading(); rd.p = PAPER; sessionStorage.setItem('zh-read@' + PAPER, JSON.stringify(rd)); } catch (e) {} }
+  window.addEventListener('scroll', function(){ if (!keepT) keepT = setTimeout(function(){ keepT = 0; zhKeep(); }, 250); }, {passive: true});
   try {
-    var saved = sessionStorage.getItem('zh-read') || (sessionStorage.getItem('zh-scroll') ? JSON.stringify({i: -1, y: parseInt(sessionStorage.getItem('zh-scroll'), 10)}) : null);
-    var at0 = saved ? JSON.parse(saved) : null;
+    var one = JSON.parse(sessionStorage.getItem('zh-read') || 'null');   /* 上一份换版本前记下的 */
     sessionStorage.removeItem('zh-read'); sessionStorage.removeItem('zh-scroll');
-    /* 换了一篇：上一篇读到哪不往这篇上套；这篇以前切走时读到哪，回到哪（没读过就从头） */
-    if (at0 && at0.p !== undefined && at0.p !== PAPER) { at0 = null; try { at0 = JSON.parse(sessionStorage.getItem('zh-read@' + PAPER) || 'null'); } catch (e) {} }
-    if (at0) { zhBackTo(at0); setTimeout(function(){ zhBackTo(at0); }, 450); }    /* 图和公式排好以后再对一次 */
+    if (one && one.p !== undefined && one.p !== PAPER) one = null;       /* 换了一篇：上一篇读到哪不往这篇上套 */
+    /* 这篇最近读到哪（边读边记的，比换版本那一刻的新；以前切走时读到哪也在这里；没读过就从头） */
+    var mine = PAPER ? JSON.parse(sessionStorage.getItem('zh-read@' + PAPER) || 'null') : null;
+    zhBackTo(mine || one, 3000);
   } catch (e) {}
-  window.addEventListener('message', function(e){ if (e.data && e.data.zhReloadAck) window.__zhHold = true; });   /* 外壳接手换版本：这一份不再轮询 */
+  window.addEventListener('message', function(e){
+    var d = e.data || {};
+    if (d.zhReloadAck) window.__zhHold = true;   /* 外壳接手换版本：这一份不再轮询 */
+    if (d.zhHello) shown = true;
+    if (d.zhCmd || d.zhFind || d.zhGoto || d.zhZoom != null) pin = null;   /* 外壳那一行的上一处 / 下一处 / 查找 / 缩放：你在动 */
+    if (d.zhReadAsk && e.source) {               /* 外壳要换新版本了：读到哪，你是不是正在滚 / 选字 / 写批注 */
+      var rd = zhReading(); rd.d = DOC; zhKeep();
+      try { e.source.postMessage({zhRead: {id: d.zhReadAsk, at: rd, busy: zhBusy()}}, '*'); } catch (x) {}
+    }
+    if (d.zhGo && e.source) {                    /* 换上来之前：停到旧的那一份读到的那一段（同一篇才停） */
+      if (d.zhGo.d === DOC) zhBackTo(d.zhGo, 3000);
+      try { e.source.postMessage({zhGone: d.id}, '*'); } catch (x) {}
+    }
+  });
   function unfoldAll(open){ document.querySelectorAll('details.fold').forEach(function(d){ d.open = open; }); try{ localStorage.setItem('zh-unfold', open ? '1' : '0'); }catch(e){} }
   var pref = '1'; try { pref = localStorage.getItem('zh-unfold') || '1'; } catch (e) {}
   if (pref === '1') unfoldAll(true);
@@ -218,7 +273,7 @@ INJECT = r"""
         /* 先确认页面本身拿得到再刷新：后端正好在重启时刷新，会停在一张"无法访问此页面"上再也回不来 */
         fetch(location.href, {cache: 'no-store'}).then(function(r){
           if (!r.ok || window.__zhHold) return;
-          try { var rd = zhReading(); rd.p = PAPER; sessionStorage.setItem('zh-read', JSON.stringify(rd)); sessionStorage.setItem('zh-read@' + PAPER, JSON.stringify(rd)); } catch (e) {}
+          try { var rd = zhReading(); rd.p = PAPER; sessionStorage.setItem('zh-read', JSON.stringify(rd)); zhKeep(); } catch (e) {}
           if (window.parent !== window && document.documentElement.classList.contains('zh-hosted')) {
             /* 嵌在 Bloom 里：请外壳在后面那个槽里加载新版本、准备好再换上来；外壳 1.5 秒没回应才自己刷新 */
             window.parent.postMessage({zhReload: BUILD}, '*');
@@ -324,31 +379,78 @@ INJECT = r"""
   }
   window.addEventListener('scroll', function(){ if (!sRaf) sRaf = requestAnimationFrame(streamNow); }, {passive: true});
   setTimeout(focusNow, 400); setInterval(focusNow, 3000);
-  /* 先选中再说：在正文里选中一段（松开鼠标 / 抬起按键时），把选中的字和它在哪一节报给外壳；外壳给主持人、共同主持人
-     显示一个能清掉的小条，下一句对 AI 说的话以它为准（zuhui/inmeeting.py Anchor）。删掉的字、批注、按钮不算 */
-  var selLast = '';
-  function selNow(){
-    if (!LIVE || window.parent === window) return;
+  /* 先选中再说：在正文里选中一段，松开鼠标（抬起按键、手指）后在选区结尾旁边弹出「引用」，点了才把选中的字和它在
+     哪一节报给外壳（2026-11-21：以前一选中就算引用，顺手勾一下也算）。外壳给主持人、共同主持人显示一个能清掉的小条，
+     下一句对 AI 说的话以它为准（zuhui/inmeeting.py Anchor）。删掉的字、批注、按钮不算。
+     能不能引用由外壳说（{zhQuote: {can}}：会上、能对 AI 说话的人）；点别处、按 Esc、选区没了就收起，浮着不占版面 */
+  var QUOTE = false, qsel = null;
+  var qbox = document.createElement('div'); qbox.id = 'zh-quote'; qbox.setAttribute('role', 'toolbar');
+  qbox.innerHTML = '<button type="button" class="zh-quote-b" data-testid="paper-quote">{{T:quote}}</button>';
+  document.body.appendChild(qbox);
+  function selPick(){
     var sel = window.getSelection ? window.getSelection() : null;
-    if (!sel || sel.isCollapsed || !sel.rangeCount) return;
-    var rg = sel.getRangeAt(0);
-    if (!docs.contains(rg.commonAncestorContainer)) return;
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+    var rg = sel.getRangeAt(0), anc = rg.commonAncestorContainer;
+    if (!docs.contains(anc)) return null;
+    if (anc.nodeType !== 1) anc = anc.parentNode;
+    if (anc && anc.closest && anc.closest('.zh-editor, .zh-note, textarea, input')) return null;
     var box = document.createElement('div'); box.appendChild(rg.cloneContents());
-    Array.prototype.forEach.call(box.querySelectorAll('del, .notes, button, .zh-pins, .zh-editor, .zh-thumb'), function(x){ x.parentNode.removeChild(x); });
+    Array.prototype.forEach.call(box.querySelectorAll('del, .notes, button, .rowhead, .zh-pins, .zh-editor, .zh-thumb'), function(x){ x.parentNode.removeChild(x); });
     var text = (box.textContent || '').replace(/\s+/g, ' ').trim();
-    if (text.length < 2 || text.length > 1000 || text === selLast) return;
-    selLast = text;
+    if (text.length < 2 || text.length > 1000) return null;
     var idx = -1;
     for (var i = 0; i < sects.length; i++) { if (sects[i].compareDocumentPosition(rg.startContainer) & 4) idx = i; else break; }
-    try { window.parent.postMessage({zhSel: {text: text, section: idx >= 0 ? titleOf(sects[idx]) : null}}, '*'); } catch (e) {}
+    /* 选区结尾：往后拖的是最后一行的末尾，往前拖的是第一行的开头（松手的地方） */
+    var back = false;
+    try { back = sel.anchorNode === sel.focusNode ? sel.focusOffset < sel.anchorOffset : !!(sel.anchorNode.compareDocumentPosition(sel.focusNode) & 2); } catch (e) {}
+    var rect = null;
+    if (sel.focusNode && sel.focusNode.nodeType === 3) {
+      try { var cr = document.createRange(); cr.setStart(sel.focusNode, sel.focusOffset); cr.collapse(true); var b = cr.getBoundingClientRect(); if (b.height > 0) rect = b; } catch (e) {}
+    }
+    if (!rect) {
+      var rs = Array.prototype.filter.call(rg.getClientRects(), function(r){ return r.width > 1 && r.height > 0; });
+      if (!rs.length) return null;
+      var r0 = back ? rs[0] : rs[rs.length - 1];
+      rect = {left: back ? r0.left : r0.right, right: back ? r0.left : r0.right, top: r0.top, bottom: r0.bottom};
+    }
+    return {text: text, section: idx >= 0 ? titleOf(sects[idx]) : null, rect: rect, back: back};
   }
-  document.addEventListener('mouseup', function(){ setTimeout(selNow, 0); });
-  document.addEventListener('keyup', function(e){ if (e.shiftKey || e.key === 'Shift') setTimeout(selNow, 0); });
-  document.addEventListener('touchend', function(){ setTimeout(selNow, 300); });
-  document.addEventListener('selectionchange', function(){ var s = window.getSelection(); if (!s || s.isCollapsed) selLast = ''; });
+  function qHide(){ qsel = null; qbox.classList.remove('show'); }
+  function qShow(){
+    var p = QUOTE && window.parent !== window ? selPick() : null;
+    if (!p) return qHide();
+    qsel = p; qbox.classList.add('show');
+    var w = qbox.offsetWidth, h = qbox.offsetHeight, vw = document.documentElement.clientWidth, vh = window.innerHeight, top = barBottom() + 4;
+    var x = Math.max(8, Math.min(p.rect.left - w / 2, vw - w - 14));
+    var y = p.back ? p.rect.top - h - 8 : p.rect.bottom + 8;           /* 往后拖放在这一行下面，往前拖放在上面 */
+    if (!p.back && y + h > vh - 8) y = p.rect.top - h - 8;              /* 放不下就换到另一边 */
+    if (p.back && y < top) y = p.rect.bottom + 8;
+    qbox.style.left = Math.round(x + window.scrollX) + 'px'; qbox.style.top = Math.round(y + window.scrollY) + 'px';
+  }
+  /* 点它不丢选区 */
+  qbox.addEventListener('mousedown', function(e){ e.preventDefault(); e.stopPropagation(); });
+  qbox.addEventListener('mouseup', function(e){ e.stopPropagation(); });
+  qbox.addEventListener('click', function(e){ e.stopPropagation(); });
+  qbox.querySelector('button').onclick = function(){
+    var p = qsel; qHide(); if (!p) return;
+    try { window.parent.postMessage({zhSel: {text: p.text, section: p.section}}, '*'); } catch (e) {}
+    try { window.getSelection().removeAllRanges(); } catch (e) {}
+  };
+  document.addEventListener('mouseup', function(){ setTimeout(qShow, 0); });
+  document.addEventListener('keyup', function(e){ if (e.shiftKey || e.key === 'Shift') setTimeout(qShow, 0); });
+  document.addEventListener('touchend', function(){ setTimeout(qShow, 300); });
+  document.addEventListener('mousedown', function(e){ if (qsel && !qbox.contains(e.target)) qHide(); }, true);
+  document.addEventListener('keydown', function(e){ if (e.key === 'Escape' && qsel) qHide(); }, true);
+  document.addEventListener('selectionchange', function(){ if (!qsel) return; var s = window.getSelection(); if (!s || s.isCollapsed) qHide(); });
+  window.addEventListener('resize', function(){ if (qsel) qHide(); });
+  window.addEventListener('message', function(e){
+    var d = e.data || {}; if (d.zhQuote === undefined) return;
+    QUOTE = !!(d.zhQuote && d.zhQuote.can); if (!QUOTE) qHide();
+  });
+  try { if (window.parent !== window) window.parent.postMessage({zhQuoteAsk: 1}, '*'); } catch (e) {}
   /* 批注：一条任务一个小圆标，贴在它改的那一段右边（还没改完的贴在你说话时看着的那一段）；点开才看内容；
      打勾 = 看过了，这条连同它的修订标记一起消掉 */
-  var TASKS = __TASKS__, ME = __ME__;
+  var TASKS = __TASKS__, ME = __ME__, AI = __AI__;      /* AI：{name, color}，卡片上"结果"前面署它的名字（_ai_tag） */
   var STATUS = {queued: '{{T:s_queued}}', working: '{{T:s_working}}', done: '{{T:s_done}}', failed: '{{T:s_failed}}'};
   /* 标注（会上改不了、钉在这里的，2026-11-14）：图钉不写编号，改过的是勾，标注是空心小旗。
      标注的状态（会后改 / 已处理）和标签（要重新跑实验……）画成卡片底下一排胶囊，头上不再写状态（2026-11-19） */
@@ -428,19 +530,30 @@ INJECT = r"""
     var c = document.createElement('div'); c.className = 'zh-note'; c.zhPin = pin;
     var first = g.tasks[0], many = g.tasks.length > 1;
     var canOk = LIVE && g.tasks.some(function(t){ return t.status === 'done' || t.status === 'failed'; });
-    var html = '<div class="zh-note-head"><span class="zh-note-no">' + pinIcon(statusOf(g.tasks)) + '</span><span class="zh-note-title">'
-      + esc(many ? (first.section || (first.focus || {}).section || first.title) : first.title) + '</span>'
-      + (many || first.note ? '' : '<span class="zh-note-st">' + stText(first) + '</span>')
-      + (LIVE && !many && first.status === 'done' && !first.note ? '<button type="button" class="zh-note-x" aria-label="{{T:reject_aria}}">×</button>' : '')
-      + (canOk ? '<button type="button" class="zh-note-ok" aria-label="{{T:ok_aria}}">✓</button>' : '') + '</div>';
+    var canX = function(t){ return LIVE && t.status === 'done' && !t.note; };
+    /* 每一行同一个排法：标题 · 状态 · 撤回（×）· 确认（✓）。× 在每一条任务自己那一行，✓ 只在卡片头上（确认这一处的全部）；
+       这张卡用得到几列按钮就留几列，没有按钮的行留着空位：状态字、按钮上下对齐。状态只写字，不再画勾
+       （2026-11-21：头上左边一个状态勾、右边一个确认勾，下面每条左边又一个勾，看着乱） */
+    var cols = (g.tasks.some(canX) ? 1 : 0) + (canOk ? 1 : 0);
+    c.style.setProperty('--zh-cols', String(cols));
+    var XSVG = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
+    function acts(x, ok){
+      return cols ? '<span class="zh-acts">'
+        + (x ? '<button type="button" class="zh-note-x" aria-label="{{T:reject_aria}}" title="{{T:reject_aria}}">' + XSVG + '</button>' : '')
+        + (ok ? '<button type="button" class="zh-note-ok" aria-label="{{T:ok_aria}}" title="{{T:ok_aria}}">' + ICON.done + '</button>' : '') + '</span>' : '';
+    }
+    function st(t){ return t.note ? '' : '<span class="zh-note-st is-' + esc(t.status) + '">' + stText(t) + '</span>'; }
+    /* 一个人的名字：他的颜色（浅色主题下和黑色对半混，.zh-who），太长省略号，悬停看全名 */
+    function whoTag(name, color){ return '<b class="zh-who"' + (color ? ' style="--zh-who:' + esc(color) + '"' : '') + ' title="' + esc(name) + '">' + esc(name) + '</b>'; }
+    var headTitle = many ? (first.section || (first.focus || {}).section || first.title) : first.title;
+    var html = '<div class="zh-note-head"><span class="zh-note-title" title="' + esc(headTitle) + '">' + esc(headTitle) + '</span>'
+      + (many ? '' : st(first)) + acts(!many && canX(first), canOk) + '</div><div class="zh-note-body">';
     g.tasks.forEach(function(t){
-      var who = t.who || ME, col = t.who_color ? ' style="color:' + esc(t.who_color) + '"' : '';
+      var who = t.who || ME, said = t.said != null ? t.said : t.remark;
       html += '<div class="zh-item is-' + t.status + '" data-id="' + esc(t.id) + '">'
-        + (many ? '<div class="zh-item-head"><span class="zh-item-no">' + pinIcon(t.note ? 'note' : t.status) + '</span><span class="zh-item-title">' + esc(t.title) + '</span>'
-                  + (t.note ? '' : '<span class="zh-note-st">' + stText(t) + '</span>')
-                  + (LIVE && t.status === 'done' && !t.note ? '<button type="button" class="zh-note-x" aria-label="{{T:reject_aria}}">×</button>' : '') + '</div>' : '')
+        + (many ? '<div class="zh-item-head"><span class="zh-item-title" title="' + esc(t.title) + '">' + esc(t.title) + '</span>' + st(t) + acts(canX(t), false) + '</div>' : '')
         + (t.thread ? (function(th){
-              var line = function(x){ return x.who ? '<p class="zh-note-said"><b style="color:' + esc(x.color) + '">' + esc(x.who) + '</b>' + esc(x.text) + '</p>'
+              var line = function(x){ return x.who ? '<p class="zh-note-said">' + whoTag(x.who, x.color) + esc(x.text) + '</p>'
                                                    : '<p class="zh-note-said' + (x.sys ? ' zh-note-sys' : '') + '">' + esc(x.text) + '</p>'; };
               var pick = t.discussion_rows;      /* 后台按语境挑出的相关几句：只摆这几句，别的折起来 */
               if (pick && pick.length && pick.length < th.length) {
@@ -452,17 +565,17 @@ INJECT = r"""
               return '<details class="zh-more"><summary>{{T:earlier_a}}' + (th.length - 10) + '{{T:earlier_b}}</summary>' + th.slice(0, -10).map(line).join('') + '</details>'
                 + th.slice(-10).map(line).join('');
             })(t.thread)
-                    : '<p class="zh-note-said"><b' + col + '>' + esc(who) + '</b>' + esc(t.said != null ? t.said : t.remark) + '</p>')
+                    : (said ? '<p class="zh-note-said">' + whoTag(who, t.who_color) + esc(said) + '</p>' : ''))
         + (t.note
             ? (t.plan ? '<p class="zh-note-did"><b>{{T:plan}}</b>' + esc(t.plan) + '</p>' : '')
               + (t.need ? '<p class="zh-note-did"><b>{{T:need}}</b>' + esc(t.need) + '</p>' : '')
-              + (t.plan ? '' : '<p class="zh-note-did"><b>AI</b>' + esc(t.status !== 'done' ? '{{T:plan_wait}}' : (t.result || '')) + '</p>')
+              + (t.plan ? '' : '<p class="zh-note-did">' + whoTag(AI.name, AI.color) + esc(t.status !== 'done' ? '{{T:plan_wait}}' : (t.result || '')) + '</p>')
               + tagRow(t)
-            : (t.result ? '<p class="zh-note-did"><b>AI</b>' + esc(t.result) + '</p>' : ''))
+            : (t.result ? '<p class="zh-note-did">' + whoTag(AI.name, AI.color) + esc(t.result) + '</p>' : ''))
         + (t.error ? '<p class="zh-note-bad">' + esc(t.error) + '</p>' : '')
         + '</div>';
     });
-    c.innerHTML = html;
+    c.innerHTML = html + '</div>';
     c.addEventListener('click', function(e){ e.stopPropagation(); });
     function gone(ids){                                  /* 这几条收起了：卡片里划掉，整处都收起了就连圆标一起去掉 */
       g.tasks = g.tasks.filter(function(t){ return ids.indexOf(t.id) < 0; });
@@ -645,10 +758,32 @@ INJECT = r"""
     var eb = document.createElement('button'); eb.type = 'button'; eb.id = 'zh-editbtn'; eb.textContent = '{{T:edit}}'; eb.setAttribute('aria-pressed', 'false');
     if (bar) bar.insertBefore(eb, views || null);
     var editing = false, ed = null;
+    /* 正在改的这段存一份草稿（sessionStorage，外壳前后两个槽的页面共用）：外壳正好在这时换上新版本，
+       换上来的页面接着打开这段，打了一半的字不丢。保存、取消、关掉编辑就删 */
+    var DRAFT = 'zh-draft';
+    var blocks = function(){
+      return Array.prototype.filter.call(docs.querySelectorAll('table, .para, .sect'), function(el){
+        return !el.closest('.zh-figrow') && (el.tagName === 'TABLE' || !el.parentNode.closest('table'));
+      });
+    };
+    var keepDraft = function(){
+      if (!ed) return;
+      try { sessionStorage.setItem(DRAFT, JSON.stringify({p: __PAPER__, at: blocks().indexOf(ed.block), key: ed.key, old: ed.old,
+                                                           index: ed.index, text: ed.ta.value, t: Date.now()})); } catch (e) {}
+    };
+    var dropDraft = function(){ try { sessionStorage.removeItem(DRAFT); } catch (e) {} };
     var closeEditor = function(){
       if (!ed) return;
       if (ed.holder.parentNode) ed.holder.parentNode.removeChild(ed.holder);
       ed.block.style.display = ''; ed = null; window.__zhHold = false;
+      dropDraft();
+    };
+    /* 存好了：编辑框马上收起，这一段先按纯文字显示改后的样子，新版本（带格式、公式）一两秒后换上来。
+       以前存好后编辑框一直开着、写"已保存"、保存按钮点不动，要等新版本换上来才收起：看着像没存上 */
+    var showSaved = function(block, text){
+      if (!text.trim()) { block.style.display = 'none'; return; }
+      if (block.tagName === 'TABLE' || block.getAttribute('data-tex') || block.querySelector('img')) return;
+      block.textContent = text.replace(/^\s*#{1,6}\s+/, '').replace(/\*\*|__|`/g, '').replace(/\s*\n\s*/g, ' ').trim();
     };
     var setEditing = function(v){
       editing = v; root.classList.toggle('zh-editing', v);
@@ -670,35 +805,68 @@ INJECT = r"""
     var post = function(url, body){
       return fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}).then(function(r){ return r.json(); });
     };
+    /* d = {source, index}（/api/para/source 给的）；draft：草稿里接着打的字（换上来的页面接着开，见 DRAFT） */
+    var mount = function(block, d, draft){
+      closeEditor();
+      var holder = document.createElement('div'); holder.className = 'zh-editor';
+      holder.innerHTML = '<textarea class="zh-edit" spellcheck="false"></textarea><div class="zh-editbar"><span class="zh-edithint">{{T:edit_hint}}</span>'
+        + '<button type="button" class="zh-cancel">{{T:cancel}}</button><button type="button" class="zh-save">{{T:save}}</button></div>';
+      var ta = holder.querySelector('textarea'), hint = holder.querySelector('.zh-edithint'), btn = holder.querySelector('.zh-save');
+      ta.value = draft != null ? draft : d.source;
+      block.parentNode.insertBefore(holder, block.nextSibling); block.style.display = 'none';
+      var mine = ed = {block: block, holder: holder, ta: ta, old: d.source, index: d.index, key: afterText(block).slice(0, 200),
+                       restored: draft != null, touched: false};
+      window.__zhHold = true;
+      var fit = function(){ ta.style.height = 'auto'; ta.style.height = Math.min(Math.max(ta.scrollHeight + 4, 60), Math.round(window.innerHeight * 0.7)) + 'px'; };
+      mine.fit = fit;
+      var save = function(){
+        if (ed !== mine || btn.disabled) return;
+        btn.disabled = true;
+        var text = ta.value;
+        dropDraft();                                  /* 发出去了：存没存上都以回来的结果为准，换页时别再拿草稿重开 */
+        post('/api/para/save', {index: mine.index, old: mine.old, text: text}).then(function(x){
+          if (!x.ok) { btn.disabled = false; hint.textContent = x.error || '{{T:not_saved}}'; keepDraft(); return; }
+          if (ed === mine) closeEditor();
+          if (x.changed) showSaved(block, text);
+        }).catch(function(){ btn.disabled = false; hint.textContent = '{{T:no_backend}}'; keepDraft(); });
+      };
+      ta.addEventListener('input', function(){ mine.touched = true; fit(); keepDraft(); });
+      fit(); keepDraft();
+      if (draft == null || window.parent === window) ta.focus();
+      holder.addEventListener('click', function(e){ e.stopPropagation(); });
+      btn.onclick = save; holder.querySelector('.zh-cancel').onclick = closeEditor;
+      ta.addEventListener('keydown', function(e){
+        if (e.key === 'Escape') { e.preventDefault(); closeEditor(); }
+        else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); }
+        e.stopPropagation();
+      });
+    };
     var openEditor = function(block){
       closeEditor();
       post('/api/para/source', {text: afterText(block)}).then(function(d){
         if (!d.ok) { flash(block, d.error || '{{T:not_found}}'); return; }
-        var holder = document.createElement('div'); holder.className = 'zh-editor';
-        holder.innerHTML = '<textarea class="zh-edit" spellcheck="false"></textarea><div class="zh-editbar"><span class="zh-edithint">{{T:edit_hint}}</span>'
-          + '<button type="button" class="zh-cancel">{{T:cancel}}</button><button type="button" class="zh-save">{{T:save}}</button></div>';
-        var ta = holder.querySelector('textarea'), hint = holder.querySelector('.zh-edithint'), btn = holder.querySelector('.zh-save');
-        ta.value = d.source;
-        block.parentNode.insertBefore(holder, block.nextSibling); block.style.display = 'none';
-        ed = {block: block, holder: holder, old: d.source, index: d.index}; window.__zhHold = true;
-        var fit = function(){ ta.style.height = 'auto'; ta.style.height = Math.min(Math.max(ta.scrollHeight + 4, 60), Math.round(window.innerHeight * 0.7)) + 'px'; };
-        var save = function(){
-          if (!ed) return; btn.disabled = true;
-          post('/api/para/save', {index: ed.index, old: ed.old, text: ta.value}).then(function(x){
-            if (!x.ok) { btn.disabled = false; hint.textContent = x.error || '{{T:not_saved}}'; return; }
-            if (x.changed) { hint.textContent = '{{T:saved}}'; window.__zhHold = false; } else closeEditor();
-          }).catch(function(){ btn.disabled = false; hint.textContent = '{{T:no_backend}}'; });
-        };
-        ta.addEventListener('input', fit); fit(); ta.focus();
-        holder.addEventListener('click', function(e){ e.stopPropagation(); });
-        btn.onclick = save; holder.querySelector('.zh-cancel').onclick = closeEditor;
-        ta.addEventListener('keydown', function(e){
-          if (e.key === 'Escape') { e.preventDefault(); closeEditor(); }
-          else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); }
-          e.stopPropagation();
-        });
+        mount(block, d, null);
       }).catch(function(){ flash(block, '{{T:no_backend}}'); });
     };
+    /* 换上来的页面：上一份页面里正改着一段（草稿还在）就接着打开它。在后面那个槽里先开好：外壳换上来以后（zhHello）再给焦点；
+       换上来之前前一份页面里又打的字，跟着草稿（storage 事件）补上 */
+    var restoreDraft = function(){
+      var dr = null;
+      try { dr = JSON.parse(sessionStorage.getItem(DRAFT) || 'null'); } catch (e) {}
+      if (!dr || dr.p !== __PAPER__ || typeof dr.text !== 'string' || Date.now() - (dr.t || 0) > 30 * 60 * 1000) return;
+      var all = blocks(), block = null;
+      for (var i = 0; i < all.length && !block; i++) if (afterText(all[i]).slice(0, 200) === dr.key) block = all[i];
+      if (!block && dr.at >= 0 && dr.at < all.length) block = all[dr.at];
+      if (block) mount(block, {source: dr.old, index: dr.index}, dr.text);
+    };
+    window.addEventListener('storage', function(e){
+      if (e.key !== DRAFT || !ed || !ed.restored || ed.touched) return;
+      if (!e.newValue) { closeEditor(); return; }   /* 前一份页面里存了、取消了：这边接着开的也收起 */
+      try { var dr = JSON.parse(e.newValue); if (dr.old === ed.old && typeof dr.text === 'string') { ed.ta.value = dr.text; ed.fit(); } } catch (x) {}
+    });
+    window.addEventListener('message', function(e){
+      if (e.data && e.data.zhHello && ed && ed.restored && !ed.touched) { ed.fit(); ed.ta.focus(); }
+    });
     eb.onclick = function(){ setEditing(!editing); };
     docs.addEventListener('click', function(e){
       if (!editing || !e.target.closest) return;
@@ -707,7 +875,7 @@ INJECT = r"""
       if (!block || !docs.contains(block) || block.closest('.zh-figrow')) return;
       e.preventDefault(); e.stopPropagation(); openEditor(block);
     }, true);
-    try { if (sessionStorage.getItem('zh-edit') === '1') setEditing(true); } catch (e) {}
+    try { if (sessionStorage.getItem('zh-edit') === '1') { setEditing(true); restoreDraft(); } } catch (e) {}
   }
   /* Ctrl+F：在正文里查找。输入即高亮，回车下一个，Shift+回车上一个，Esc 关 */
   (function(){
@@ -1085,32 +1253,44 @@ html { scrollbar-width: thin; scrollbar-color: var(--rule) transparent; backgrou
 .zh-pin.is-working { border-color: #d9a406; color: #d9a406; animation: zh-pulse 1.4s ease-in-out infinite; }
 .zh-pin.is-failed { border-color: var(--del); color: var(--del); }
 @keyframes zh-pulse { 50% { box-shadow: 0 0 0 4px color-mix(in srgb, #d9a406 26%, transparent); } }
+/* 批注卡片（2026-11-21 用户："这玩意太长了 固定大小 加上滚动"）：最高 400px（窗口矮时更矮），头一行不动，
+   下面的原话、结果在卡片里滚，滚到头不带着论文滚 */
 .zh-note { position: absolute; right: 48px; top: 6px; z-index: 6; box-sizing: border-box; width: min(340px, calc(100% - 64px));
+  display: flex; flex-direction: column; max-height: min(400px, calc(100vh - 80px));
   background: var(--sheet); border: 1px solid var(--rule); border-radius: 8px; box-shadow: 0 12px 32px rgba(0, 0, 0, .3);
-  padding: 10px 12px 12px; font: 400 13px/1.55 var(--sans); color: var(--ink); cursor: default; text-align: left; }
-.zh-note-head { display: flex; align-items: center; gap: 8px; }
-.zh-note-no { flex: none; min-width: 18px; height: 18px; border-radius: 9px; background: color-mix(in srgb, var(--ink) 10%, transparent);
-  font-size: 11px; font-weight: 600; line-height: 18px; text-align: center; padding: 0 4px; }
+  padding: 10px 12px 0; font: 400 13px/1.55 var(--sans); color: var(--ink); cursor: default; text-align: left; }
+.zh-note-body { flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; margin-right: -8px; padding: 0 8px 12px 0;
+  scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ink) 24%, transparent) transparent;
+  /* 上下边淡出：没滚到头时看得出还有字；滚到头时淡出的只是上面 8px 的空白和下面的留白 */
+  mask-image: linear-gradient(to bottom, transparent 0, #000 8px, #000 calc(100% - 12px), transparent 100%); }
+/* 头一行和每条任务那一行同一个排法：标题 · 状态字 · 按钮列（× 撤回在第一列，✓ 确认在最后一列，见 showCard） */
+.zh-note-head, .zh-item-head { display: flex; align-items: center; gap: 8px; min-height: 24px; }
+.zh-note-head { flex: none; }
 .zh-note-title { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zh-note-st { flex: none; font-size: 11px; color: var(--muted); }
-.zh-note.is-working .zh-note-st { color: #d9a406; }
-.zh-note.is-failed .zh-note-st { color: var(--del); }
-.zh-note-ok { flex: none; width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--rule); background: transparent; color: var(--muted);
-  cursor: pointer; font-size: 13px; line-height: 1; padding: 0; }
+.zh-item-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zh-note-st { flex: none; font-size: 12px; color: var(--muted); }
+.zh-note-st.is-working { color: color-mix(in srgb, #d9a406 var(--zh-name-mix, 100%), #000); }
+.zh-note-st.is-failed { color: var(--del); }
+.zh-acts { flex: none; display: grid; grid-template-columns: repeat(var(--zh-cols, 1), 24px); gap: 6px; }
+.zh-acts .zh-note-x { grid-column: 1; }
+.zh-acts .zh-note-ok { grid-column: -2 / -1; }
+.zh-note-ok, .zh-note-x { width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--rule); background: transparent; color: var(--muted);
+  cursor: pointer; padding: 0; display: inline-grid; place-items: center; }
+.zh-note-ok svg, .zh-note-x svg { display: block; }
 .zh-note-ok:hover { background: #16a34a; border-color: #16a34a; color: #fff; }
-.zh-note-x { flex: none; width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--rule); background: transparent; color: var(--muted);
-  cursor: pointer; font-size: 15px; line-height: 1; padding: 0; }
 .zh-note-x:hover { background: #dc2626; border-color: #dc2626; color: #fff; }
 .zh-note-x:disabled, .zh-note-ok:disabled { opacity: .5; cursor: default; }
 .zh-note-x.is-busy { animation: zh-pulse 1s ease-in-out infinite; }
 .zh-item { margin-top: 8px; transition: opacity .16s; }
 .zh-item + .zh-item { padding-top: 8px; border-top: 1px solid var(--rule); }
 .zh-item.is-gone { opacity: 0; }
-.zh-item-head { display: flex; align-items: center; gap: 8px; }
-.zh-item-no { flex: none; min-width: 16px; height: 16px; border-radius: 8px; background: color-mix(in srgb, var(--ink) 8%, transparent);
-  font-size: 10px; font-weight: 600; line-height: 16px; text-align: center; padding: 0 3px; }
-.zh-item-title { flex: 1; min-width: 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zh-item p:first-of-type { margin-top: 4px; }
+/* 名字（你、访客、AI）：各人的颜色，浅色主题下和黑色对半混（同外壳的 nameColor）；太长省略号，悬停看全名 */
+html:root { --zh-name-mix: 50%; }
+@media (prefers-color-scheme: dark) { html:root:not([data-theme="light"]) { --zh-name-mix: 100%; } }
+html:root[data-theme="dark"] { --zh-name-mix: 100%; }
+.zh-note b.zh-who { display: inline-block; max-width: 10em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  vertical-align: bottom; line-height: 20px; color: color-mix(in srgb, var(--zh-who, var(--muted)) var(--zh-name-mix, 100%), #000); }
 .zh-pin { width: auto; min-width: 22px; padding: 0 5px; }
 .zh-more summary { cursor: pointer; font-size: 11px; color: var(--muted); margin-top: 6px; list-style: none; }
 .zh-more summary::-webkit-details-marker { display: none; }
@@ -1216,6 +1396,16 @@ body { background: var(--paper) !important; color: var(--ink) !important; }
 ::highlight(zh-find) { background-color: rgba(96, 165, 250, .38); }
 ::highlight(zh-find-cur) { background-color: #3b82f6; color: #ffffff; }
 @media (prefers-color-scheme: dark) { html:root:not([data-theme="light"]) #zh-find { background: #1c1c1a; border-color: #33332f; } }
+/* 选中一段后弹出的「引用」（2026-11-21）：浮在选区结尾旁边，不占版面；点了才算引用 */
+#zh-quote { position: absolute; left: 0; top: 0; z-index: 45; display: none; padding: 3px; border-radius: 9px; --zh-q-hi: #efede6;
+  background: #ffffff; border: 1px solid rgba(0, 0, 0, .12); box-shadow: 0 6px 18px rgba(0, 0, 0, .14); font: 500 13px/1 var(--sans); }
+#zh-quote.show { display: block; animation: zhPop .12s ease-out; }
+.zh-quote-b { display: block; height: 28px; padding: 0 12px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--ink); font: inherit; line-height: 28px; cursor: pointer; white-space: nowrap; }
+.zh-quote-b:hover, .zh-quote-b:focus-visible { background: var(--zh-q-hi); outline: none; }
+@media (prefers-color-scheme: dark) { html:root:not([data-theme="light"]) #zh-quote { --zh-q-hi: #33332f; background: #232321; border-color: #3a3a36;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .55); } }
+html:root[data-theme="dark"] #zh-quote { --zh-q-hi: #33332f; background: #232321; border-color: #3a3a36; box-shadow: 0 10px 28px rgba(0, 0, 0, .55); }
 /* 调研第 1 条：用字号去填宽度；段落之间靠段距，不靠线 */
 .para { font-size: 16px !important; line-height: 1.8 !important; }
 .row:not(.chg) { padding-top: 0 !important; padding-bottom: 0 !important; }
@@ -1313,10 +1503,9 @@ html.zh-tbl-open, html.zh-tbl-open body { overflow: hidden; }
 :root.zh-hosted .bar { display: none !important; }
 /* 标注模式（2026-11-14）：图钉不写编号，改过的是勾，会上改不了的标注是空心小旗，那一段左边一道橙线 */
 .zh-pin { width: 22px !important; height: 22px !important; padding: 0 !important; display: inline-grid !important; place-items: center; }
-.zh-pin svg, .zh-note-no svg, .zh-item-no svg { display: block; }
+.zh-pin svg { display: block; }
 .zh-pin.is-note { background: transparent !important; border: 1.5px solid #d99a2b !important; color: #d99a2b !important; }
 .zh-pin.is-note:hover, .zh-pin.is-note.on { box-shadow: 0 0 0 3px rgba(217,154,43,.22) !important; }
-.zh-note-no, .zh-item-no { display: inline-grid; place-items: center; }
 .zh-note p.zh-note-sys { font-size: 12px; font-style: italic; opacity: .75; }
 /* 左边那道线（2026-11-15）：一段一种颜色，由批注脚本按固定先后写在 data-zh-bar 上（标注 > 没打勾的改动 > 其余改过的），
    生成器的"当前这一处"、点开卡片都不再改它的颜色（以前同一段黄、蓝、灰来回跳） */
@@ -1425,16 +1614,39 @@ def _task_brief(t: dict, me: str = "") -> dict:
             if _SYS_ROW.match(said.strip()):       # 逐字稿上的系统行（"切到 某篇"）：不是谁说的，不署名
                 b["thread"].append({"who": "", "text": said.strip(), "color": "", "sys": True})
                 continue
-            b["thread"].append({"who": name, "text": said.strip(), "color": _color_of(name, me)})
+            b["thread"].append({"who": name, "text": _drop_said_back(said.strip()), "color": _color_of(name, me)})
         return b
     m = _WHO.match(str(t.get("remark") or ""))     # 任务原话前面带着"参会的老师X说："：卡片上署他的名字，不署你的
     if m:
         name = m.group(2).strip()
-        b["who"], b["said"], b["who_color"] = name, str(t.get("remark") or "")[m.end():], _color_of(name, me)
+        b["who"], b["said"], b["who_color"] = name, _drop_said_back(str(t.get("remark") or "")[m.end():]), _color_of(name, me)
     else:
         from . import host_profile
-        b["who_color"] = host_profile.colors()[0]
+        b["said"], b["who_color"] = _drop_said_back(t.get("remark")), host_profile.colors()[0]
     return b
+
+
+def _drop_said_back(s) -> str:
+    """卡片上的原话：去掉后面附的"（当场复述的改法：…）""（当场复述的补充：…）"（旧任务写的是"（Claude 当场复述…"），
+    那是给改稿的人看的，卡片上有标题和结果就够了（2026-11-21）。复述里自己也带括号（"5.1 第（4）段"）：按括号配对找结尾，
+    配不上（被截断了）就去到末尾。别的附注（"（又补充了：…）"、选中的那一段）照留。"""
+    from .board import _SAID_BACK
+    s = str(s or "")
+    out, i = [], 0
+    while True:
+        m = _SAID_BACK.search(s, i)
+        if not m:
+            out.append(s[i:])
+            break
+        out.append(s[i:m.start()])
+        depth, j = 0, m.start()
+        while j < len(s):
+            depth += {"（": 1, "）": -1}.get(s[j], 0)
+            j += 1
+            if depth == 0:
+                break
+        i = j
+    return "".join(out).strip()
 
 
 def _guest_palette() -> list:
@@ -1525,6 +1737,7 @@ def _briefs(tasks: list, me: str = "") -> list:
 
 
 INJECT_TEXT = {'connecting': ('组会 · 连接中', 'Meeting · connecting'), 'start': ('开始组会', 'Start meeting'), 'unfold_aria': ('展开/收起未修改段落', 'Show or hide unchanged paragraphs'), 'unfold': ('全文', 'Full text'), 'rec_ok': ('已开始录屏', 'Recording started'), 'rec_fail': ('录屏启动失败：请按 Alt+Shift+R', 'Could not start recording. Press Alt+Shift+R'), 'st_queued': ('排队 ', 'Queued '), 'st_working': (' · 修改中 ', ' · editing '), 'st_done': (' · 已修改 ', ' · done '), 'st_failed': (' · 失败 ', ' · failed '), 'st_rebuilding': (' · 更新中…', ' · updating…'), 'down': ('连接已断开', 'Disconnected'), 'toc_head': ('章节', 'Sections'), 'toc_n': (' 节', ''), 'toc_chg': (' 节已修改', ' changed'), 'toc_aria': ('收起/展开章节', 'Collapse or expand sections'), 's_queued': ('排队中', 'Queued'), 's_working': ('修改中', 'Editing'), 's_done': ('已修改', 'Done'), 's_failed': ('修改失败', 'Failed'), 's_note': ('会后改', 'After the meeting'), 's_note_ok': ('已处理', 'Handled'), 'tag_rerun': ('需重跑实验', 'Rerun experiments'), 'tag_data': ('需补数据', 'Needs new data'), 'tag_figure': ('需重画图表', 'Redo figures or tables'), 'tag_lit': ('需查文献', 'Check the literature'), 'tag_discuss': ('待讨论', 'Needs discussion'), 'plan': ('修改方案', 'Plan'), 'need': ('需补充', 'Needs'), 'plan_wait': ('正在生成修改方案…', 'Writing the plan…'), 'st_notes': (' · 标注 ', ' · notes '), 'reject_aria': ('撤回修改', 'Undo change'), 'ok_aria': ('确认修改', 'Accept change'), 'other_a': ('其他 ', ''), 'other_b': (' 句', ' more lines'), 'earlier_a': ('前面 ', ''), 'earlier_b': (' 句', ' earlier lines'), 'undo_fail': ('撤回失败', 'Undo failed'), 'edit': ('编辑', 'Edit'), 'edit_done': ('完成编辑', 'Done editing'), 'not_found': ('文档中未找到此段', 'Paragraph not found in the paper'), 'edit_hint': ('Ctrl+Enter 保存 · Esc 取消', 'Ctrl+Enter to save · Esc to cancel'), 'cancel': ('取消', 'Cancel'), 'save': ('保存', 'Save'), 'not_saved': ('保存失败', 'Save failed'), 'saved': ('已保存', 'Saved'), 'no_backend': ('Bloom 无响应', 'Bloom is not responding'), 'find': ('查找', 'Find'), 'prev': ('上一个', 'Previous'), 'next': ('下一个', 'Next'), 'close': ('关闭', 'Close'), 'zoom_tbl': ('放大表格', 'Enlarge table')}   # 键 → (中文, English)
+INJECT_TEXT["quote"] = ("引用", "Quote")     # 选中一段后弹出的按钮（2026-11-21）
 
 
 def _inject(build: int | None, tasks: list, me: str, figs: dict | None = None, lang: str = "zh",
@@ -1538,8 +1751,15 @@ def _inject(build: int | None, tasks: list, me: str, figs: dict | None = None, l
             .replace("__PAPER__", _js(paper or ""))
             .replace("__TASKS__", "/*zh-tasks*/" + _js(_briefs(tasks, me)) + "/*zh-tasks-end*/")
             .replace("__ME__", _js(me or "你"))
+            .replace("__AI__", _js(_ai_tag()))
             .replace("__FIGS__", _js(figs or {}))
             .replace("__MJV__", _mathjax_version())) + _comments_inject(lang, readonly)
+
+
+def _ai_tag() -> dict:
+    """批注卡片上"结果"前面署的名：AI 现在的名字（设置里起的，没起按模型来源叫；Viewer.participants 更新 _AI_NAME）和它的颜色。"""
+    from . import host_profile
+    return {"name": _AI_NAME[0], "color": host_profile.colors()[1]}
 
 
 def _comments_inject(lang: str, readonly: bool) -> str:
@@ -2111,6 +2331,7 @@ class Viewer:
 
     # ---------- 你自己改一段 ----------
     on_edit = None  # app 设置：稿子被手改之后刷新它脑子里的论文
+    on_hand_edit = None  # app 设置：(文件, 原段, 新段)，手改时告诉改稿工人（hands.note_hand_edit）
 
     @staticmethod
     def _key(s: str) -> str:
@@ -2150,8 +2371,9 @@ class Viewer:
             return {"ok": False, "error": "文档中未找到此段"}
         return {"ok": True, "index": idx, "source": spans[idx][2].replace("\r\n", "\n")}
 
-    def para_save(self, index, old: str, new: str) -> dict:
-        """把第 index 段从 old 改成 new（new 为空 = 删掉这一段）。别的字节一个不动（换行统一成 \\n 改，写回时 CRLF / LF、BOM 照原样）。"""
+    def para_save(self, index, old: str, new: str, by: str | None = None) -> dict:
+        """把第 index 段从 old 改成 new（new 为空 = 删掉这一段）。别的字节一个不动（换行统一成 \\n 改，写回时 CRLF / LF、BOM 照原样）。
+        存好了在逐字稿上记一行"谁改了哪一段"（doc_edits）；by：共同主持人（访客）改的时是他的名字，不给就是主持人自己。"""
         norm = lambda s: (s or "").replace("\r\n", "\n").strip()    # noqa: E731
         old_n, new_n = norm(old), norm(new)
         from .pptx_conv import READONLY_SAY, readonly
@@ -2178,6 +2400,11 @@ class Viewer:
                 _write_doc(self.mirror, src[:a] + new_n + src[b:], bom, nl)
             except OSError as e:
                 return {"ok": False, "error": f"保存失败：{e}"}
+            if self.on_hand_edit:                     # 改稿工人正在改这篇：这处手改不算进它的改动（撤回那条时不会连带撤掉）
+                try:
+                    self.on_hand_edit(self.mirror, cur, new_n)
+                except Exception:
+                    pass
             # 这一段在"还没看过"的基线里原样还在：你自己的手改不算待看的修订，一并改进基线（散会快照里仍看得到）
             try:
                 bt, bbom, bnl = _read_doc(self.base)
@@ -2188,6 +2415,11 @@ class Viewer:
             except (OSError, DocReadError, UnicodeDecodeError):
                 pass
         self._sig = None
+        try:                                          # 逐字稿上记一行：AI（快嘴、改稿工人、/bloom）都看得到改了哪里
+            from . import doc_edits
+            doc_edits.from_viewer(self, src.replace("\r\n", "\n"), index, cur, new_n, by=by)
+        except Exception:
+            pass
         if self.on_edit:
             try:
                 self.on_edit()
@@ -3594,6 +3826,8 @@ class Viewer:
         if path in self.GUEST_OPEN or path in self.GUEST_COHOST:
             if callable(log):
                 log("guest_act", text=f"{by}：{path} {json.dumps(body, ensure_ascii=False)[:120]}")
+            if path == "/api/para/save" and isinstance(body, dict):
+                body = dict(body, by=by)              # 逐字稿上记"谁改了哪一段"：记访客的名字（中继认出来的，不信页面自己报的）
             return self._local_post(path, body)
         from . import live_api
         from . import paper_api
@@ -4464,7 +4698,8 @@ class Viewer:
                 elif p == "/api/para/source":    # 编辑：页面上的一段 → 稿子里的原文
                     self._json(viewer.para_source(str(body.get("text") or "")))
                 elif p == "/api/para/save":      # 编辑：保存这一段
-                    self._json(viewer.para_save(body.get("index"), str(body.get("old") or ""), str(body.get("text") or "")))
+                    self._json(viewer.para_save(body.get("index"), str(body.get("old") or ""), str(body.get("text") or ""),
+                                                by=str(body.get("by") or "")[:32] or None))   # by：共同主持人改的（guest_act 填）
                 elif p.startswith("/api/meetings/") and p.endswith("/title"):    # 改会议名（开着的会、以往的会都行；空串回到自动起的名字）
                     fn = getattr(viewer.meetings, "rename", None)
                     if not callable(fn):

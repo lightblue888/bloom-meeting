@@ -9,6 +9,7 @@ import type { Page } from '@playwright/test';
 import { chatLive, chatPast, ended, firstRun, fresh, idle, isoAgo, noPaper, NOW_S, paperMissing, processing, STRESS, withCarry, withComments, withVersions, type Lang, type World } from './fixtures/world';
 import type { Summary, UpdateStatus } from '../src/meetingApi';
 import type { UpdWorld } from './lib/mock-backend';
+import { PAPER_LIVE_SCREENS } from './paper-live';
 
 export interface Ctx {
   page: Page;
@@ -72,6 +73,23 @@ const withUpdate = (u: Partial<UpdateStatus>) => (w: World): World => {
   if (u.error) w.userStrings.push(u.error);
   return w;
 };
+/** in a meeting: the host types a line 20 s after saying one, then a guest types one (the box under the transcript) */
+const withTyped = (w: World): World => {
+  const T = (zh: string, en: string) => (w.lang === 'zh' ? zh : en);
+  const c = w.current;
+  const guest = c.participants!.find((p) => p.role === 'guest')?.name ?? T('参会者', 'Guest');
+  const host = c.transcript.filter((l) => l.who === 'teacher').at(-1)!;
+  const mine = T('表 3 的单位写错了，应该是毫秒。', 'The unit in table 3 is wrong: it should be milliseconds.');
+  const theirs = T('附录 B 的公式编号也要顺一下。', 'The equation numbers in appendix B need fixing too.');
+  c.transcript.push(
+    { t: fmtSec(host.sec + 20), sec: host.sec + 20, who: 'teacher', text: mine, typed: true },
+    { t: fmtSec(host.sec + 31), sec: host.sec + 31, who: 'guest', name: guest, text: theirs, typed: true },
+  );
+  c.partial = null;
+  w.userStrings.push(mine, theirs);
+  return w;
+};
+const fmtSec = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 /** Claude Code's own login (Settings → Model source): its models as /api/models has them, the conversation model with
  *  one choice; nothing picked in the lobby's world otherwise */
 const withClaude = (w: World): World => {
@@ -918,6 +936,23 @@ export const SCREENS: Screen[] = [
     ready: '[data-testid="claude-now"] .mt-now-dot',
   },
   {
+    // 2026-11-21 (the user: "你这个文字的tag 放在名字旁边吧"): a typed line's "文字" sits by the name, on the time's row;
+    // the host's typed line right after a said one (20 s apart) is a turn of its own
+    name: 'meeting-typed',
+    what: 'In a meeting: the host and a guest typed a line each (the tag by the name, not in the bubble)',
+    page: 'main',
+    world: withTyped,
+    ready: '[data-testid="transcript"] [data-testid="transcript-typed"]',
+  },
+  {
+    name: 'meeting-typed-stress',
+    what: 'Typed lines with the longest names (the tag stays by the name)',
+    page: 'main',
+    stress: true,
+    world: withTyped,
+    ready: '[data-testid="transcript"] [data-testid="transcript-typed"]',
+  },
+  {
     // 2026-11-21 (the user, 40:09: "为什么我看不到他的后台状态呢？")
     name: 'meeting-edit-dock',
     what: 'In a meeting: a big revision under way (41 places, 7 minutes) whose bubble is far up; the card under the newest line, one more queued',
@@ -1162,6 +1197,9 @@ export const SCREENS: Screen[] = [
     },
     ready: '[data-testid="anchor-chip"]',
   },
+  // 论文区 with the real paper page in it (2026-11-21): 「引用」 after a selection, the comment box, staying put when an
+  // edit lands (paper-live.ts)
+  ...PAPER_LIVE_SCREENS,
   {
     name: 'meeting-quiet',
     what: 'Nobody has spoken for 10 minutes: the host is reminded (散会 there; nothing ends by itself)',
@@ -1466,14 +1504,14 @@ export const SCREENS: Screen[] = [
   },
   {
     name: 'review-todos',
-    what: 'An opened past meeting on its to-do tab',
+    what: 'An opened past meeting on its to-do tab (会上已改 also lists the change someone typed straight into the paper)',
     page: 'main',
     stress: true,
     go: async (c) => {
       await openMeeting(c);
       await c.page.getByTestId('meeting-tab-todos').click();
     },
-    ready: '[data-testid="meeting-tab-todos"][aria-selected="true"]',
+    ready: '[data-testid="todo-hand"]',
   },
   {
     name: 'review-chat',

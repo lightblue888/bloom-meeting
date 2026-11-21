@@ -131,10 +131,12 @@ _DONE = re.compile(r"(?:已经|之前|上次)(?:把)?.{0,12}(?:改|删|压缩|�
 
 
 def directive(text: str) -> bool:
-    """这一段里有没有明着要改的那句：是改法（edit_request），不是在说已经改过的，而且这句和后面两句里没在讨对方同意。"""
-    sents = [x for x in re.split(r"(?<=[。！？!?；;])", text or "") if x.strip()]
+    """这一段里有没有明着要改的那句：是改法（edit_request），不是在说已经改过的，而且这句和后面两句里没在讨对方同意。
+    "我把这个，会用到。的前面那个逗号删掉了"（识别断在半截上，接回去看）：说的是他自己已经改了，不算（2026-11-21 下午 T6）。"""
+    sents = _split_sents(text)
     for i, x in enumerate(sents):
-        if edit_request(x) and not _DONE.search(x) and not _SEEK_AGREE.search("".join(sents[i:i + 3])):
+        if (edit_request(x) and not _DONE.search(x) and not own_done(x)
+                and not _SEEK_AGREE.search("".join(sents[i:i + 3]))):
             return True
     return False
 
@@ -152,7 +154,7 @@ def has_edit(s: str) -> bool:
 
 
 def _sentences(text: str) -> list[str]:
-    parts = [p for p in re.split(r"(?<=[。！？!?；;])", text or "") if p.strip()]
+    parts = _glue([p for p in re.split(r"(?<=[。！？!?；;])", text or "") if p.strip()])   # "会用到。的前面……"接回一句
     out = []
     for p in parts:                       # 一句里"然后""另外""还有"换了话题：再切一刀（"……也得修。然后，针对上述问题"）
         out += [q for q in re.split(r"(?<=[，,])\s*(?=(?:然后|另外|还有|而且|再就是|接下来)[，,])", p) if q.strip()]
@@ -186,7 +188,7 @@ def split_requests(text: str) -> list[dict]:
         g["status"] = bool(STATUS_ASK.search(t))
         g["ask"] = bool(ASK_CUE.search(t))
         g["edit"] = (g["kind"] == "paper" and not g["status"]
-                     and any(edit_request(s) for s in re.split(r"(?<=[。！？!?；;])", t) if s.strip()))
+                     and any(edit_request(s) for s in _split_sents(t)))
         g["req"] = g["kind"] == "app" and bool(APP_ASK.search(t))
         g["directive"] = g["edit"] and directive(t)
     return segs
@@ -243,10 +245,11 @@ def title_from_words(segs: list[dict] | str, n: int = 40, kind: str = "paper") -
         segs = [g for g in split_requests(segs) if g["kind"] == kind]
     picks = []
     for g in segs:
-        sents = [c for c in re.split(r"(?<=[。！？!?；;])", g["text"]) if c.strip()]
+        sents = _split_sents(g["text"])
         if kind == "paper":
             bits = [_edit_bit(c, sents[i - 1] if i else "") for i, c in enumerate(sents) if has_edit(c)]                 or [c for c in sents if PAPER_LOC.search(c)] or sents
-            body = "，".join(x for x in (clean_clause(c) for c in bits[:2]) if x)
+            # 半截话（"的前面那个逗号删掉了"）不当标题：去掉开头的虚字，太短的不要（2026-11-21 下午 T6）
+            body = "，".join(x for x in (tidy_title(c) for c in bits[:2]) if x)
             loc = PLACE_FULL.search(g["text"])
             if body and loc and not PLACE.search(body):
                 body = f"{loc.group(0).strip()} {body}"
@@ -415,7 +418,12 @@ _DISAGREE = re.compile(r"不妥|不建议|不太建议|站不住|不能这么写
 
 
 def asked_back(spoken: str) -> bool:
-    return bool(_ASK_BACK.search((spoken or "").strip()))
+    """AI 回话里反问了对方：问句在最后，或者在中间（"你是说……你已经自己删了，对吧？那我这边……"，2026-11-21 下午 T6
+    就是这种，兜底照样记了一条）。"""
+    s = (spoken or "").strip()
+    if _ASK_BACK.search(s):
+        return True
+    return any(_ASK_BACK.search(x.strip()) for x in re.split(r"(?<=[？?])", s)[:-1] if x.strip())
 
 
 def disagrees(spoken: str) -> bool:
@@ -492,8 +500,12 @@ _STOP_REST = re.compile(r"[呃嗯啊哦诶哎唉不对好吧呀哈，,。.！!�
 
 
 def retracts(text: str) -> bool:
-    """这句只是在叫停刚派的改稿："先别派""不要派任务""别改了""等一下""别急"。叫停之外还说了别的（"不要改这里，改成……"）不算。"""
+    """这句只是在叫停刚派的改稿："先别派""不要派任务""别改了""等一下""别急"。叫停之外还说了别的（"不要改这里，改成……"）不算。
+    点名不要某条任务（"ok，这个标点任务不用改了，不用改了，就这样吧"）也算（named_cancel；2026-11-21 下午：叫停之外的字
+    超过四个，没认出来，快嘴又把它记成了一条"撤销……的任务"排在后面，被点名的那条照样改完）。"""
     s = text or ""
+    if named_cancel(s) is not None:
+        return True
     if not _STOP_DISPATCH.search(s):
         return False
     return len(_STOP_REST.sub("", _STOP_DISPATCH.sub("", s))) <= 4
@@ -557,3 +569,224 @@ def section_no(text: str) -> str | None:
     from .normalize import cn_number
     a, b = cn_number(m.group(2)), cn_number(m.group(3))
     return f"{a}.{b}" if str(a).isdigit() and str(b).isdigit() else None
+
+
+# ---------------------------------------------------------------- 2026-11-21 下午那场会的几类毛病
+# 1. 交给深想的题目：真正要想的那个问题，不是"你让后台想一个答案"这句原话
+_Q_CONTENT = re.compile(r"什么|是啥|为什么|怎么|如何|哪|多少|几[个处次条种类节段]|有没有|是不是|要不要|该不该|需不需要|能不能|可不可以|"
+                        r"会不会|意义|区别|含义|定义|(?i:\b(?:what|why|how|which|whether|should)\b)")
+_Q_EMPTY = re.compile(r"你(?:觉得|看)?(?:怎么看|怎么样|如何)|你觉得呢|你看呢|你说呢|怎么说呢|对吧|是吧|对不对|好不好|行不行|可以吗|"
+                      r"我想想|我再想想")
+_Q_HANDOFF = re.compile(r"后台|深层|告诉我|想一?个答案|想个办法|想一想|想想|仔细想|好好想|认真想|(?i:\bthink\b)")
+
+
+def _glue(parts: list[str]) -> list[str]:
+    """断句断在半截上的接回去：识别常把"会用到的前面那个逗号"断成"会用到。的前面那个逗号"，"的……"开头的那截并回上一句。"""
+    out: list[str] = []
+    for p in parts:
+        if out and re.match(r"\s*[的地得了着过吗呢吧啊呀嘛]", p):
+            out[-1] = out[-1].rstrip(" 。.！!；;") + p.strip()
+        else:
+            out.append(p)
+    return out
+
+
+def _split_sents(text: str) -> list[str]:
+    return _glue([p for p in re.split(r"(?<=[。！？!?；;])", text or "") if p.strip()])
+
+
+def question_of(text: str) -> str:
+    """一段人话里真在问的那个问题（交给深想时显示、交过去用）：带问号或问话词、有实际内容的头一句，去掉口头禅、
+    "你怎么看"这种空问；这句没点位置、整段话点了（"第三章"），把位置带在前面。没有返回空串。
+    "我先叫个啥，我先啥？"这种没内容的不算。"""
+    for s in _split_sents(text):
+        if not ASK_CUE.search(s):
+            continue
+        c = clean_clause(_Q_EMPTY.sub("", s))
+        c = re.sub(r"^(?:那么|那|你|您)+(?=\S)", "", c)
+        c = re.sub(r"[啊呀呢吧嘛哈]+$", "", c).strip(" ，,。.")
+        if len(bare(c)) < 6 or not (_Q_CONTENT.search(c) or PAPER_LOC.search(c) or has_edit(c)):
+            continue
+        loc = PLACE_FULL.search(text or "")
+        if loc and not PLACE.search(c):
+            c = f"{loc.group(0).strip()} {c}"
+        return short(c, 60)
+    return ""
+
+
+def deep_question(text: str) -> str:
+    """"你仔细想想，要不要删掉 3.2 第二段？"：这句里除了叫后台想的那几截，还问了有内容的问题，就是它；没有返回空串（从上文找）。"""
+    keep = [c for c in re.split(r"(?<=[，,。！？!?；;])", text or "") if c.strip()
+            and not _Q_HANDOFF.search(c) and not wants_deeper(c)]
+    return question_of("".join(keep))
+
+
+def same_question(a: str, b: str) -> bool:
+    """两句是不是在问同一件事（"评测单元统计里的 SEG 是什么意思" 和 "就是 SEG 是什么东西？"）：
+    有同一个英文词、缩写，或者去掉问话虚词后汉字两两一组重合一半以上。"""
+    def lat(s):
+        return {w.lower() for w in re.findall(r"[A-Za-z][A-Za-z0-9\-]+", s or "")} - {"the", "and", "what", "is", "ok", "okay"}
+    if lat(a) & lat(b):
+        return True
+    junk = re.compile(r"什么|东西|意思|是不是|怎么|为什么|这个|那个|你的|我的|一下|就是|然后|你这|论文|里面|有没有")
+
+    def grams(s):
+        s = bare(junk.sub("", s or ""))
+        return {s[i:i + 2] for i in range(len(s) - 1)}
+    x, y = grams(a), grams(b)
+    if not x or not y:
+        return False
+    k = len(x & y)
+    return k >= 3 and k / min(len(x), len(y)) >= 0.5
+
+
+# 2. 嘴上说"先不动""等你确认"：兜底不能再替它派任务，它自己打了 #edit 也不记（说的和做的要一致）。
+# "别的地方先不动"（说的是范围）不算：只认"我先不动""等你确认""确认了再记"这几种
+_HOLD_OFF = re.compile(r"等你(?:确认|定|拍板|想好|说清|再说)|(?:确认|定|想好|说清)(?:了|好)?(?:之后|以后)?(?:我)?再(?:记|改|动)|"
+                       r"我(?:这边)?(?:就|先|暂时)?(?:先)?不(?:动|改|记)(?![成为])|(?:^|[，,。！!？?；;])\s*(?:好|行|嗯|那)?[，,\s]*(?:那)?"
+                       r"(?:就)?先不(?:动|改|记)(?![成为])|不(?:会)?再动这")
+
+
+_HOLD_SCOPE = re.compile(r"其余|别的|其他|其它|剩下|另外|以外|之外|别处")
+
+
+def holds_off(spoken: str) -> bool:
+    """"好，那我先不动，等你确认要补的写法再记"。说的是范围的（"其余我先不动""别的地方先不动"）不算。"""
+    s = spoken or ""
+    for m in _HOLD_OFF.finditer(s):
+        a = max(s.rfind(c, 0, m.start()) for c in "，,。！!？?；;")
+        if not _HOLD_SCOPE.search(s[a + 1:m.end()]):
+            return True
+    return False
+
+
+def join_tail(prev: str, cur: str) -> str:
+    """上一句没回就被这句接上了：这句只是半截（"会用到。"，几个字、不是回答、不是问话），按一句话接（逗号），
+    不然照 join_words 各自成句。"""
+    b = bare(cur)
+    tail = (2 <= len(b) <= 8 and not ASK_CUE.search(cur or "") and not PAPER_LOC.search(cur or "") and not has_edit(cur)
+            and not re.match(r"(?:好|对|是|嗯|行|可以|没问题|不|没|算了|等|统一|改|删|就这样|你|我|那|这|他|然后|还有|另外|而且|但是|(?i:ok))", b))
+    if tail and prev:
+        return (prev or "").strip().rstrip(" 。.！!，,") + "，" + (cur or "").strip()
+    return join_words(prev, cur)
+
+
+# 3. 点名不要某条任务："这个标点任务不用改了，就这样吧""标点那条撤掉""T5 不要了"
+_CANCEL_VERB = re.compile(r"(?:你)?不用(?:再)?(?:改|做|弄|动)(?:了)?|不要(?:再)?(?:改|做|弄|动)?了|别(?:再)?(?:改|做|弄|动)了|"
+                          r"不(?:改|做)了|撤(?:掉|了|回|销)|取消|作废|停掉|停下|拿掉|不用了")
+_TASK_NOUN = re.compile(r"任务|那一?条|这一?条|[这那][个处]改动")
+_TID = re.compile(r"(?<![A-Za-z0-9\-])[Tt]\s?(\d{1,3})(?![\d.])")
+_CANCEL_HEAD = re.compile(r"^\s*(?:撤销|撤回|撤掉|取消|作废|别改|不要改|不用改)\s*(?:掉)?")
+
+
+def named_cancel(text: str) -> str | None:
+    """点名不要某条任务：返回指代那条的那几个词（"这个标点"，可能是空串），不是返回 None。
+    说了要改成什么（"那条不用改成 X，改成 Y"）是在改要求，不算；只说"不用改了"、没说哪条任务的也不算（交给模型）。"""
+    s = text or ""
+    if _TO.search(s):
+        return None
+    v = _CANCEL_VERB.search(s)
+    ref = _TASK_NOUN.search(s) or _TID.search(s)
+    if not v or not ref or abs(ref.start() - v.start()) > 24:
+        return None
+    w = _CANCEL_VERB.sub(" ", s)
+    w = re.sub(r"(?i)\bok(?:ay)?\b|就这样吧?|好吧|这样吧|算了", " ", _TASK_NOUN.sub(" ", w))
+    w = re.sub(r"[这那](?:个|条|一条)|刚才|刚刚|刚记的|刚派的|[吧了呀啊]", " ", w)
+    w = clean_clause(" ".join(w.split()))
+    if len(bare(w)) > 16 or has_edit(w) or re.search(r"[？?]", w):
+        return None                      # 撤之外还交代了别的事、还在问（"那条撤掉，2.3 第二段改成……"）：交给模型一起办
+    return w
+
+
+def cancel_head(title: str) -> str | None:
+    """标题以"撤销""取消""别改"开头：返回后面那截（说的是哪条），不是返回 None。"""
+    m = _CANCEL_HEAD.match(title or "")
+    return (title or "")[m.end():].strip() if m else None
+
+
+def cancel_title(title: str) -> bool:
+    """快嘴把"这条不要了"写成了一条改稿："撤销全文标点按前后句改的任务""取消顿号那条"。
+    "取消第二段的分号"这种是改论文（没说任务），不算；要和任务板上的标题对的交给调用方（Meeting._cancel_edit）。"""
+    rest = cancel_head(title)
+    return rest is not None and bool(_TASK_NOUN.search(rest))
+
+
+def task_short_name(title: str) -> str:
+    """念任务时的简称：标题第一个逗号前那截，最多十六个字（"全文标点按前后句改，别再拆成句号逗号" → "全文标点按前后句改"）。"""
+    t = str(title or "").strip()
+    head = re.split(r"[，,；;：:]", t, maxsplit=1)[0].strip()
+    if len(bare(head)) < 4:
+        head = t
+    return head if len(head) <= 16 else head[:16]
+
+
+def scrub_task_ids(text: str, names: dict, en: bool = False) -> str:
+    """念出口的话里的任务编号（"T7 还在排队收尾"）换成那条的简称："「X」那条"。任务板上没有这个编号的不动
+    （论文里的"T2 加权"之类）。"""
+    if not text or not names:
+        return text
+
+    def rep(m):
+        tid = f"T{int(m.group(1))}"
+        if tid not in names:
+            return m.group(0)
+        n = names[tid]
+        return (f'the "{n}" edit ' if n else "that edit ") if en else (f"「{n}」那条" if n else "那条")
+    out = re.sub(_TID.pattern + r"\s*(?:这一?条|那一?条|任务|号)?", rep, text)
+    return re.sub(r"\s+([，,。！!？?；;])", r"\1", out).replace("那条那条", "那条")
+
+
+# 4. 兜底按原话起的标题：不能以"的"开头、不能是半截话；"我把……删掉了"是在说他自己已经改了，不是要改
+_LEAD_JUNK = re.compile(r"^(?:[的地得了着过吗呢吧啊呀嘛和跟与及而并]|然后|就是|那个|这个)+")
+_OWN_DONE = re.compile(r"^(?:我|我们)(?:已经|刚才?|刚刚|自己|都)*(?:把|给).{0,30}?(?:改|删|去|加|补|换|挪|移|调)[^，,。]{0,4}了[。！!]?$")
+_VAGUE_VERB = re.compile(r"改一下|改改|改一改|调一下|调整一下|弄一下|处理一下|修一下|动一下")
+
+
+def tidy_title(s: str) -> str:
+    s = _LEAD_JUNK.sub("", clean_clause(s)).strip(" ，,。.、")
+    s = re.sub(r"(删掉|删除|删去|去掉|改掉|拿掉|加上|补上|换掉)了$", r"\1", s)
+    return s if len(bare(s)) >= 2 else ""
+
+
+def own_done(sentence: str) -> bool:
+    return bool(_OWN_DONE.search(clean_clause(sentence)))
+
+
+def vague_edit(text: str) -> str | None:
+    """改法、位置都没说的改稿要求（"把标点符号改一下"）：返回要改的东西（"标点符号"）；不是返回 None。
+    说了哪一处（3.2、第二段、这句）、改成什么、删什么加什么、引了原话的都不算；"把这个改一下""那你改一下"指的是上文说过的那处，
+    也不算。"""
+    s = text or ""
+    if not _VAGUE_VERB.search(s) or len(bare(s)) > 20:
+        return None
+    if PAPER_LOC.search(s) or _TO.search(s) or re.search(r"[“”「」\"]", s) or EDIT_CUE.search(_VAGUE_VERB.sub("", s)):
+        return None
+    m = re.search(r"把(.{1,10}?)(?:" + _VAGUE_VERB.pattern + ")", s)
+    obj = clean_clause(m.group(1)) if m else ""
+    if len(bare(obj)) < 2 or re.fullmatch(r"(?:这|那|它|他|这个|那个|这些|那些|这里|那里|这儿|那儿|刚才那个|上面那个|你说的那个)", bare(obj)):
+        return None
+    return obj
+
+
+# 5. AI 刚问过（"要统一的话你点个头""要不要也改，你定"），他回一两个字就是在回答
+_INVITE_ANSWER = re.compile(r"[？?]\s*$|点个?头|你(?:来)?定|你说一声|说一声|告诉我|你看(?:呢|行不行|行吗)|要不要|要的话|需要的话|"
+                            r"行不行|可以吗|好不好|对吧|是吧|是不是|(?i:\blet\s+me\s+know\b|\byour\s+call\b|\bshould\s+I\b)")
+_YES_NO = re.compile(r"(?:好|好的|好吧|行|可以|对|对的|是|是的|嗯|要|要的|统一|改|改吧|删|删吧|加|加吧|补|补吧|就这样|就这么改|"
+                     r"按你说的|照你说的|没问题|同意|不|不用|不要|不改|别改|算了|先不|先不用|ok|okay|yes|no)+", re.I)
+
+
+def invites_answer(spoken: str) -> bool:
+    """AI 这句话最后在问对方、等他拍板（问号结尾，或者"要统一的话你点个头""你定"）。"""
+    sents = [x for x in re.split(r"(?<=[。！？!?；;])", (spoken or "").strip()) if x.strip()]
+    return any(_INVITE_ANSWER.search(x.strip()) for x in sents[-2:])
+
+
+def answers_question(text: str, question: str = "") -> bool:
+    """对方这句是不是在回答 AI 刚问的话：几个字的"好""可以""改吧""统一，统一"，或者拿问话里的词来答。"""
+    b = bare(text).lower()
+    if not b or len(b) > 12:
+        return False
+    if _YES_NO.fullmatch(b):
+        return True
+    core = re.sub(r"[吧啊呀了的嘛哈]+$", "", re.sub(r"(.{2,6}?)\1+", r"\1", b))
+    return 2 <= len(core) <= 8 and core in bare(question).lower()

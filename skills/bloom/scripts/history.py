@@ -84,7 +84,28 @@ def _who(line, me, ai):
         return line.get("name") or me
     if w == "student":
         return ai
+    if w == "system":
+        return "系统"
     return line.get("name") or "参会者"
+
+
+EDIT_TAG = "#doc_edit"   # 有人在论文里直接打字改了一段（Bloom 的 zuhui/doc_edits.py）：before / after 是改前改后的片段
+
+
+def _edit_detail(line):
+    b, a = " ".join(str(line.get("before") or "").split()), " ".join(str(line.get("after") or "").split())
+    if b and not a:
+        return f"删掉「{b}」"
+    if a and not b:
+        return f"加上「{a}」"
+    return f"改前「{b}」，改后「{a}」" if a or b else ""
+
+
+def _text(line):
+    text = " ".join(str(line.get("text") or "").split())
+    if text and line.get("tag") == EDIT_TAG and _edit_detail(line):
+        text += f"（直接改文档：{_edit_detail(line)}）"
+    return text
 
 
 def _sec(t):
@@ -161,6 +182,11 @@ def cmd_show(args):
         for t in tasks:
             res = t.get("result") or t.get("error") or ""
             print(f"- [{t.get('status') or '?'}] {t.get('title') or ''}" + (f"（{t.get('section')}）" if t.get("section") else "") + (f"：{res}" if res else ""))
+    hand = [r for r in _transcript(d) if r.get("tag") == EDIT_TAG]
+    if hand:
+        print("\n## 直接在论文里改的（不是 AI 改的）")
+        for r in hand:
+            print(f"- [{r.get('t') or '--:--'}] {r.get('text') or ''}" + (f"：{_edit_detail(r)}" if _edit_detail(r) else ""))
     carry = (_json(d / "carry.json", {}) or {}).get("done") or {}
     if carry:
         print(f"\n（大厅里已勾掉 {len(carry)} 条遗留项）")
@@ -188,7 +214,7 @@ def cmd_transcript(args):
         s = _sec(r.get("t")) if s is None else s
         if s is not None and lo is not None and hi is not None and not (lo <= s <= hi):
             continue
-        text = " ".join(str(r.get("text") or "").split())
+        text = _text(r)
         if text:
             print(f"[{r.get('t') or '--:--'}] {_who(r, me, ai)}: {text}")
             n += 1
@@ -215,7 +241,7 @@ def cmd_search(args):
                 if ln.strip() and all(w in ln.lower() for w in ws):
                     hits.append(f"[{m['id']} 纪要] {ln.strip()}")
         for r in _transcript(d):
-            text = " ".join(str(r.get("text") or "").split())
+            text = _text(r)
             if text and all(w in text.lower() for w in ws):
                 hits.append(f"[{m['id']} {r.get('t') or '--:--'}] {_who(r, me, ai)}: {text}")
         if len(hits) >= n:

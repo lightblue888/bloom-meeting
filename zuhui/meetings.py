@@ -1319,7 +1319,8 @@ SUMMARY_PROMPT = """你是组会的记录员。下面是一场组会的逐字稿
 }
 t：照抄逐字稿行首方括号里的时间，指向这条内容最早说到的那一行；sections 的 t 是这个主题开始讨论的那一行；说不准就不写 t，不要编。
 people：会上开口说过话的每个人一项（不含 <AI>），按第一次开口的先后排；said 写他自己讲的内容、汇报的进展、提的观点；feedback 写别人针对他说的意见和评价；asks 写别人要他做的事；没有的给空数组。
-conclusions 三到五条；每条一句话。
+conclusions 三到五条；每条一句话。会上对文档写法定下的通用要求（比如不用冒号和分号、并列的词之间用顿号），另写一条结论，以“写作要求：”开头；没有就不写。
+逐字稿里说话人是“系统”的行是软件记下的事（切换文档、有人直接在文档里改了一段），不是谁说的话。
 要求：只写逐字稿和任务板里有的内容，不编造；<AI> "已改"的以任务板为准，"排队/改中/失败"的要写进 todos；用中文，不用 markdown 符号；JSON 之外不要输出任何文字。"""
 
 # 各种格式在上面之外多交代的（自定义 = 设置里写的本组要求）
@@ -1402,6 +1403,10 @@ def summarize(cfg: dict, meeting: dict, lines: list[dict], tasks: list[dict], te
     user = f"会议：{meeting.get('title')}，时长 {int(meeting.get('duration_s') or 0) // 60} 分钟。\n\n逐字稿：\n{transcript or '（空）'}"
     if not chat:
         user += f"\n\n任务板：\n{board}"
+        from .doc_edits import summary_block
+        hand = summary_block(lines)
+        if hand:                                   # 有人在对比页里直接改的（不是 AI 改的，任务板上没有）
+            user += f"\n\n会上有人直接在文档里改的（他们自己改的，不在任务板上）：\n{hand}"
     carried = [c for c in (carried or []) if isinstance(c, dict) and c.get("id")]
     if carried:
         user += "\n\n上次遗留：\n" + "\n".join(

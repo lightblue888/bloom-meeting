@@ -92,6 +92,20 @@ function paperPage(w: World) {
   return PAPER.replace('<script>', `<script>history.replaceState(null, '', location.pathname + '?st=' + encodeURIComponent(${JSON.stringify(JSON.stringify(w.paper))}));</script><script>`);
 }
 
+/** 论文区的屏幕（screens.ts paper-live-*）：真的论文页，zuhui/view.py 生成（fixtures/paper_live.py，lib/global-setup.ts
+ *  开跑前做好）。`paperLive` = 屏幕上是第几版（1 / 2）：/version 报它，页面看到版本变了就换成那一版（一处改动落地） */
+export type LiveWorld = World & { paperLive?: number };
+export const LIVE_DIR = resolve(HERE, '../out/paper-live');
+function livePage(w: World): string | null {
+  const n = (w as LiveWorld).paperLive;
+  if (!n) return null;
+  try {
+    return readFileSync(resolve(LIVE_DIR, `paper-live-${w.lang}-${n}.html`), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
 /** 带大厅新版本状态的 world（screens.ts 的 withUpdate）；fixtures/world.ts 里没有这一项 */
 export type UpdWorld = World & { update?: UpdateStatus };
 
@@ -113,7 +127,10 @@ async function zuhui(route: Route, w: World, rec: Recorder) {
   if (!w.backendUp) return route.abort('connectionrefused');
 
   // the revision page (live) and a past meeting's snapshot: the stub
-  if (path === '/' || path.startsWith('/snap/')) return html(route, paperPage(w));
+  if (path === '/' || path.startsWith('/snap/')) return html(route, (path === '/' && livePage(w)) || paperPage(w));
+  // the real paper page asks these itself (paper-live-*): its version, where you are reading
+  if (path === '/version') return json(route, { build: (w as LiveWorld).paperLive ?? 1, building: false, counts: { queued: 0, working: 0, done: 0, failed: 0, notes: 0 } });
+  if (method === 'POST' && (path === '/api/focus' || path === '/api/scroll')) return json(route, { ok: true, g: 0 });
   if (path.startsWith('/avatars/')) {
     if (path === '/avatars/me' && !w.avatarMe) return route.fulfill({ status: 404, body: '' });
     const k = path.length % AVATARS.length;

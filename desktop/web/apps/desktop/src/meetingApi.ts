@@ -94,7 +94,15 @@ export interface Line {
   i?: number;
   /** 回顾: its words were changed by hand */
   edited?: boolean;
+  /** tag "#doc_edit" (a system line, zuhui/doc_edits.py): someone typed a change straight into the paper — the bits
+   *  before and after (cut short), who, where ("5.1 第（1）段") */
+  before?: string;
+  after?: string;
+  by?: string;
+  where?: string;
 }
+/** the system line for a change typed straight into the paper */
+export const DOC_EDIT_TAG = '#doc_edit';
 
 // ---------------------------------------------------------------- 第 7 批: the transcript by hand
 /** 回顾 → 编辑 (zuhui/transcript_edit.py): what a hand edit can hold */

@@ -102,7 +102,10 @@ DEFAULTS = {
         "claude": "claude",
         "model": "claude-opus-5-5",
         "effort": "xhigh",                  # 思考强度：low / medium / high / xhigh / max（界面上显示为 Extra）
-        "timeout_s": 420,
+        # 改稿的时限：这么多秒一个事件都没来就算卡住；一条最多跑这么久。以前是一条 420 秒，大任务一直在改也被杀
+        # （2026-11-21 组会 T23）。旧配置里只写了 timeout_s 的，把它当上限（Hands._limits）
+        "idle_timeout_s": 300,
+        "max_s": 1800,
     },
 }
 

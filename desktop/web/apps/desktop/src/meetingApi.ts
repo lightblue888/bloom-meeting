@@ -290,7 +290,16 @@ export interface Task {
   started?: string | null;
   finished?: string | null;
   /** the editing worker's live progress while it works (and the final count after) */
-  progress?: { step?: string | null; section?: string | null; edits?: number; started?: number; updated?: number; log?: string[] } | null;
+  progress?: {
+    step?: string | null;
+    section?: string | null;
+    edits?: number;
+    started?: number;
+    updated?: number;
+    log?: string[];
+    /** when each of `log` happened (seconds) */
+    log_t?: number[];
+  } | null;
   /** feedback about the meeting app itself, not the paper: kept on the to-do list under its own group, never drawn on the paper */
   app?: boolean;
   kind?: string | null;
@@ -611,7 +620,18 @@ export interface Brain {
   /** every lookup the background is doing (several can run at once), oldest first */
   deeps?: Lookup[];
   /** the revision being made right now: its progress and steps, pushed with the rest */
-  edits?: { id: string; idx: number; title: string; started?: number | null; edits?: number; log?: string[] }[];
+  edits?: {
+    id: string;
+    idx: number;
+    title: string;
+    started?: number | null;
+    edits?: number;
+    log?: string[];
+    /** the step being done now ("在 D 节改第 87 处"); `steps` has them folded ("在 D 节改第 76–87 处") */
+    step?: string | null;
+    /** every step with its time in the meeting ("36:50") */
+    steps?: { t?: string; k: string; v?: string }[];
+  }[];
   queued?: number;
   /** queued revisions held back until their document is recognized in full (not counted in `queued`) */
   waiting?: number;

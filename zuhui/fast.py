@@ -639,6 +639,34 @@ class FastBrain:
         """整篇论文放不进对话模型（默认超过 15 万字就算）：改成目录 + 每轮检索出来的相关段落。"""
         return len(self._paper_text()) > int(self.fcfg.get("max_paper_chars", 150000))
 
+    def _progress_line(self) -> str:
+        """正在改的、排队的一句话说清（任务板最近的在前，标题相近的两条容易混：2026-11-21 组会 T20 正在改、T21 在排队，
+        两条都是扫冒号分号，快嘴三次说"那项还在排队，后台还没动手"，又说"现在没有在改的"）。"""
+        tasks = [t for t in self.board.tasks() if not (t.get("app") or t.get("kind") == "app") and not t.get("rejected")
+                 and not (t.get("note") and t.get("mode") == "annotate")]
+        working = [t for t in tasks if t.get("status") == "working"]
+        queued = [t for t in tasks if t.get("status") == "queued"]
+        if not working and not queued:
+            return "现在的进度：没有正在改的，也没有排队的。"
+
+        def clip(s, n):
+            s = " ".join(_strip_ctl(s).split())
+            return s if len(s) <= n else s[:n] + "…"
+        bits = []
+        for t in working:
+            p = t.get("progress") or {}
+            n = int(p.get("edits") or 0)
+            sec = str(p.get("section") or "").strip()
+            bits.append(f"正在改 {t.get('id')}「{clip(t.get('title'), 40)}」，"
+                        + (f"已经改了 {n} 处" + (f"，现在在 {clip(sec, 20)}" if sec else "") if n else "刚开始，稿子还没动"))
+        if not working:
+            bits.append("现在没有正在改的")
+        if queued:
+            bits.append(f"排队 {len(queued)} 条，还没开始：" + "、".join(
+                f"{t.get('id')}「{clip(t.get('title'), 30)}」" for t in queued[:4]) + ("等" if len(queued) > 4 else ""))
+        return ("现在的进度：" + "；".join(bits) + "。问进度时先说正在改的那条改了几处、改到哪一节，再说排队的；"
+                "标题相近的两条照这里分开说哪条在改、哪条在排队，别混成一条；有正在改的就别说“没有在改的”。")
+
     def _messages(self, text: str, light: bool = False) -> list[dict]:
         """[固定前缀] + 历史 + [这一轮的上下文 + 对方这句话]。历史只记原话，前面的部分轮轮一样，缓存才命中。"""
         sec = None
@@ -726,6 +754,19 @@ class FastBrain:
         except Exception:
             summary = "（任务板读不到）"
         lines.append(f"任务板（只有“已改”的才算改好；任务编号以这里为准，这里没有的任务就是没有）：\n{summary}")
+        try:
+            lines.append(self._progress_line())
+        except Exception as e:                       # 可有可无的一块：出错就不放
+            print(f"[fast] 进度一览出错：{e!r}", file=sys.stderr)
+        ag = ""
+        try:
+            fn = getattr(self, "agenda_fn", None)
+            ag = str(fn() or "").strip() if fn else ""
+        except Exception:
+            ag = ""
+        if ag:
+            # 开会时说的"这场改第三章和第五章"：只是方向，不是一条任务（2026-11-21 组会被记成了改稿 T1）
+            lines.append(f"这场会的总纲（开会时说的这场要改的范围，只是方向，不是任务，别据此写 #edit）：{_cut_note(_strip_ctl(ag), 200)}")
         try:
             ch = self._changes_note()
         except Exception as e:                       # 可有可无的一块：出错就不放，不能让整轮回话崩掉

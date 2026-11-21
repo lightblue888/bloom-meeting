@@ -436,6 +436,26 @@ class Meetings:
             self._write_meta()
             return dict(self._cur)
 
+    AGENDA_MAX = 300
+
+    def set_agenda(self, text: str | None, append: bool = True) -> str | None:
+        """这场会的总纲（开会时说的"这次改第三章跟第五章"）：记进 meta.json 的 agenda（字符串）。
+        append=True：接在已有的后面（已经记过的那句不重复记）；False：整个换掉（空串 = 清掉）。超长留最近的 AGENDA_MAX 字。
+        返回现在的总纲；没在开会返回 None。读：current()["agenda"]，或者会议目录 meta.json 的 agenda。"""
+        t = " ".join(str(text or "").split()).strip()
+        with self._lock:
+            if not self._cur:
+                return None
+            old = str(self._cur.get("agenda") or "")
+            if append and old:
+                t = old if (not t or t in old) else f"{old}；{t}"
+            if len(t) > self.AGENDA_MAX:
+                t = t[-self.AGENDA_MAX:]
+            if t != old:
+                self._cur["agenda"] = t
+                self._write_meta()
+            return t
+
     def rename(self, mid: str, title: str | None) -> dict | None:
         """手改会议名（开着的会、以往的会都行）：写进 meta.json，title_auto=False，之后不再按论文起名。
         空串 = 不要手起的名字了：回到自动起的那个（开会时那篇论文的名字）。没有这场会返回 None。

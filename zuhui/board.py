@@ -31,6 +31,16 @@ def _clip(s, n: int) -> str:
     return s if len(s) <= n else s[:n] + "…"
 
 
+_SAID_BACK = re.compile(r"（(?:[^（）\s]{1,24} )?当场复述")
+
+
+def _own_words(remark) -> str:
+    """任务备注里人说的那段：去掉后面附的"（当场复述的改法：…）"（旧任务写的是"（Claude 当场复述…"）。"""
+    s = str(remark or "")
+    m = _SAID_BACK.search(s)
+    return s[:m.start()] if m else s
+
+
 def _result_note(result, title) -> str:
     """改完那条的记录给快嘴看：第一句（改了什么）之外，第二句（没做的部分、拿不准的）不是"无"也带上。
     以前只截前 60 字，第二句"频率那半条没改"被截掉，快嘴问进度时说"六条都改好了"（英文老师场评审）。"""
@@ -206,9 +216,11 @@ class Board:
 
     # ---------- 接口 ----------
     def add(self, remark: str, title: str, shot: str | None = None, section: str | None = None,
-            focus: dict | None = None, paper: dict | None = None) -> dict:
+            focus: dict | None = None, paper: dict | None = None, extra: dict | None = None) -> dict:
         """paper：这条是哪篇论文上的（开会时屏幕上那篇，{id, name, path}）。工人按任务上的 paper_path 改那一篇，
-        中途切到别篇也不会改错；撤回、打勾也只在那一篇里算。"""
+        中途切到别篇也不会改错；撤回、打勾也只在那一篇里算。
+        extra：再记几个字段（ask_sec 触发这条的那句在逐字稿第几秒、said_sec 记下时会开到第几秒、meeting 哪场会：
+        工人开工时按它取前后的对话，见 worker_ctx.talk）。和上面的字段重名的不收。"""
         with self._lock:
             self.reload()
             idx = self._next_idx
@@ -229,6 +241,9 @@ class Board:
                 "finished": None,
                 **_paper_dict(paper),
             }
+            for k, v in (extra or {}).items():
+                if v is not None and k not in task:
+                    task[k] = v
             self._tasks.append(task)
             self._save()
             return dict(task)
@@ -399,7 +414,7 @@ class Board:
                 tid = f"{t['id']}《{_clip(t.get('paper_name') or '论文', 24)}》" if multi else t["id"]
                 if t.get("note"):
                     extra = "".join(f"；{k}{_clip(t[f], 50)}" for k, f in (("怎么改：", "plan"), ("要补：", "need")) if t.get(f))
-                    said = _clip(str(t.get("remark") or "").split("（Claude 当场复述")[0], 50)
+                    said = _clip(_own_words(t.get("remark")), 50)
                     at = (t.get("created") or "")[11:16]
                     lines.append(f"{tid} 标注（会上没改正文，记进修改清单）：{_clip(t.get('title'), 60)}{extra}"
                                  + (f"（当时的原话{('，' + at + ' 记下') if at else ''}：{said}）" if said else ""))
@@ -421,7 +436,7 @@ class Board:
                     body = _clip(t.get("title"), 60) + _progress_note(t)
                 else:
                     body = _clip(t.get("title"), 60)
-                said = _clip(str(t.get("remark") or "").split("（Claude 当场复述")[0], 40)
+                said = _clip(_own_words(t.get("remark")), 40)
                 lines.append(f"{tid} {STATUS_CN.get(st, st)}：{body}" + (f"（当时的原话：{said}）" if said else ""))
             if len(ordered) > max_items:
                 lines.append(f"（另有 {len(ordered) - max_items} 条更早的没列）")
@@ -435,6 +450,21 @@ class Board:
             if not t or t["status"] != "queued":
                 return False
             t.update(status="done", rejected=True, finished=_now(), result="已撤回，未修改文档")
+            self._save()
+            return True
+
+    def merge_queued(self, task_id: str, remark: str, title: str | None = None) -> bool:
+        """还在排队的一条，对方又补充了范围、限制（2026-11-21："结论是要整张都跳过的……这些冒号得保留"）：
+        换上并好的备注（和标题），不另记一条。已经被工人领走（在改、改完）就不动，返回 False。"""
+        with self._lock:
+            self.reload()
+            t = self._find(task_id)
+            if not t or t["status"] != "queued":
+                return False
+            t["remark"] = remark
+            if title and title.strip():
+                t["title"] = title.strip()
+            t["merged"] = int(t.get("merged") or 0) + 1
             self._save()
             return True
 

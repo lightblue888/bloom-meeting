@@ -34,16 +34,24 @@ export function Tooltip() {
         setTip({ text, x: Math.max(8, Math.min(e.clientX - 12, window.innerWidth - 8)), y: above ? r.top - 6 : r.bottom + 6, above });
       }, 500);
     };
+    // a scroll closes it only when it moves the element pointed at: the live transcript scrolling itself to a new line
+    // used to close the tip of the AI strip above it while it was being read (2026-11-21)
+    const onScroll = (e: Event) => {
+      const el = over.current;
+      const from = e.target;
+      if (el && from instanceof Element && !from.contains(el)) return;
+      hide();
+    };
     document.addEventListener('mouseover', onOver, true);
     document.addEventListener('mousedown', hide, true);
     document.addEventListener('keydown', hide, true);
-    document.addEventListener('scroll', hide, true);
+    document.addEventListener('scroll', onScroll, true);
     window.addEventListener('blur', hide);
     return () => {
       document.removeEventListener('mouseover', onOver, true);
       document.removeEventListener('mousedown', hide, true);
       document.removeEventListener('keydown', hide, true);
-      document.removeEventListener('scroll', hide, true);
+      document.removeEventListener('scroll', onScroll, true);
       window.removeEventListener('blur', hide);
       clearTimeout(timer.current);
     };

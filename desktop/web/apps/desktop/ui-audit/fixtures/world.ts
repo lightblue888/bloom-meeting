@@ -247,7 +247,12 @@ export function baseWorld(lang: Lang, stress = false): World {
     deep_model: `${main} ${effort}`,
     edit_model: `${main} ${effort}`,
     deeps: [],
-    edits: [{ id: 'T2', idx: 2, title: tasks[1].title, started: NOW_S - 36, edits: 1, log: tasks[1].progress!.log }],
+    edits: [
+      {
+        id: 'T2', idx: 2, title: tasks[1].title, started: NOW_S - 36, edits: 1, log: tasks[1].progress!.log, step: tasks[1].progress!.step,
+        steps: (tasks[1].progress!.log ?? []).map((k, i) => ({ t: `20:${String(6 + i * 3).padStart(2, '0')}`, k })),
+      },
+    ],
     queued: 1,
     unspoken: 0,
     now: NOW_S,

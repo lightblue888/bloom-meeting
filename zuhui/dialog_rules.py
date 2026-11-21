@@ -29,10 +29,15 @@ def short(s: str | None, n: int) -> str:
 # ---------------------------------------------------------------- 软件还是论文：看人说的话
 # 软件本身（界面、显示、声音、转写速度、按钮、打勾、逐字稿……）。"Bloom采用实时转写"这种是论文正文里的话（这场的论文写的就是
 # Bloom），所以单个"Bloom""转写""识别""模型"不算；"Bloom 软件""Bloom 里面"才算
+# "滚动""滑动""窗口"单说是论文里的常用词（"按月滚动更新""滑动窗口""事件窗口"：2026-11-21 组会把改论文的"这些方法按月滚动更新"
+# 记成了一条软件意见），只认说界面的那几种说法
 APP_CUE = re.compile(
-    r"软件|(?i:bug)|界面|按钮|弹出|弹窗|悬停|鼠标|点开|点不开|折叠|打勾|勾选|勾上|滚动|滚轮|滑动|拉到底|往下翻|自动翻|"
+    r"软件|(?i:bug)|界面|按钮|弹出|弹窗|悬停|鼠标|点开|点不开|折叠|打勾|勾选|勾上|"
+    r"滚动条|滚动栏|滚不动|(?:不|没有?|不会|不能|自动|往下|往上|跟着|一直|老是|老)滚动|滚动(?:到|不了|不到|起来|太快|太慢|得)|"
+    r"滚轮|滑动(?!窗口|平均)|拉到底|往下翻|自动翻|"
     r"逐字稿|竹子稿|字幕|麦克风|静音|音量|扬声器|外放|收音|回声|卡顿|卡住|卡了|加载|来回切|切换(?=.{0,12}(?:慢|卡))|"
-    r"显示(?:在|的是|不出|不了|出来|成|区|位置|对比)|(?:不能|没有?|不会)显示|渲染|状态栏|手机端|手机上|网页|浏览器|窗口|布局|撑开|"
+    r"显示(?:在|的是|不出|不了|出来|成|区|位置|对比)|(?:不能|没有?|不会)显示|渲染|状态栏|手机端|手机上|网页|浏览器|"
+    r"(?<!滚动|滑动|事件|估计|时间|观察|样本|回看|预测|训练|测试)窗口|布局|撑开|"
     r"对比页|对比生成|生成失败|监控|断开|续上|重连|思考强度|改稿模型|对话模型|用户体验|(?i:monkey)|"
     r"Bloom\s*(?:软件|里面|里|这个软件|的界面)|会议名|会名|改标题|黄条|蓝条|灰条|下划线|填空|悬浮|闪退|报错|打过勾|勾过|"
     r"(?:后台|前台)的?\s*(?:Claude|克劳德)?\s*(?:听不到|没听到|没接|不接)|没接话|不接话|互相说|"
@@ -426,3 +431,129 @@ def similar(a: str, b: str) -> float:
     if not x or not y:
         return 0.0
     return len(x & y) / min(len(x), len(y))
+
+
+# ---------------------------------------------------------------- 2026-11-21 组会的几类毛病
+# 会议总纲："咱们这次会议还是改这个第三章跟第五章……一次性把第三章跟第五章全部改好"：说的是这场改哪些，不是哪句怎么改。
+# 不记任务（T1 被记成改稿，工人说"没有具体修改点"，进了修改清单），记进会议 meta 的 agenda
+_AGENDA_WHEN = re.compile(r"这次|今天|这场|本次|这回|这一次|今儿")
+_AGENDA_SCOPE = re.compile(r"第\s*[一二三四五六七八九十两\d]+\s*(?:章|部分)|前\s*[一二三四五六七八九十两\d]+\s*章|"
+                           r"[一二三四五六七八九十两\d]+\s*(?:到|至)\s*[一二三四五六七八九十两\d]+\s*章|整篇|全篇|通篇|"
+                           r"(?:引言|摘要|结论|方法|实验|相关工作|讨论)(?:部分|那一?章|这一?章)")
+_AGENDA_VERB = re.compile(r"(?:改|修改|过一遍|过一下|看一下|看看|讨论|处理)(?![得的过了])")
+# 说到了具体一处（某段、某句、原文、某个词）：不是总纲
+_AGENDA_FINE = re.compile(r"[这那上下首末前后]一?(?:段|句)|第\s*[一二三四五六七八九十两\d]+\s*(?:段|句)|原文|这个词|这句话|"
+                          r"(?<![A-Za-z\d.])\d+\.\d+")
+
+
+def _plain_sents(text: str) -> list[str]:
+    return [p for p in re.split(r"(?<=[。！？!?；;])", text or "") if p.strip()]
+
+
+def agenda_text(text: str) -> str:
+    """这段话里说"这场改哪些"的那几句（这次 / 今天 / 这场 + 改 / 过一遍 + 第几章 / 整篇，没说具体怎么改）；没有返回空串。
+    紧跟着的、又说了这几章的一句（"一次性把第三章跟第五章全部改好"）也算。"""
+    out, on = [], False
+    for s in _plain_sents(text):
+        plain = (_AGENDA_SCOPE.search(s) and _AGENDA_VERB.search(s) and not has_edit(s) and not ASK_CUE.search(s)
+                 and not _AGENDA_FINE.search(s))
+        if plain and (_AGENDA_WHEN.search(s) or on):
+            out.append(clean_clause(s))
+            on = True
+        else:
+            on = False
+    return "。".join(x for x in out if x)
+
+
+def agenda_only(text: str) -> bool:
+    """整段话只是在说这场的总纲：有总纲那几句，别的句子里没有改法、没点具体一处。"""
+    if not agenda_text(text):
+        return False
+    for s in _plain_sents(text):
+        if has_edit(s) or _AGENDA_FINE.search(s):
+            return False
+    return True
+
+
+def agenda_scope(text: str) -> str:
+    """总纲里说的范围，按出现的顺序、去重："第三章和第五章"。"""
+    seen = []
+    for m in _AGENDA_SCOPE.finditer(text or ""):
+        x = re.sub(r"\s+", "", m.group(0))
+        if x not in seen:
+            seen.append(x)
+    return "和".join(seen[:4])
+
+
+# 刚派出去就叫停："现在不要派任务，现在不要派任务。别急"（T1 已经在跑，照样跑完进了清单）。整句只是叫停，别的话几乎没有才算
+_STOP_DISPATCH = re.compile(r"(?:现在|先|暂时|还)?(?:不要|别|甭)(?:派|发|记|改|动)(?:任务|了|它|这条|那条|出去)?|先不(?:派|改|动|记)|"
+                            r"等一下|等一等|等等|别急|先停|停一下|停停")
+_STOP_REST = re.compile(r"[呃嗯啊哦诶哎唉不对好吧呀哈，,。.！!？?、\s]|现在|那个|就是|我|你|先|还|再|任务|这条|那条|刚才|一下")
+
+
+def retracts(text: str) -> bool:
+    """这句只是在叫停刚派的改稿："先别派""不要派任务""别改了""等一下""别急"。叫停之外还说了别的（"不要改这里，改成……"）不算。"""
+    s = text or ""
+    if not _STOP_DISPATCH.search(s):
+        return False
+    return len(_STOP_REST.sub("", _STOP_DISPATCH.sub("", s))) <= 4
+
+
+# 让后台看看到底怎么改、想办法："你把我说的这些提交给后台，让他看看这个地方到底应该怎么改"。改法还没定：只深想，不记改稿
+# （T10 在对方认可深想给的改法之前就把论文改了）
+_ADVICE = re.compile(r"(?:提交|交|转|发)给(?:后台|Claude|克劳德)|让(?:后台|它|他|Claude|克劳德)(?:去|来|再)?(?:看看|看一下|想想|想一想|想个?办法|琢磨)|"
+                     r"想(?:个|一个)?办法|看看(?:到底|应该|该)?(?:怎么|如何)改|(?:到底|应该|该)怎么改|怎么改(?:比较|更)?好", re.I)
+
+
+def wants_advice(text: str) -> bool:
+    return bool(_ADVICE.search(text or ""))
+
+
+def advice_on_paper(text: str, segs: list[dict] | None = None) -> bool:
+    """要后台看看论文这处怎么改（wants_advice，而且这段话里有改论文的那截）：整段是在讨论论文的写法。
+    里面冒出来的"有些bug"（[19:20] 识别出来的，说的是论文里的方法）不算软件意见。"""
+    if not wants_advice(text):
+        return False
+    segs = split_requests(text) if segs is None else segs
+    return any(g["kind"] == "paper" and g["edit"] for g in segs)
+
+
+# 单说一句"改好了""好了吗""改完了"：有任务在排队、在改的时候多半是在问（语音识别吃了问号）。"我改好了""好了"不算
+_BARE_STATUS = re.compile(r"^(?:嗯|呃|那|那个|现在|都)?[，,\s]*(?:改好了|改完了|弄好了|好了没有?|改好没有?|改完没有?|改好了没有?|"
+                          r"改完了没有?|好了吗|改好了吗|改完了吗|改了吗|改到哪了?)[吗没么呢]?[。？?！!，,\s]*$")
+
+
+def bare_status_ask(text: str) -> bool:
+    return bool(_BARE_STATUS.match((text or "").strip()))
+
+
+# 对上一条改稿的补充、加限制："结论是要整张都跳过的……这些冒号得保留。只换标点"（T21 补 T20）、
+# "要不还是换个方法拆吧，我给你打回来"（T4 补 T3）
+_SUPPLEMENT = re.compile(r"打回来|重来|重做|换个(?:方法|思路|拆法|改法)|换种(?:方法|拆法|改法)|还是(?:要|得)|再加(?:上|一条|一句)?|补充一下|"
+                         r"另外(?:还)?(?:要|得)|范围|除了|跳过|保留|只(?:扫|换|改|动|拆|删|留)|别的(?:地方)?(?:都)?不(?:用|要)|"
+                         r"(?:都)?不用(?:动|管|改)|照这个|按这个|前面那条|刚才那条|上一条")
+# 快嘴的复述里说了是在改前面那条："前面那条扫描的范围我照这个改"
+_REFERS_BACK = re.compile(r"前面那条|上一条|刚才那条|刚记的那条|前一条|那条(?:扫描|任务)?的范围|照这个改|并进(?:去|那条)|一起(?:改进去|并进去)")
+
+
+def supplements(text: str) -> bool:
+    return bool(_SUPPLEMENT.search(text or ""))
+
+
+def refers_back(spoken: str) -> bool:
+    return bool(_REFERS_BACK.search(spoken or ""))
+
+
+_SEC_NO = re.compile(r"(?<![\d.])(\d+(?:\.\d+)+)(?![\d.])|([一二三四五六七八九十\d]+)\s*点\s*([一二三四五六七八九十\d]+)")
+
+
+def section_no(text: str) -> str | None:
+    """话里、标题里第一个小节号："3.1 拆分重做" → "3.1"；"三点一" → "3.1"。没有 None。"""
+    m = _SEC_NO.search(text or "")
+    if not m:
+        return None
+    if m.group(1):
+        return m.group(1)
+    from .normalize import cn_number
+    a, b = cn_number(m.group(2)), cn_number(m.group(3))
+    return f"{a}.{b}" if str(a).isdigit() and str(b).isdigit() else None

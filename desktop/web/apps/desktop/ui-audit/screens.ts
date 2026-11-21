@@ -137,6 +137,148 @@ const asCohost = (w: World) => {
   w.relay.state!.participants = ps;
 };
 const brainWith = (c: Ctx, patch: Record<string, unknown>) => ({ ...c.world.current.brain, now: NOW_S, ...patch });
+/** 2026-11-21: a big revision under way (全文去掉多余冒号分号: 41 places in 7 minutes) while the talk goes on. The bubble
+ *  that asked for it is far up the column; the card at the transcript's foot says how far it is (EditDock.tsx). The
+ *  worker's steps come in Chinese as the backend writes them ("在 3.2 节改第 12 处"; an English meeting translates them) */
+const LONG_SECS = ['2.2', '3.1', '3.2', '4.1', '5.5', 'F'];
+const longSec = (i: number) => LONG_SECS[Math.min(LONG_SECS.length - 1, Math.floor(i / 7))];
+const longLog = (n: number) => Array.from({ length: n }, (_, i) => `在 ${longSec(i)} 节改第 ${i + 1} 处`);
+const longRow = (w: World, n: number) => ({
+  id: 'T2', idx: 2, title: w.current.board!.tasks.find((x) => x.id === 'T2')!.title, started: NOW_S - 425, edits: n, log: longLog(n),
+});
+const withLongEdit = (w: World): World => {
+  const c = w.current;
+  const T = (zh: string, en: string) => (w.lang === 'zh' ? zh : en);
+  const title = w.stress
+    ? T('全文扫冒号分号只换标点，结论段整段跳过，图注表注、符号表、参考文献和公式里的冒号保留', 'Colons and semicolons throughout: punctuation only, skip the conclusion, keep those in captions, the symbol table, references and formulas')
+    : T('全文去掉多余冒号分号，跳过引言、摘要、2.1 和结论', 'Remove extra colons and semicolons, except the introduction, abstract, 2.1 and conclusion');
+  const t2 = c.board!.tasks.find((x) => x.id === 'T2')!;
+  Object.assign(t2, { title, section: null, created: isoAgo(427), started: isoAgo(425), progress: { edits: 41, started: NOW_S - 425, updated: NOW_S - 3, log: longLog(41) } });
+  const g1 = c.participants!.find((p) => p.role === 'guest')?.name ?? 'Guest';
+  const fast = c.brain?.front_model;
+  const at = (sec: number) => `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
+  const say = (sec: number, who: 'teacher' | 'student' | 'guest', zh: string, en: string, x: Record<string, unknown> = {}) => ({
+    t: at(sec), sec, who, ...(who === 'guest' ? { name: g1 } : {}), ...(who === 'student' ? { tag: '#chat', lat: 1.0, model: fast } : {}), text: T(zh, en), ...x,
+  });
+  c.transcript = [
+    ...c.transcript.filter((l) => l.sec < 1198),
+    say(798, 'teacher', '全文扫一遍，把不该有的冒号和分号拆掉，引言、摘要、2.1 节和结论除外。', 'Go through the whole paper and take out the colons and semicolons that shouldn’t be there, except the introduction, abstract, 2.1 and conclusion.'),
+    say(805, 'student', '好，全文扫一遍，引言、摘要、2.1 和结论不动。我记下了，交给后台改。', 'Sure, the whole paper, leaving the introduction, abstract, 2.1 and conclusion alone. Noted, the background will do it.', { tag: '#edit', lat: 1.1, title }),
+    say(838, 'guest', '3.2 节的数据划分是按时间切的吗？', 'Is the data split in 3.2 by time?'),
+    say(846, 'student', '是按时间切的，训练集到 2023 年底，之后是测试集。', 'Yes, by time: training up to the end of 2023, testing after that.'),
+    say(910, 'teacher', '那这一点要在 3.2 节写清楚。', 'Then 3.2 has to say so.'),
+    say(940, 'guest', '表 3 的单位也要统一一下。', 'Table 3 needs the same units too.'),
+    say(982, 'teacher', '对，表 3 和图 3 用同一套单位。', 'Right, table 3 and figure 3 in the same units.'),
+    say(1025, 'student', '好，等冒号分号那条改完我再一起看表 3。', 'OK, I’ll look at table 3 once the colons and semicolons are done.'),
+    say(1092, 'guest', '消融实验会后补吗？', 'Is the ablation for after the meeting?'),
+    say(1110, 'teacher', '会后补，这次先把正文理顺。', 'After the meeting. Today we get the text in order.'),
+    say(1160, 'guest', '引言最后一段我觉得也可以短一点。', 'I think the last paragraph of the introduction could be shorter too.'),
+    say(1172, 'teacher', '那个下次再说。现在改到哪里了？', 'Next time. How far has it got?'),
+    say(1180, 'student', '冒号分号那条改到附录 F 了，已经改了 41 处。', 'The colons and semicolons are at appendix F now: 41 places so far.', { tag: '#status' }),
+    say(1220, 'teacher', '好，第三节的实验设置我们再看一下，尤其是数据划分。', "Good. Let's look at the setup in section 3 again, the data split in particular."),
+  ] as typeof c.transcript;
+  c.brain = { ...c.brain!, edits: [longRow(w, 41)], queued: 1 };
+  // the title and the step are what the board and the paper say: theirs, cut with "…" on purpose (whole on hover)
+  w.userStrings.push(title, ...longLog(45), ...longLog(45).map((_, i) => `edit ${i + 1} in “${longSec(i)}”`));
+  return w;
+};
+/** nothing being revised, three waiting their turn (the card is one line) */
+const withQueueOnly = (w: World): World => {
+  withLongEdit(w);
+  const c = w.current;
+  const t2 = c.board!.tasks.find((x) => x.id === 'T2')!;
+  Object.assign(t2, { status: 'queued', started: null, progress: null });
+  c.board!.counts = { ...c.board!.counts, working: 0, queued: 3 };
+  c.brain = { ...c.brain!, edits: [], queued: 3 };
+  c.ready = { ...c.ready!, working: 0, queued: 3 };
+  return w;
+};
+/** the AI strip's words change with the card's */
+const DOCK_STILL = ['[data-testid="claude-now"] .mt-now-row *'];
+/** a new line: the lines above the card move up as always (turns, marks, system lines), the card stays */
+const LINES_MOVE = ['.mt-right-n', '[data-testid="transcript"] section', '[data-testid="transcript"] section *', '[data-testid="transcript-mark"]',
+  '[data-testid="transcript-mark"] *', '[data-testid="transcript"] .mt-sysline'];
+const newLine = async (c: Ctx) => {
+  c.world.current.transcript.push({ t: '20:31', sec: 1231, who: 'teacher', text: c.T('那第三节的实验设置我们再统一一下表述。', "So let's word the setup in section 3 the same way throughout.") });
+  await c.waitPoll();
+};
+const dockTransitions: Transition[] = [
+  {
+    name: 'the revision goes on (its count, step and time change)',
+    act: (c) => c.push('brain', brainWith(c, { edits: [longRow(c.world, 42)], queued: 1 })),
+    expect: DOCK_STILL,
+    note: 'only the words in the card change: the card keeps its place and size',
+  },
+  {
+    name: 'it finishes, the next one waits its turn (the card goes to one line)',
+    act: (c) => c.push('brain', brainWith(c, { edits: [], queued: 1 })),
+    expect: DOCK_STILL,
+  },
+  {
+    name: 'the queue empties (the card goes, its slot stays)',
+    act: (c) => c.push('brain', brainWith(c, { edits: [], queued: 0 })),
+    expect: DOCK_STILL,
+    note: 'nothing above it moves down',
+  },
+  {
+    name: 'the next revision starts (the card comes back)',
+    act: (c) => {
+      const t3 = c.world.current.board!.tasks.find((x) => x.id === 'T3')!;
+      return c.push('brain', brainWith(c, { edits: [{ id: 'T3', idx: 3, title: t3.title, started: NOW_S - 2, edits: 0, log: ['读文档'] }], queued: 0 }));
+    },
+    expect: DOCK_STILL,
+  },
+  {
+    name: 'a new line comes in (it goes above the card)',
+    act: newLine,
+    expect: [...DOCK_STILL, ...LINES_MOVE],
+    note: 'the lines move up as always; the card stays at the foot',
+  },
+];
+/** scrolled up (by the wheel, as a person does: a scroll nobody asked for is pinned back) to the bubble that asked for
+ *  the big revision: its own step list */
+const toLiveEdit = async (c: Ctx) => {
+  const box = c.page.getByTestId('transcript');
+  await box.hover({ position: { x: 60, y: 60 } });
+  for (let i = 0; i < 40; i++) {
+    const r = await c.page.getByTestId('live-edit').first().boundingBox();
+    const b = await box.boundingBox();
+    if (r && b && r.y >= b.y + 40) break;
+    await c.page.mouse.wheel(0, -160);
+    await c.settle(60);
+  }
+  await c.settle(250);
+};
+/** pointing at the AI strip's background row: its whole words in the window's own tip (Tooltip.tsx) */
+const openNowTip = async (c: Ctx) => {
+  await c.page.mouse.move(2, 2);
+  await c.page.getByTestId('claude-now-back').hover();
+  await c.page.locator('.mw-tip').waitFor();
+  await c.settle(150);
+};
+const tipWords = (c: Ctx) => c.page.locator('.mw-tip').textContent({ timeout: 800 }).catch(() => null);
+const tipTransitions: Transition[] = [
+  {
+    name: 'the revision goes on while the tip is open (it keeps its words)',
+    act: async (c) => {
+      const before = await tipWords(c);
+      await c.push('brain', brainWith(c, { edits: [longRow(c.world, 42)], queued: 1 }));
+      await c.settle(1300);
+      const after = await tipWords(c);
+      if (after == null) throw new Error('the tip closed when the progress changed');
+      if (after !== before) throw new Error(`the tip's words changed under the pointer: "${before}" → "${after}"`);
+    },
+    expect: [...DOCK_STILL, '[data-testid="edit-dock"] *', '.mw-tip'],
+  },
+  {
+    name: 'a new line comes in while the tip is open (the transcript scrolls itself; the tip stays)',
+    act: async (c) => {
+      await newLine(c);
+      if ((await tipWords(c)) == null) throw new Error('the tip closed when the transcript scrolled to the new line');
+    },
+    expect: [...DOCK_STILL, ...LINES_MOVE, '.mw-tip'],
+  },
+];
 const openNotes = async (c: Ctx) => {
   await openMeeting(c);
   await c.page.getByTestId('meeting-tab-notes').click();
@@ -774,6 +916,63 @@ export const SCREENS: Screen[] = [
       c.meeting = { ...c.meeting!, started: isoAgo(5), duration_s: 5 };
     },
     ready: '[data-testid="claude-now"] .mt-now-dot',
+  },
+  {
+    // 2026-11-21 (the user, 40:09: "为什么我看不到他的后台状态呢？")
+    name: 'meeting-edit-dock',
+    what: 'In a meeting: a big revision under way (41 places, 7 minutes) whose bubble is far up; the card under the newest line, one more queued',
+    page: 'main',
+    world: withLongEdit,
+    ready: '[data-testid="edit-dock-card"]',
+    transitions: dockTransitions,
+  },
+  {
+    name: 'meeting-edit-dock-stress',
+    what: 'The revision card with the longest title, names and model names',
+    page: 'main',
+    stress: true,
+    world: withLongEdit,
+    ready: '[data-testid="edit-dock-card"]',
+    transitions: dockTransitions,
+  },
+  {
+    // more than 5 steps fold under "查看全部"; the "正在修改 · 已改 N 处 · 时间" line stays first (it used to fold away too)
+    name: 'meeting-edit-steps',
+    what: 'Scrolled up to the bubble that asked for the big revision: its live steps folded under 查看全部, its progress line first',
+    page: 'main',
+    world: withLongEdit,
+    go: async (c) => {
+      await toLiveEdit(c);
+      const first = await c.page.getByTestId('live-edit').locator('.mt-steps > *').first().textContent();
+      if (!first?.includes(c.T('已改 41 处', 'Edits so far: 41'))) throw new Error(`the progress line isn't first under the bubble: "${first}"`);
+    },
+    reapply: toLiveEdit,
+    ready: '[data-testid="live-edit"] [data-testid="steps-more"]',
+  },
+  {
+    name: 'meeting-edit-queue',
+    what: 'In a meeting: three revisions waiting their turn, none being made (the card names the next one)',
+    page: 'main',
+    world: withQueueOnly,
+    ready: '[data-testid="edit-dock-card"].is-wait',
+    transitions: [
+      {
+        name: 'one starts (the card goes to two lines)',
+        act: (c) => c.push('brain', brainWith(c, { edits: [{ ...longRow(c.world, 0), started: NOW_S - 1, log: ['读文档'] }], queued: 2 })),
+        expect: DOCK_STILL,
+      },
+    ],
+  },
+  {
+    // the user: "鼠标悬停在状态栏附近，会有完整状态，但是是一直闪烁的…是 html 原生页面"
+    name: 'meeting-now-tip',
+    what: "Pointing at the AI strip's background row: the whole status in the window's own tip, steady while it ticks",
+    page: 'main',
+    world: withLongEdit,
+    go: openNowTip,
+    reapply: openNowTip,
+    ready: '.mw-tip',
+    transitions: tipTransitions,
   },
   {
     name: 'meeting-ai-card',

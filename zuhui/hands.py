@@ -80,20 +80,29 @@ _SECRET_DENY = [f"{tool}({pat})" for tool in ("Read", "Grep", "Glob") for pat in
 _WHOLE_DIR = re.compile(r"^\w+\(~/([^*()]+?)/\*\*\)$")
 
 
-def _deny_for(folder) -> list[str]:
+def _deny_for(folder, also=()) -> list[str]:
     """_SECRET_DENY 里整个目录禁读的那几条（~/Downloads/**、~/AppData/** …）要是正好罩住论文所在的文件夹，
     工人连论文都读不了（2026-11-14 组会：Word 申报书转出来的稿子放在 Downloads 里，三条改稿都"读取被拒"）。
-    这种目录规则跳过；--restricted 本来就只让碰论文那个文件夹，按文件名拦密钥的规则照留。"""
-    try:
-        f = Path(folder).expanduser().resolve()
-    except (OSError, TypeError):
+    这种目录规则跳过；--restricted 本来就只让碰论文那个文件夹，按文件名拦密钥的规则照留。
+    also：额外只读的目录（会前原稿的副本在 ~/.zuhui/worker_orig/<编号>/ 下）：罩住它们的目录规则也跳过，
+    --restricted 下能读的仍然只有工作目录和这几个 --add-dir。"""
+    dirs = []
+    for x in (folder, *also):
+        if not x:
+            continue
+        try:
+            dirs.append(Path(x).expanduser().resolve())
+        except (OSError, TypeError):
+            if x is folder:
+                return list(_SECRET_DENY)
+    if not dirs:
         return list(_SECRET_DENY)
     out, home = [], Path.home()
     for rule in _SECRET_DENY:
         m = _WHOLE_DIR.match(rule)
         if m:
             root = (home / m.group(1)).resolve()
-            if f == root or root in f.parents:
+            if any(f == root or root in f.parents for f in dirs):
                 continue
         out.append(rule)
     return out
@@ -165,7 +174,7 @@ def lockdown_args(folder, editable: str | None = None, read_dirs=(), web: bool =
             allow += [f"Edit(./{editable})", f"Write(./{editable})", f"MultiEdit(./{editable})"]
     args = ["--restricted", "--strict-mcp-config", "--tools", tools, "--permission-mode", "dontAsk",
             "--allowedTools", ",".join(allow),
-            "--disallowedTools", ",".join(_deny_for(folder))]
+            "--disallowedTools", ",".join(_deny_for(folder, [d for d in read_dirs if d]))]
     for d in read_dirs:
         if d:
             args += ["--add-dir", str(d)]
@@ -205,18 +214,70 @@ def _parse_json_line(stdout: str) -> dict | None:
     return first
 
 
-def _pat_words(pat: str) -> str:
-    """搜索用的正则 → 人能看懂的几个词："(?i)experiment|实验|result|outperform" → "experiment、实验、result 等"。"""
-    p = re.sub(r"\(\?[a-zA-Z]+\)", "", str(pat or ""))
+def _pat_literal(alt: str) -> str:
+    """正则的一个分支 → 里面的字面字："3\\.1\\b" → "3.1"，"测量工具.*误差" → "测量工具 误差"，"[：:]"、"{1,3}" 去掉。"""
+    out, i = [], 0
+    while i < len(alt):
+        c = alt[i]
+        if c == "\\" and i + 1 < len(alt):
+            m = re.match(r"\\(?:x\{[0-9a-fA-F]+\}|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4})", alt[i:])
+            if m:                                  # \x41 这类编码写法：不当成字
+                out.append(" ")
+                i += m.end()
+                continue
+            n = alt[i + 1]
+            out.append(" " if n.isalnum() else n)  # \d \s \b → 空；\. \( → 点、括号本身
+            i += 2
+            continue
+        if c == "[":                               # 字符组整个去掉
+            j = alt.find("]", i + 2)
+            i = j + 1 if j > 0 else i + 1
+            out.append(" ")
+            continue
+        if c == "{":
+            m = re.match(r"\{\d*,?\d*\}", alt[i:])
+            if m:                                  # 量词 {1,3}
+                out.append(" ")
+                i += m.end()
+                continue
+        out.append(" " if c in "^$.*+?(){}<>" else c)
+        i += 1
+    return " ".join("".join(out).split()).strip(" ,.;:-_/'\"")
+
+
+def _pat_words(pat: str, most: int = 4) -> str:
+    """搜索用的正则 → 人能看懂的几个词："(?i)experiment|实验" → "experiment、实验"，"3\\.1" → "3.1"；
+    "^#+" 这种只有符号、没有词的 → ""。多于 most 个只列前几个，后面写"等"。"""
+    p = re.sub(r"\(\?[a-zA-Z]+\)", "", str(pat or ""))            # (?i) 这类开关
+    p = re.sub(r"\(\?(?:[:=!>]|<[=!]|P?<\w+>)", "(", p)          # (?: (?= (?<name> 这类组的开头
     words = []
-    for alt in re.split(r"\|", p):
-        w = re.sub(r"\\[bBdDsSwW]|\\.|[\^$.*+?()\[\]{}<>]", " ", alt)
-        w = " ".join(w.split())
-        if w and re.search(r"[A-Za-z0-9\u4e00-\u9fff]{2,}", w) and w not in words:
-            words.append(w)
+    for alt in re.split(r"(?<!\\)\|", p):
+        w = _pat_literal(alt)
+        if len(re.findall(_WORD_CH, w)) >= 2 and w not in words:
+            words.append(w if len(w) <= 20 else w[:20] + "…")
     if not words:
         return ""
-    return "、".join(words)
+    return "、".join(words[:most]) + (" 等" if len(words) > most else "")
+
+
+def grep_label(pat) -> tuple[str, str]:
+    """Grep 的正则 → (这一步叫什么, 搜的词)：有词 ("查找", "唯一变量、测量工具")；只搜标题行（"^#+"、"^#"）
+    ("看目录", "")；什么词都没有 ("搜索文档", "")。正则不原样给人看。"""
+    raw = str(pat or "")
+    words = _pat_words(raw)
+    if words:
+        return ("查找", words)
+    if re.search(r"\^\s*\\?#", raw):
+        return ("看目录", "")
+    return ("搜索文档", "")
+
+
+def _internal(fname: str) -> bool:
+    """文档文件夹里软件自己的文件（.bloom-convert.json 这类，以点开头）：工人读它、搜它都不算一步。"""
+    return bool(fname) and fname.startswith(".")
+
+
+_WORD_CH = (r"[A-Za-z0-9\u4e00-\u9fff]")                # _pat_words 里算"字"的：字母、数字、汉字
 
 
 def _section_at(sections, line_no: int) -> str:
@@ -244,16 +305,32 @@ def paper_sections(paper_file) -> list[tuple[int, str]]:
     return out
 
 
-def ask_step(name: str, inp: dict, paper_name: str = "", sections=None) -> tuple[str, str] | None:
-    """后台 Claude 查资料时的一次工具调用 → (哪一类, 具体是什么)，给逐字稿和顶上状态条看。"""
+def _is_folder(path: str, folder=None) -> bool:
+    """Grep 的 path 是不是文件夹（文档所在的那个，或者它下面的）：是就算"搜索文档"，不把文件夹名当成"搜索 X"。"""
+    p = Path(path)
+    if folder is not None and not p.is_absolute():
+        p = Path(folder) / p
+    try:
+        if p.is_dir():
+            return True
+    except OSError:
+        pass
+    return not p.suffix                          # 看不到磁盘（测试、路径不对）：没有扩展名的多半是文件夹
+
+
+def ask_step(name: str, inp: dict, paper_name: str = "", sections=None, folder=None) -> tuple[str, str] | None:
+    """后台 Claude 查资料时的一次工具调用 → (哪一类, 具体是什么)，给逐字稿和顶上状态条看。
+    folder：文档所在的文件夹（工人的工作目录），相对路径对着它看。读、搜软件自己的点开头文件不算一步（None）。"""
     inp = inp if isinstance(inp, dict) else {}
     path = str(inp.get("file_path") or inp.get("path") or "")
     fname = Path(path).name if path else ""
+    if name in ("Read", "Grep", "Glob") and _internal(fname):
+        return None
     if name == "Grep":
-        raw = " ".join(str(inp.get("pattern") or "").split())
-        pat = _pat_words(raw) or raw
-        where = "文档" if (not fname or fname == paper_name) else fname
-        return (f"搜索{where}", pat)
+        k, words = grep_label(inp.get("pattern"))
+        if not path or fname == paper_name or _is_folder(path, folder):
+            return (k, "") if k == "看目录" else ("搜索文档", words)
+        return (f"搜索{fname}", words)
     if name == "Read":
         if fname.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")):
             return ("查看截图", "")
@@ -266,8 +343,8 @@ def ask_step(name: str, inp: dict, paper_name: str = "", sections=None) -> tuple
             b = _section_at(sections, int(off) + int(lim or 0)) if lim else a
             sec = a if a == b or not b else f"{a} → {b}"
         return (("读文档" if mine else f"读 {fname}"), rng + (f"（{sec}）" if sec else ""))
-    if name == "Glob":
-        return ("查找文件", str(inp.get("pattern") or ""))
+    if name == "Glob":                           # 通配符（"**/*.md"）不给人看
+        return ("查找文件", "")
     if name == "WebSearch":
         return ("联网搜索", " ".join(str(inp.get("query") or "").split()))
     if name == "WebFetch":
@@ -276,23 +353,87 @@ def ask_step(name: str, inp: dict, paper_name: str = "", sections=None) -> tuple
     return (name, "") if name else None
 
 
+_END_STEPS = ("开始", "已完成", "修改失败", "标注了")
+
+
+def progress_steps(prog: dict | None, clock=None, ends: bool = False, error: str | None = None) -> list[dict]:
+    """任务卡的 progress → 逐字稿上的步骤 [{"t": "36:50", "k": "在 D 节改第 66–78 处"}, …]。
+    k 就是这一步本身（不再每行挂一个"修改"）；clock(时间戳) → 会议里的 mm:ss，和别的步骤同一种算法。
+    ends=False（汇报）：开头的"开始"、收尾的"已完成 / 修改失败 / 标注了"不列，汇报那一行自己说改好没有；
+    error：没改成的原因，最后单独一行"失败　原因"。旧任务没有 log_t：不带 t（界面用那一行的时间）。"""
+    prog = prog if isinstance(prog, dict) else {}
+    log, ts = list(prog.get("log") or []), list(prog.get("log_t") or [])
+
+    def at(ts_i) -> dict:
+        if clock is None or not ts_i:
+            return {}
+        try:
+            return {"t": clock(float(ts_i))}
+        except (TypeError, ValueError):
+            return {}
+
+    out = []
+    for i, s in enumerate(log):
+        if not s or (not ends and s in _END_STEPS):
+            continue
+        out.append({**at(ts[i] if i < len(ts) else None), "k": str(s)})
+    if error:
+        out.append({**at((ts[-1] if ts else None) or prog.get("updated")), "k": "失败", "v": str(error)})
+    return out
+
+
 class WorkerProgress:
     """改稿工人跑的时候，从 stream-json 事件里读出它在干什么（读论文 / 在 3.2 节改第 2 处 / 检查改动），
     写到任务卡的 progress 上，最多一秒写一次；改完冻结（留着最后改了几处）。会议页任务卡和快嘴答"改到哪了"都读它。"""
 
     THROTTLE_S = 1.0
+    # 日志留开头几条和最近的：改到第 90 处时，开头读了什么、找了什么也还在（2026-11-21 组会：只剩"第 51 处"往后）
+    HEAD, TAIL = 6, 40
 
     def __init__(self, board, task_id: str, paper_file: Path):
         self.board, self.task_id, self.paper_file = board, task_id, Path(paper_file)
         self.started = time.time()
         self.edits, self.section, self.step = 0, None, "开始"
-        self.log: list[str] = ["开始"]
+        # 每一步：s 显示的字，t 什么时候（时间戳，逐字稿上换成会议里的 mm:ss），e 改的是哪节第几到第几处（合并用）
+        self._ents: list[dict] = []
         self._edited = False
         self._lock = threading.Lock()
         self._last_write = 0.0
         self._timer: threading.Timer | None = None
         self._frozen = False
+        self._add("开始")
         self._push(force=True)
+
+    @property
+    def log(self) -> list[str]:
+        return [e["s"] for e in self._ents]
+
+    @staticmethod
+    def _joins(ent: dict | None, edit: tuple) -> bool:
+        """这一处能不能并进前面那条：同一节、紧接着的下一处。"""
+        e = (ent or {}).get("e")
+        return bool(e) and e[0] == edit[0] and edit[1] == e[2] + 1
+
+    def _add(self, step: str, edit: tuple | None = None) -> None:
+        """记一步。连着改同一节的并成一条（"在 D 节改第 76–87 处"），中间夹的一次"检查修改"并进去；
+        同一步连着几次（读文档、检查修改）只留一条。调用方拿着锁（__init__ 除外，那时还没有别的线程）。"""
+        if self._frozen:
+            return
+        ents = self._ents
+        if edit:
+            if (len(ents) >= 2 and ents[-1]["s"] == "检查修改" and not ents[-1].get("e")
+                    and self._joins(ents[-2], edit)):
+                ents.pop()                             # 改一处、查一下、接着改同一节：查的那一步不单列
+            if ents and self._joins(ents[-1], edit):
+                w, a = ents[-1]["e"][0], ents[-1]["e"][1]
+                ents[-1]["e"] = (w, a, edit[2])
+                ents[-1]["s"] = f"{w}改第 {a}–{edit[2]} 处"
+                return
+        elif ents and ents[-1]["s"] == step and not ents[-1].get("e"):
+            return
+        ents.append({"s": step, "t": time.time(), "e": edit})
+        if len(ents) > self.HEAD + self.TAIL:
+            del ents[self.HEAD:len(ents) - self.TAIL]
 
     # ---- 事件 ----
     def on_event(self, ev: dict) -> None:
@@ -308,6 +449,9 @@ class WorkerProgress:
     def _tool(self, name: str, inp: dict) -> None:
         path = str(inp.get("file_path") or inp.get("path") or "")
         fname = Path(path).name if path else ""
+        if name in ("Read", "Grep", "Glob") and _internal(fname):
+            return                                     # .bloom-convert.json 这类：用户不需要知道
+        edit = None
         if name == "Read":
             if fname.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")):
                 step = "查看截图"
@@ -318,8 +462,8 @@ class WorkerProgress:
             else:
                 step = f"读 {fname}"
         elif name == "Grep":
-            pat = " ".join(str(inp.get("pattern") or "").split())[:12]
-            step = "检查修改" if self._edited else (f"查找“{pat}”" if pat else "搜索文档")
+            k, words = grep_label(inp.get("pattern"))  # 正则不原样给人看："^#+" → 看目录，"3\.1" → 查找“3.1”
+            step = "检查修改" if self._edited else (f"查找“{words}”" if words else k)
         elif name == "Glob":
             step = "查找文件"
         elif name in ("Edit", "MultiEdit", "Write"):
@@ -337,14 +481,15 @@ class WorkerProgress:
             where = self._where(sec)
             if name == "Write":
                 step = "重写全文"
-            elif n == 1:
-                step = f"{where}改第 {self.edits} 处"
             else:
-                step = f"{where}改第 {self.edits - n + 1} 到 {self.edits} 处"
+                a = self.edits - n + 1
+                edit = (where, a, self.edits)
+                step = f"{where}改第 {a} 处" if n == 1 else f"{where}改第 {a}–{self.edits} 处"
         else:
             step = name or "处理中"
-        self.step = step
-        self.log = (self.log + [step])[-40:]
+        self.step = step                               # 当前这一步照旧是"在 D 节改第 87 处"，日志里并成一条
+        with self._lock:
+            self._add(step, edit)
         self._push()
 
     def _section_of(self, old: str | None) -> str | None:
@@ -379,7 +524,8 @@ class WorkerProgress:
 
     def note(self, step: str) -> None:
         self.step = step
-        self.log = (self.log + [step])[-40:]
+        with self._lock:
+            self._add(step)
         self._push()
 
     def done(self, step: str) -> None:
@@ -388,14 +534,16 @@ class WorkerProgress:
             if self._timer:
                 self._timer.cancel()
             self.step = step
-            self.log = (self.log + [step])[-40:]
+            self._add(step)
             self._write()
             self._frozen = True
 
     # ---- 写任务板（节流） ----
     def snapshot(self) -> dict:
+        """log：每一步的字（状态条、快嘴、旧的界面都读它）；log_t：和 log 一一对应的时间戳。"""
         return {"step": self.step, "section": self.section, "edits": self.edits, "started": round(self.started, 1),
-                "updated": round(time.time(), 1), "log": list(self.log)}
+                "updated": round(time.time(), 1), "log": [e["s"] for e in self._ents],
+                "log_t": [round(e["t"], 1) for e in self._ents]}
 
     def _write(self) -> None:
         if self._frozen:
@@ -425,6 +573,66 @@ class WorkerProgress:
                 self._timer.start()
 
 
+AMEND_MSG = ("对方刚补充了（原话）：{text}\n"
+             "按补充调整：还没改的照补充改；已经改过的地方不符合补充的，改回来或者重改。"
+             "做完后照原来的要求只输出两句汇报，把前面改的和按补充改的一起说。")
+
+
+class _Feed:
+    """改稿工人的 stdin（claude -p --input-format stream-json）：第一条 user 消息是提示词，跑着的时候 send() 能再写一条
+    （对方补充的话，见 Hands.amend），收到 result 事件就关掉。
+    实测（2026-11-21，haiku low，临时目录里的假文件）：中途写进去的那条，工人在这一轮下一次调工具时就看到、照着调整，
+    整轮只出一个 result；这一轮最后那段话已经写出来才到的，先出第一个 result，关了 stdin 它也接着再跑一轮，
+    出第二个 result 再退出（call 读到 stdout 结束、取最后那个 result）。所以收到 result 就关：关之前写进去的都会被处理，
+    关了以后 send 返回 False，调用方另记一条任务。"""
+
+    def __init__(self, first: str):
+        self.first = first
+        self.proc = None
+        self.closed = False
+        self.sent: list[str] = []
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def line(text: str) -> str:
+        return json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}},
+                          ensure_ascii=False) + "\n"
+
+    def attach(self, proc) -> bool:
+        with self._lock:
+            self.proc = proc
+            return self._write(self.first)
+
+    def _write(self, text: str) -> bool:
+        if self.closed or self.proc is None or self.proc.stdin is None or self.proc.poll() is not None:
+            return False
+        try:
+            self.proc.stdin.write(self.line(text))
+            self.proc.stdin.flush()
+            return True
+        except (OSError, ValueError):
+            self.closed = True
+            return False
+
+    def send(self, text: str) -> bool:
+        with self._lock:
+            ok = self._write(text)
+            if ok:
+                self.sent.append(text)
+            return ok
+
+    def close(self) -> None:
+        with self._lock:
+            if self.closed:
+                return
+            self.closed = True
+            try:
+                if self.proc is not None and self.proc.stdin is not None:
+                    self.proc.stdin.close()
+            except (OSError, ValueError):
+                pass
+
+
 class Hands:
     def __init__(self, cfg: dict, board, on_done, paper_file, dry: bool = False):
         self.cfg = cfg
@@ -434,6 +642,10 @@ class Hands:
         self._tl = threading.local()             # 工人线程正在改哪篇（任务上记的 paper_path）：见 paper_file
         self.paper_file = Path(paper_file)
         self.dry = dry
+        # 工人开工时现取会上情况（app.py 给）：task → {"talk": 这场会最近的对话, "agenda": 总纲}，见 _context
+        self.context_fn = None
+        self._live: dict[str, dict] = {}         # 正在跑的改稿任务 → {"feed" 或 "pending"/"open", "prog"}：amend 往里送补充
+        self._live_lock = threading.Lock()
         self._cv = threading.Condition()
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
@@ -630,6 +842,114 @@ class Hands:
              "seq": time.time(), "before": before, "after": after},
             ensure_ascii=False, indent=1), encoding="utf-8")
 
+    # ---------- 时限、补充 ----------
+    def _limits(self) -> tuple[float, float]:
+        """改稿的两个时限：(多久没动静就算卡住, 一条最多跑多久)。config 里 hands.idle_timeout_s / hands.max_s；
+        旧配置只有 timeout_s 的，把它当上限。"""
+        h = self.hcfg
+        idle = float(h.get("idle_timeout_s") or 300)
+        cap = float(h.get("max_s") or h.get("timeout_s") or 1800)
+        return max(1.0, idle), max(1.0, cap)
+
+    def _live_set(self, task_id: str, slot: dict | None) -> None:
+        if "_live_lock" not in self.__dict__:
+            self._live_lock, self._live = threading.Lock(), {}
+        with self._live_lock:
+            if slot is None:
+                self._live.pop(task_id, None)
+            else:
+                self._live[task_id] = slot
+
+    def _live_end(self, task_id: str) -> bool:
+        """工人跑完了、要收场：把这条从"在跑"里拿掉（之后 amend、stop_task 都返回 False），返回收场之前有没有叫停过。"""
+        if "_live_lock" not in self.__dict__:
+            return False
+        with self._live_lock:
+            slot = self._live.pop(task_id, None)
+        return bool(slot and slot.get("cancel") is not None and slot["cancel"].is_set())
+
+    def stop_task(self, task_id: str) -> bool:
+        """叫停正在跑的那条（对方刚派出去就说"先别派""不要改"）：置停止标记，call 看到就杀掉 claude 进程
+        （API 那一路不等这次回话、不写论文）。这条按没改成收场（error"已撤回"），不报超时、不重试；
+        改到一半的改动照常记进 changes（_run_task 的 finally），撤回原样由 app 用 viewer.reject_task 做。
+        这条不在跑（排队中、已经收场、标注、CCD 模式）：返回 False。"""
+        if "_live_lock" not in self.__dict__:
+            return False
+        with self._live_lock:
+            slot = self._live.get(task_id)
+            if not slot or slot.get("cancel") is None:
+                return False
+            slot["cancel"].set()
+            prog = slot.get("prog")
+        if prog is not None:
+            try:
+                prog.note("正在停下")
+            except Exception:
+                pass
+        _log([f"[{datetime.now().isoformat(timespec='seconds')}] {task_id} 叫停"])
+        return True
+
+    def _stop_finish(self, task: dict, prog) -> None:
+        """叫停的那条收场：没改成，error 写"已撤回"。"""
+        stopped = self._en_text("已撤回", "Withdrawn")
+        try:
+            prog.done(stopped)
+        except Exception:
+            pass
+        self.board.finish(task["id"], error=stopped)
+
+    def _amend_take(self, task_id: str, close: bool = False) -> list[str]:
+        """API 那一路：取走这条任务攒下的补充。close=True 且没有补充：之后的 amend 都返回 False（要往论文里写了）。"""
+        if "_live_lock" not in self.__dict__:
+            return []
+        with self._live_lock:
+            slot = self._live.get(task_id)
+            if not slot:
+                return []
+            got, slot["pending"] = list(slot.get("pending") or []), []
+            if close and not got:
+                slot["open"] = False
+            return got
+
+    def amend(self, task_id: str, text: str) -> bool:
+        """对方补充了正在改的那条（"结论整章跳过""只换标点"）：送进正在跑的工人，不另记一条排队
+        （2026-11-21：T20 在跑，补的限制记成 T21 排在后面，T20 一直不知道）。
+        - Claude Code 那一路：往工人的 stdin 写一条 user 消息（见 _Feed：它在这一轮下一次调工具时就看到）；
+        - API 那一路：攒着，这次回话到了先不写论文，带上补充再要一次。
+        任务卡的原话后面补上这句，进度记一步"收到补充"。这条不在跑、工人已经交了结果、写不进去：返回 False，调用方另记一条。"""
+        text = " ".join(str(text or "").split())
+        if not text or "_live_lock" not in self.__dict__:
+            return False
+        with self._live_lock:
+            slot = self._live.get(task_id)
+            if not slot:
+                return False
+            if slot.get("feed") is not None:
+                ok = slot["feed"].send(AMEND_MSG.format(text=text))
+            elif slot.get("open"):
+                slot.setdefault("pending", []).append(text)
+                ok = True
+            else:
+                ok = False
+            prog = slot.get("prog")
+        if not ok:
+            return False
+        try:
+            t = self.board.get(task_id) or {}
+            remark = str(t.get("remark") or "").rstrip()
+            remark = (remark + f"\n补充：{text}") if "\n" in remark else (remark + f"（补充：{text}）")
+            self.board.annotate(task_id, remark=remark,
+                                amends=list(t.get("amends") or []) + [{"text": text, "at": datetime.now().isoformat(timespec="seconds")}])
+        except Exception as e:
+            _log([f"[{datetime.now().isoformat(timespec='seconds')}] {task_id} 补充记不进任务卡：{e!r}"])
+        if prog is not None:
+            try:
+                prog.note("收到补充")
+            except Exception:
+                pass
+        _log([f"[{datetime.now().isoformat(timespec='seconds')}] {task_id} 收到补充：{text[:200]}"])
+        return True
+
     # 网络这一类错误：请求还没到模型就被挡了（403 network_edge_blocked，代理换节点时偶发）、限流、服务忙。
     # 这类错误什么都没改，隔几秒再试一次多半就过了。
     RETRY_WAITS = (5, 15)
@@ -646,22 +966,39 @@ class Hands:
             w in what for w in ("network", "overloaded", "timed out", "timeout", "econnreset", "fetch failed", "socket"))
 
     def call(self, args: list[str], *, cwd: str, timeout: float, cancel=None, label: str = "",
-             on_event=None) -> tuple[dict | None, str, int | None]:
+             on_event=None, idle: float | None = None, feed: _Feed | None = None) -> tuple[dict | None, str, int | None]:
         """起一次 `claude -p ...`，返回 (解析出的 JSON, 原始输出, 退出码)。cancel 置位或超时就杀掉（退出码 None）。
         on_event：配 --output-format stream-json --verbose 用，每来一个事件（一行 JSON）就回调一次；返回的 JSON 是最后那个
-        type=result 事件，字段和 --output-format json 的一样。"""
+        type=result 事件，字段和 --output-format json 的一样。
+        idle（配 on_event）：这么多秒一个事件都没来就算卡住、杀掉，返回"超时：5 分钟没有进展"；timeout 是一条最多跑多久，
+        给了 idle 时超了返回"超时：超过 30 分钟"，没给照旧"超时 N 秒"（2026-11-21：大任务一直在改，照样到 420 秒被杀）。
+        feed（配 --input-format stream-json）：stdin 开成管道，第一条 user 消息是提示词，收到 result 事件就关上（见 _Feed）。"""
         cmd = [_resolve_claude(self.hcfg.get("claude", "claude"))] + args
         kw = {}
         if sys.platform == "win32":
             kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         stamp = datetime.now().isoformat(timespec="seconds")
+        if feed is not None and on_event is None:
+            on_event = lambda ev: None             # noqa: E731  有 stdin 要关：得一行一行读
         try:
             proc = subprocess.Popen(cmd, cwd=cwd, env=_strip_claude_env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", **kw)
+                                    stdin=subprocess.PIPE if feed is not None else subprocess.DEVNULL,
+                                    text=True, encoding="utf-8", errors="replace", **kw)
         except OSError as e:
+            if feed is not None:
+                feed.closed = True
             _log([f"===== [{stamp}] {label} 起不来 claude：{e!r} ====="])
             return None, f"起不来 claude：{e}", -1
+        if feed is not None and not feed.attach(proc):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            feed.close()
+            _log([f"===== [{stamp}] {label} 提示词写不进 claude 的 stdin ====="])
+            return None, "起不来 claude：提示词写不进去", -1
         box: dict = {}
+        last = [time.time()]                     # 最后一个事件（stdout 上的一行）是什么时候来的：判断"多久没动静"
         if on_event is None:
             t = threading.Thread(target=lambda: box.update(zip(("out", "err"), proc.communicate())), daemon=True)
         else:
@@ -670,6 +1007,7 @@ class Hands:
                 te = threading.Thread(target=lambda: errs.append(proc.stderr.read()), daemon=True)
                 te.start()
                 for ln in proc.stdout:
+                    last[0] = time.time()
                     lines.append(ln)
                     s = ln.strip()
                     if not s.startswith("{"):
@@ -678,10 +1016,14 @@ class Hands:
                         ev = json.loads(s)
                     except ValueError:
                         continue
+                    if feed is not None and isinstance(ev, dict) and ev.get("type") == "result":
+                        feed.close()             # 这之前写进去的补充它都会处理（可能再跑一轮），之后的 amend 另记任务
                     try:
                         on_event(ev)
                     except Exception as e:
                         _log([f"[{datetime.now().isoformat(timespec='seconds')}] {label} 事件回调出错：{e!r}"])
+                if feed is not None:
+                    feed.close()
                 proc.wait()
                 te.join(5)
                 box["out"], box["err"] = "".join(lines), "".join(e for e in errs if e)
@@ -690,13 +1032,24 @@ class Hands:
         deadline = time.time() + timeout
         while t.is_alive():
             t.join(0.2)
-            if (cancel is not None and cancel.is_set()) or time.time() > deadline:
+            stalled = idle is not None and on_event is not None and time.time() - last[0] > idle
+            if (cancel is not None and cancel.is_set()) or time.time() > deadline or stalled:
+                if feed is not None:
+                    feed.close()
                 try:
                     proc.kill()
                 except OSError:
                     pass
                 t.join(3)
-                why = "被打断" if (cancel is not None and cancel.is_set()) else f"超时 {timeout:.0f} 秒"
+                from .worker_ctx import fmt_span
+                if cancel is not None and cancel.is_set():
+                    why = "被打断"
+                elif stalled:
+                    why = f"超时：{fmt_span(idle)}没有进展"
+                elif idle is not None:
+                    why = f"超时：超过 {fmt_span(timeout)}"
+                else:
+                    why = f"超时 {timeout:.0f} 秒"
                 _log([f"===== [{stamp}] {label} {why} ====="])
                 return None, why, None
         out, err = box.get("out") or "", box.get("err") or ""
@@ -705,7 +1058,9 @@ class Hands:
         shown = out if on_event is None else (f"（stream-json，{out.count(chr(10))} 个事件；最后的 result：）\n"
                                               + (json.dumps(data, ensure_ascii=False) if data else out[-2000:]))
         _log([f"===== [{stamp}] {label} rc={proc.returncode} cmd={cmd[0]} =====",
-              "--- prompt ---", next((a for i, a in enumerate(args) if i and args[i - 1] == "-p"), ""),
+              "--- prompt ---", feed.first if feed is not None else next(
+                  (a for i, a in enumerate(args) if i and args[i - 1] == "-p"), ""),
+              *(["--- 补充 ---", *feed.sent] if feed is not None and feed.sent else []),
               "--- stderr ---", err, "--- stdout ---", shown])
         tail = (err or (json.dumps(data, ensure_ascii=False) if (on_event is not None and data) else out)).strip()[-300:]
         return data, tail, proc.returncode
@@ -716,17 +1071,20 @@ class Hands:
             from . import hands_api
             hands_api.run_edit(self, task)
             return
-        prompt = self._prompt(task)
+        ctx = self._context(task)
+        prompt = self._prompt(task, ctx)
         shot = task.get("shot")
         shot_dir = Path(shot).resolve().parent if (shot and Path(shot).exists()) else None
-        # 只能读写论文所在的文件夹、只能改论文这一个文件；截图所在的文件夹只读（见 lockdown_args）
+        orig_dir = ctx["orig"].parent if ctx.get("orig") else None
+        # 只能读写论文所在的文件夹、只能改论文这一个文件；截图所在的文件夹、会前原稿的副本只读（见 lockdown_args）
         # stream-json：边改边把"在 3.2 节改第 2 处"这类进度写到任务卡上（最后那个 result 事件和原来 json 格式给的一样）
-        args = ["-p", prompt, "--output-format", "stream-json", "--verbose"] + lockdown_args(
-            self.folder, editable=self._rel_paper(), read_dirs=[shot_dir]) + [
+        # 提示词从 stdin 进（--input-format stream-json）：跑着的时候对方补充的话能接着送进去（amend）
+        args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"] + lockdown_args(
+            self.folder, editable=self._rel_paper(), read_dirs=[shot_dir, orig_dir]) + [
             "--model", self.hcfg.get("model", "claude-opus-5-5"),
             "--effort", self.hcfg.get("effort", "xhigh"),
         ]
-        timeout = float(self.hcfg.get("timeout_s", 420))
+        idle, cap = self._limits()
         before = self._read_paper()
         prog = WorkerProgress(self.board, task["id"], self.paper_file)
 
@@ -734,20 +1092,45 @@ class Hands:
             prog.done("已完成" if kw.get("result") is not None else "修改失败")
             self.board.finish(task["id"], **kw)
 
-        for attempt in range(len(self.RETRY_WAITS) + 1):
-            data, tail, rc = self.call(args, cwd=str(self.folder), timeout=timeout, label=task["id"], on_event=prog.on_event)
-            if rc is None:
-                finish(error=f"修改{tail}")
-                return
-            # 被网络挡了、文件也没动过：等几秒再来一次（文件动过了就不重试，免得改两遍）
-            if attempt < len(self.RETRY_WAITS) and self._transient(data, rc) and self._read_paper() == before:
-                wait = self.RETRY_WAITS[attempt]
-                _log([f"[{datetime.now().isoformat(timespec='seconds')}] {task['id']} 网络类错误，{wait} 秒后重试"
-                      f"（第 {attempt + 1} 次）：{(data or {}).get('api_error') or tail[-120:]}"])
-                prog.note("网络错误，正在重试")
-                time.sleep(wait)
-                continue
-            break
+        # 在跑的这条：feed 给 amend 送补充，cancel 给 stop_task 叫停（重试之间也算在跑）
+        cancel = threading.Event()
+        slot = {"feed": None, "prog": prog, "cancel": cancel}
+        self._live_set(task["id"], slot)
+        data, tail, rc = None, "", None
+        try:
+            for attempt in range(len(self.RETRY_WAITS) + 1):
+                if cancel.is_set():
+                    break
+                feed = _Feed(prompt)
+                with self._live_lock:
+                    slot["feed"] = feed
+                data, tail, rc = self.call(args, cwd=str(self.folder), timeout=cap, idle=idle, label=task["id"],
+                                           on_event=prog.on_event, feed=feed, cancel=cancel)
+                with self._live_lock:
+                    slot["feed"] = None
+                if cancel.is_set():
+                    break
+                if rc is None:
+                    finish(error=f"修改{tail}")
+                    return
+                # 被网络挡了、文件也没动过：等几秒再来一次（文件动过了就不重试，免得改两遍）
+                if attempt < len(self.RETRY_WAITS) and self._transient(data, rc) and self._read_paper() == before:
+                    wait = self.RETRY_WAITS[attempt]
+                    _log([f"[{datetime.now().isoformat(timespec='seconds')}] {task['id']} 网络类错误，{wait} 秒后重试"
+                          f"（第 {attempt + 1} 次）：{(data or {}).get('api_error') or tail[-120:]}"])
+                    prog.note("网络错误，正在重试")
+                    if cancel.wait(wait):
+                        break
+                    if feed.sent:                # 送进上一个进程的补充：已经记在原话里了，重来时一起带上
+                        prompt = self._prompt(self.board.get(task["id"]) or task, self._context(task))
+                    continue
+                break
+            stopped = self._live_end(task["id"])  # 从这里起不再收补充、不再能叫停
+        finally:
+            self._live_set(task["id"], None)
+        if stopped:
+            self._stop_finish(task, prog)
+            return
         if data is None:
             finish(error=f"修改失败：模型返回格式错误（rc={rc}）")
             return
@@ -836,7 +1219,8 @@ class Hands:
                         for x in said:
                             on_step("想法", x)
                         said.clear()
-                        st = ask_step(str(c.get("name") or ""), c.get("input") or {}, self.paper_file.name, sections)
+                        st = ask_step(str(c.get("name") or ""), c.get("input") or {}, self.paper_file.name, sections,
+                                      folder=self.folder)
                         if st:
                             on_step(*st)
                     except Exception:
@@ -998,7 +1382,53 @@ class Hands:
     def _rel_paper(self) -> str:
         return self.paper_file.name     # 工作目录就是它所在的文件夹
 
-    def _prompt(self, task: dict) -> str:
+    def _context(self, task: dict) -> dict:
+        """工人开工时现取的会上情况（不在记任务时取：排队期间对方又补充、纠正的也带上），见 worker_ctx.py：
+        {"agenda": 总纲, "talk": 这场会最近的对话, "tasks": 本场这篇上已有的任务, "toc": 文档目录,
+         "orig": 会前原稿的只读副本（和现在的稿子一样时 None）}。talk、agenda 由 context_fn（app.py 给）提供。"""
+        from . import worker_ctx
+        got: dict = {}
+        fn = getattr(self, "context_fn", None)
+        if fn is not None:
+            try:
+                got = fn(task) or {}
+                if isinstance(got, str):
+                    got = {"talk": got}
+            except Exception as e:
+                _log([f"[{datetime.now().isoformat(timespec='seconds')}] {task.get('id')} 取会上对话失败：{e!r}"])
+                got = {}
+        try:
+            tasks = self.board.tasks()
+        except Exception:
+            tasks = []
+        orig = None
+        try:
+            o = worker_ctx.original(self.paper_file, task, tasks, STATE)
+            if o is not None and not worker_ctx.same_text(o, self.paper_file):
+                orig = o
+        except Exception as e:
+            _log([f"[{datetime.now().isoformat(timespec='seconds')}] {task.get('id')} 存会前原稿失败：{e!r}"])
+        return {"agenda": " ".join(str(got.get("agenda") or "").split()), "talk": str(got.get("talk") or "").strip(),
+                "tasks": worker_ctx.session_tasks(tasks, task), "toc": worker_ctx.toc(self.paper_file), "orig": orig}
+
+    def _meeting_block(self, ctx: dict, api: bool = False) -> str:
+        """提示词里"这场会的情况"那一节。"""
+        from .config import assistant_name
+        out = []
+        if ctx.get("agenda"):
+            out.append(f"- 这场会的总纲（对方开会时定的）：{ctx['agenda'][:400]}")
+        if ctx.get("talk"):
+            out.append(f"- 这场会最近的对话（逐字稿原文，语音识别可能有错字；“{assistant_name(self.cfg)}”说的是前台对话模型当场答的，"
+                       "不一定对）：\n" + ctx["talk"])
+        if ctx.get("tasks"):
+            out.append("- 本场在这篇文档上已经记过的任务（标题是小模型写的转述，结果是当时工人的汇报）：\n" + ctx["tasks"])
+        if ctx.get("orig"):
+            out.append("- 会前原稿（这篇文档本场第一条修改之前的样子，只读）："
+                       + ("附在后面那条消息里" if api else f"`{ctx['orig']}`，用 Read 打开，这个文件不能改"))
+        return "\n".join(out) or "（没有别的记录）"
+
+    def _prompt(self, task: dict, ctx: dict | None = None) -> str:
+        ctx = self._context(task) if ctx is None else ctx
         shot = task.get("shot")
         if shot and Path(shot).exists():
             shot = str(Path(shot).resolve())
@@ -1017,6 +1447,8 @@ class Hands:
             focus=focus_s,
             section=(task.get("section") or "").strip() or "无",
             title=(task.get("title") or "").strip() or "无",
+            meeting=self._meeting_block(ctx),
+            toc=ctx.get("toc") or "（没认出标题）",
         )) + ("\n\n这场会用英文开：上面要你最后输出的那两句，改用英文写（会被念给与会的人听，也会显示在任务板上）。"
               "写成标注时那五行也用英文：#note / Where: / Section: / Change: / Needs:。"
               if str((self.cfg.get("meeting") or {}).get("lang") or "zh") == "en" else "")

@@ -689,9 +689,19 @@ def _kill_tree(proc) -> None:
         pass
 
 
+def mineru_env() -> dict:
+    """起 MinerU 子进程的环境：去掉本进程的 Python 路径，关遥测，按 UTF-8 输出。"""
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"))}
+    env.update({"MINERU_TELEMETRY_DISABLED": "1", "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1",
+                "COLUMNS": "160", "NO_COLOR": "1"})
+    env.setdefault("MINERU_MODEL_SOURCE", "modelscope")
+    return env
+
+
 def run_mineru(pdf: Path, out_dir: Path, pages: int, progress=None, tier: str | None = None,
-               timeout: int | None = None) -> Path:
-    """mineru-kit parse → out_dir/res（structured_content.json + images/）。失败抛 ConvertError。"""
+               timeout: int | None = None, remote_url: str | None = None) -> Path:
+    """mineru-kit parse → out_dir/res（structured_content.json + images/）。失败抛 ConvertError。
+    remote_url：本机常驻的 MinerU 服务（zuhui/mineru_svc.py，模型已经载好），交给它解析，省掉每次加载模型。"""
     kit = mineru_kit()
     if not kit:
         raise ConvertError("没装 MinerU（.venv-mineru）")
@@ -700,11 +710,13 @@ def run_mineru(pdf: Path, out_dir: Path, pages: int, progress=None, tier: str | 
     src = out_dir / "input.pdf"                     # 拷一份到 ASCII 路径下：中文名、空格、长路径都不怕
     shutil.copyfile(pdf, src)
     z = out_dir / "out.zip"
-    env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"))}
-    env.update({"MINERU_TELEMETRY_DISABLED": "1", "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1",
-                "COLUMNS": "160", "NO_COLOR": "1"})
-    env.setdefault("MINERU_MODEL_SOURCE", "modelscope")
+    env = mineru_env()
     cmd = [str(kit), "parse", str(src), "-o", str(z), "-f", "zip", "--tier", tier]
+    if remote_url:
+        cmd += ["--remote-url", remote_url]
+        # 连的是本机的服务：不经代理（用户的 NO_PROXY 里不一定有 127.0.0.1）
+        np = [x for x in (env.get("NO_PROXY") or env.get("no_proxy") or "").split(",") if x.strip()]
+        env["NO_PROXY"] = env["no_proxy"] = ",".join(np + [h for h in ("127.0.0.1", "localhost") if h not in np])
     t0 = time.time()
     proc = subprocess.Popen(cmd, cwd=str(out_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             stdin=subprocess.DEVNULL, env=env, creationflags=NO_WINDOW)
@@ -1158,15 +1170,15 @@ def pdf_page_count(pdf: Path) -> int:
         return d.page_count
 
 
-def convert_pdf(pdf: Path, stage: Path, progress=None) -> tuple[str, dict]:
-    """PDF → (Markdown, 统计)，图写进 stage/figures。失败抛 ConvertError。"""
+def convert_pdf(pdf: Path, stage: Path, progress=None, remote_url: str | None = None) -> tuple[str, dict]:
+    """PDF → (Markdown, 统计)，图写进 stage/figures。失败抛 ConvertError。remote_url 见 run_mineru。"""
     t0 = time.time()
     pages = pdf_page_count(pdf)
     work = Path(tempfile.mkdtemp(prefix="bloom-mineru-"))
     try:
         if progress:
             progress(stage="启动 MinerU", done=0, total=pages, text=f"正在加载识别模型（共 {pages} 页）")
-        res = run_mineru(pdf, work, pages, progress=progress)
+        res = run_mineru(pdf, work, pages, progress=progress, remote_url=remote_url)
         sc = json.loads((res / "structured_content.json").read_text(encoding="utf-8"))
         if progress:
             progress(stage="写 Markdown", done=pages, total=pages, text="正在整理公式、表格和图片")

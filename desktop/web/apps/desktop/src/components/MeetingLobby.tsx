@@ -202,9 +202,14 @@ export function MeetingLobby({ cur, paperName, busy, importText, notice, title, 
                       as high either way, so 开始会议 under it never moves */}
                   <div className="lb-paper-text">
                     <div className="lb-paper-name" title={hasPaper ? name : undefined} aria-hidden={!hasPaper || undefined}>{hasPaper ? name : ' '}</div>
-                    <div className={`lb-paper-meta ${missing ? 'is-err' : ''}`} aria-hidden={!hasPaper || undefined} data-testid={missing ? 'lobby-paper-missing' : undefined}>
+                    {/* a new PDF comes in as plain text first: while its formulas and tables are recognized, the same line
+                        says so in place (no row grows), then goes back to its size and date */}
+                    <div className={`lb-paper-meta ${missing ? 'is-err' : ''}`} aria-hidden={!hasPaper || undefined}
+                      data-testid={missing ? 'lobby-paper-missing' : paper?.pending_full ? 'lobby-paper-recognizing' : undefined}>
                       {missing
                         ? t('lobby.paper_missing')
+                        : paper?.pending_full
+                        ? t('lobby.paper_recognizing')
                         : hasPaper
                         ? [
                             paper?.words ? t('lobby.words', { a: i18n().formatNumber(paper.words, { notation: 'compact', maximumFractionDigits: 1 }) }) : null,

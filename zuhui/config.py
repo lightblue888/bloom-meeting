@@ -161,8 +161,10 @@ def assistant_name(cfg: dict | None = None) -> str:
 # ---------------- 模型切换（会议页卡片上点、开会时说一句都行） ----------------
 # 每一类的可选项：(id, 界面上的名字)。默认是 Claude Haiku 5.5 + Claude Opus 5.5 + Extra。
 MODEL_OPTIONS = {
-    # 对话模型（快嘴）只有 Haiku（2026-11-12 去掉 DeepSeek Pro、Flash，不能换）：走用户 Claude 套餐的常驻进程（zuhui/cli_brain.py）
-    "dialog": [("claude-haiku-5-5", "Claude Haiku 5.5")],
+    # 对话模型（快嘴）：走用户 Claude 套餐的常驻进程（zuhui/cli_brain.py）。2026-11-12 去掉了 DeepSeek Pro、Flash，只剩 Haiku；
+    # 2026-11-20 用户："对其他用户来说 也是可以改的"——三档都给，Haiku 最快，Opus 最慢（换之前 app.set_model 先试一次）
+    "dialog": [("claude-haiku-5-5", "Claude Haiku 5.5"), ("claude-sonnet-5-5", "Claude Sonnet 5.5"),
+               ("claude-opus-5-5", "Claude Opus 5.5")],
     "edit": [("claude-opus-5-5", "Claude Opus 5.5"), ("claude-opus-4-6[1m]", "Claude Opus 4.6")],
     "effort": [("low", "Low"), ("medium", "Medium"), ("high", "High"), ("xhigh", "Extra"), ("max", "Max")],
 }

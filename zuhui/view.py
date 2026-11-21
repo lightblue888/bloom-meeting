@@ -3103,10 +3103,13 @@ class Viewer:
             cur = current_paper() or {}
             name = cur.get("name") if Path(str(cur.get("path") or "")) == self.mirror else None
             words, outline = self._paper_outline(st)
+            from . import pdf_full
             return {"path": str(self.mirror), "name": name or self.mirror.stem, "exists": True, "bytes": st.st_size,
                     "modified": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st.st_mtime)),
                     "kind": "latex" if self.mirror.suffix.lower() == ".tex" else "markdown",
-                    "words": words, "outline": outline}
+                    "words": words, "outline": outline,
+                    # 新 PDF 先出的纯文本，后台还在识别公式和表格（pdf_full.py）：大厅那行小字显示"正在识别…"
+                    "pending_full": pdf_full.pending(self.mirror)}
         except OSError:
             return {"path": str(self.mirror), "name": self.mirror.stem, "exists": False}
 
@@ -3738,6 +3741,15 @@ class Viewer:
         self.papers = []
         self.set_mirror(_pp(self.cfg), rebase=False)
 
+    def lobby_seen(self) -> None:
+        """前端在大厅、窗口可见时轮询：大厅刚变成可见、又没在开会，就把 MinerU 常驻服务起好（导入 PDF 时省掉加载模型）。
+        一直开着的大厅不续命：10 分钟没有转换就关（mineru_svc.py）。没装 MinerU 什么都不做。"""
+        try:
+            from . import mineru_svc
+            mineru_svc.lobby_seen(meeting=bool(self.meetings and self.meetings.current()))
+        except Exception:
+            pass
+
     def api_current(self) -> dict:
         cur = self.meetings.current()
         mode = self.mode_now()
@@ -4016,6 +4028,8 @@ class Viewer:
                         v["mirror"] = None
                     self._json(v)
                 elif p == "/api/current":
+                    if "lobby=1" in self.path:     # 大厅开着：装了 MinerU 的，后台把常驻服务起好（mineru_svc.py）
+                        viewer.lobby_seen()
                     self._json(viewer.api_current())
                 elif p == "/api/brain/stream":     # "Claude 在干什么"：变了就推（前端只管每秒计时）
                     self._brain_stream()

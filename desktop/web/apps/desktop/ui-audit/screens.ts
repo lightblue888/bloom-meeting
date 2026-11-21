@@ -78,7 +78,8 @@ const withClaude = (w: World): World => {
   idle(w);
   Object.assign(w.provider, { kind: 'claude', base_url: '', fast: '', main: '', key_set: false, key_tail: '', active: false, label: '' });
   w.models = {
-    dialog: { current: 'claude-haiku-5-5', options: [{ id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5' }] },
+    dialog: { current: 'claude-haiku-5-5', options: [{ id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5' },
+      { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' }, { id: 'claude-opus-5-5', label: 'Claude Opus 5.5' }] },
     edit: { current: 'claude-opus-5-5', options: [{ id: 'claude-opus-5-5', label: 'Claude Opus 5.5' }, { id: 'claude-opus-4-6[1m]', label: 'Claude Opus 4.6' }] },
     effort: { current: 'xhigh', options: [['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra'], ['max', 'Max']].map(([id, label]) => ({ id, label })) },
     tts: 'CosyVoice 3',
@@ -86,7 +87,7 @@ const withClaude = (w: World): World => {
   };
   w.current.ready = { ...w.current.ready!, models: { fast: 'Claude Haiku 5.5', hands: 'Claude Opus 5.5 · Extra', tts: 'CosyVoice 3', asr: 'Fun-ASR Nano' } };
   w.usageMonth = { ...w.usageMonth, mode: 'claude', models: [], tokens: 0, costs: {} };
-  w.userStrings.push('Claude Haiku 5.5', 'Claude Opus 5.5', 'Claude Opus 4.6');
+  w.userStrings.push('Claude Haiku 5.5', 'Claude Sonnet 5.5', 'Claude Opus 5.5', 'Claude Opus 4.6');
   return w;
 };
 /** Settings → Speech → Microphone picked a USB microphone that isn't plugged in now */
@@ -580,6 +581,34 @@ export const SCREENS: Screen[] = [
     ready: '[data-testid="lobby-start"][disabled]',
   },
   {
+    // a new PDF came in as plain text first; its formulas and tables are still being recognized in the background
+    // (zuhui/pdf_full.py): the line under its name says so in place, then goes back to its size and date
+    name: 'lobby-paper-recognizing',
+    what: 'Lobby right after a new PDF came in: 正在识别公式和表格… in the line under its name, everything else as usual',
+    page: 'main',
+    world: (w) => {
+      idle(w);
+      w.current.paper = { ...w.current.paper!, pending_full: true };
+      return w;
+    },
+    go: async (c) => {
+      await c.page.getByTestId('lobby-paper-recognizing').waitFor();
+    },
+    ready: '[data-testid="lobby-paper"]',
+    transitions: [
+      {
+        name: 'recognized (the line goes back to its size and date; nothing moves)',
+        act: async (c) => {
+          c.world.current.paper = { ...c.world.current.paper!, pending_full: false, words: 9120 };
+          await c.waitPoll();
+          await c.page.getByTestId('lobby-paper-recognizing').waitFor({ state: 'detached' });
+        },
+        expect: ['.lb-paper-meta'],
+        note: 'the same line, the same height: only its words change',
+      },
+    ],
+  },
+  {
     name: 'lobby-no-paper-stress',
     what: 'Lobby with no paper picked, longest names, 40 past meetings',
     page: 'main',
@@ -692,6 +721,44 @@ export const SCREENS: Screen[] = [
     stress: true,
     ready: '[data-testid="claude-now"] .mt-now-dot',
     transitions: liveTransitions.filter((t) => !/guest joins/.test(t.name)),
+  },
+  {
+    // a PDF added during the meeting came in as plain text first (zuhui/pdf_full.py): its revisions stay queued until
+    // the full version replaces it, and the AI strip says how many are waiting for it
+    name: 'meeting-waiting-doc',
+    what: 'In a meeting: 2 revisions waiting for their document to finish loading, nothing else being edited (AI strip)',
+    page: 'main',
+    world: (w) => {
+      const c = w.current;
+      c.brain = { ...c.brain!, edits: [], queued: 0, waiting: 2 };
+    },
+    go: async (c) => {
+      await c.page.getByTestId('claude-now').getByText(c.T('2 条等文档识别完', '2 waiting on the paper')).waitFor();
+    },
+    ready: '[data-testid="claude-now"] .mt-now-dot',
+    transitions: [
+      {
+        // the longest the row gets: a revision on another paper runs meanwhile, one more queued behind it
+        name: 'another revision starts meanwhile (the waiting part comes right after it)',
+        act: async (c) => {
+          // the same revision the board already shows under its bubble (same steps): only the strip's words change
+          const w = c.world.current.board!.tasks.find((x) => x.status === 'working')!;
+          const edit = { id: w.id, idx: w.idx, title: w.title, started: w.progress?.started ?? NOW_S - 36, edits: w.progress?.edits ?? 1, log: w.progress?.log };
+          await c.push('brain', brainWith(c, { edits: [edit], queued: 1, waiting: 2 }));
+          await c.page.locator('[data-testid="claude-now"] .mt-now-v', { hasText: w.title }).waitFor();
+        },
+        expect: ['[data-testid="claude-now"] .mt-now-row *'],
+      },
+      {
+        name: 'document recognized (the waiting part goes; the strip keeps its size)',
+        act: async (c) => {
+          await c.push('brain', brainWith(c, { queued: 3, waiting: 0 }));
+          await c.page.getByTestId('claude-now').getByText(c.T('2 条等文档识别完', '2 waiting on the paper')).waitFor({ state: 'detached' });
+        },
+        expect: ['[data-testid="claude-now"] .mt-now-row *'],
+        note: 'only the words in the background row change',
+      },
+    ],
   },
   {
     name: 'meeting-live-empty',

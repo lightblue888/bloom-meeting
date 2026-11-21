@@ -4,7 +4,9 @@
     .tex                    就地改这个文件（当纯文本比对）
     .pdf                    MinerU 转成 Markdown（公式是 LaTeX、表格是 Markdown 表、图截进 figures/），
                             写到同目录下的 <名字>-bloom/<名字>.md，学生改这份（不回写 PDF）；
-                            MinerU 没装 / 失败 / 超时就退回 PyMuPDF 按版面块抽纯文本
+                            MinerU 没装 / 失败 / 超时就退回 PyMuPDF 按版面块抽纯文本。
+                            装了 MinerU、又没有转好的：先用 PyMuPDF 纯文本装上（不到 1 秒），MinerU 排进后台，
+                            转完自动换成完整版（zuhui/pdf_full.py；meta 里 pending_full=true 表示还在等）
     .docx                   pandoc 转 gfm（公式 TeX，图抽进 figures/），同样写到 <名字>-bloom/<名字>.md
     .pptx                   转成讲稿（每页标题、正文、表格、图、备注，zuhui/pptx_conv.py），写到 <名字>-bloom/<名字>.md；
                             只读：AI 不改 PPT，手改一段、写回也不做
@@ -35,6 +37,8 @@ PAPERS = STATE / "papers"
 TEXT_EXT = {".md", ".markdown", ".txt"}
 STATUS_FILE = STATE / "paper_import.json"
 CONV_META = ".bloom-convert.json"
+# 新 PDF 先出文字、后台补全（pdf_full.py）。ZUHUI_PDF_QUICK=0 退回以前：导入时就等 MinerU 转完
+QUICK = os.environ.get("ZUHUI_PDF_QUICK", "1").strip().lower() not in ("0", "off", "no")
 
 
 def _slug(s: str) -> str:
@@ -237,8 +241,9 @@ def _legacy_edited(src: Path, legacy: Path, ext: str, pandoc: str | None) -> boo
     return True
 
 
-def _convert(src: Path, ext: str, folder: Path, work: Path, in_place: bool, cb) -> tuple[Path, dict]:
-    """PDF / docx → 学生改的 Markdown。返回 (路径, 转换信息)。"""
+def _convert(src: Path, ext: str, folder: Path, work: Path, in_place: bool, cb, quick: bool = False) -> tuple[Path, dict]:
+    """PDF / docx → 学生改的 Markdown。返回 (路径, 转换信息)。
+    quick（PDF，装了 MinerU）：没有转好的就先抽纯文本，转换信息带 pending_full=True，调用方把 MinerU 排进后台。"""
     from .components import pandoc as _find_pandoc         # 随后端装的 pypandoc-binary 优先，没有再找系统的
     pandoc = _find_pandoc() if ext == ".docx" else None
     if ext == ".docx" and not pandoc:
@@ -272,12 +277,21 @@ def _convert(src: Path, ext: str, folder: Path, work: Path, in_place: bool, cb) 
         if edited or not (better or stale):
             return dst, {"engine": meta.get("engine") or "existing", "note": "沿用上次转好的 " + dst.name,
                          **{k: v for k, v in meta.items() if k in ("figures", "tables", "equations")}}
+        if better and quick:
+            # 上次的纯文本版（还在等、或者上次 MinerU 没转成），没人改过：接着用它，MinerU 再排进后台
+            from . import pdf_full
+            pdf_full._update_meta(dst, drop=("full_error", "full_skipped"), pending_full=True)
+            return dst, {"engine": "pymupdf", "note": "沿用纯文本版，后台识别公式和表格", "pending_full": True}
     stage = Path(tempfile.mkdtemp(prefix="bloom-conv-"))
     t0 = time.time()
     try:
-        if ext == ".pdf":
+        if ext == ".pdf" and quick:
+            _report(cb, stage="PyMuPDF", text="正在提取文字")
+            md, stats = _pdf_text(src), {"engine": "pymupdf", "pending_full": True}
+        elif ext == ".pdf":
             try:
-                md, stats = pdfconv.convert_pdf(src, stage, progress=lambda **kw: _report(cb, **kw))
+                from . import mineru_svc                    # 常驻服务起着就交给它（模型已经载好）
+                md, stats = pdfconv.convert_pdf(src, stage, progress=lambda **kw: _report(cb, **kw), remote_url=mineru_svc.url())
             except pdfconv.ConvertError as e:
                 _report(cb, stage="PyMuPDF", text="识别失败，改为提取纯文本")
                 shutil.rmtree(stage / "figures", ignore_errors=True)
@@ -297,6 +311,7 @@ def _convert(src: Path, ext: str, folder: Path, work: Path, in_place: bool, cb) 
         meta_p.write_text(json.dumps({"engine": stats.get("engine"), "source": str(src), "src_mtime": src.stat().st_mtime,
                                       "md_sha1": _sha1(dst), "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                       **({"conv": pdfconv.DOCX_VERSION} if ext == ".docx" else {}),
+                                      **({"pending_full": True} if stats.get("pending_full") else {}),
                                       **{k: v for k, v in stats.items() if k in ("figures", "tables", "equations", "tier", "secs", "slides")}},
                                      ensure_ascii=False, indent=1), encoding="utf-8")
     except OSError:
@@ -345,8 +360,9 @@ def _zip_precheck(src: Path) -> None:
             xml += got if is_xml else 0
 
 
-def import_file(src: str | Path, progress=None) -> dict:
-    """progress：可选回调，收到 {"busy","name","stage","done","total","text","elapsed"}（PDF 转换时每半秒左右一次）。"""
+def import_file(src: str | Path, progress=None, quick: bool | None = None) -> dict:
+    """progress：可选回调，收到 {"busy","name","stage","done","total","text","elapsed"}（PDF 转换时每半秒左右一次）。
+    quick（默认 QUICK）：装了 MinerU 的 PDF 没有转好的，先出纯文本、MinerU 排进后台（返回的 info 带 pending_full）。"""
     src = Path(src).resolve()
     # 先把拿不来当论文的挡掉（报给用户看的话要说人话），再动任何文件
     if not src.exists():
@@ -364,8 +380,9 @@ def import_file(src: str | Path, progress=None) -> dict:
         _zip_precheck(src)
     _report(progress, busy=True, name=src.stem, stage="开始", done=0, total=0, text=f"正在导入 {src.name}",
             t0=time.time(), error=None)
+    quick = (QUICK if quick is None else bool(quick)) and ext == ".pdf" and pdfconv.mineru_kit() is not None
     try:
-        return _import(src, ext, progress)
+        return _import(src, ext, progress, quick)
     except Exception as e:
         _report(progress, error=str(e)[:300])
         raise
@@ -373,7 +390,7 @@ def import_file(src: str | Path, progress=None) -> dict:
         _report(progress, busy=False, stage="完成")
 
 
-def _import(src: Path, ext: str, progress) -> dict:
+def _import(src: Path, ext: str, progress, quick: bool = False) -> dict:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     keep = PAPERS / f"{stamp}-{_slug(src.stem)}-{uuid.uuid4().hex[:4]}"   # 原样快照放这里，不碰用户的文件夹
     keep.mkdir(parents=True, exist_ok=True)
@@ -400,10 +417,10 @@ def _import(src: Path, ext: str, progress) -> dict:
     elif ext in (".pdf", ".docx", ".pptx"):
         try:
             try:
-                dst, conv = _convert(src, ext, folder, work, in_place, progress)
+                dst, conv = _convert(src, ext, folder, work, in_place, progress, quick)
             except PermissionError:               # 源目录能写探测文件、却建不了子文件夹：退回副本
                 in_place, work = False, keep
-                dst, conv = _convert(src, ext, folder, work, in_place, progress)
+                dst, conv = _convert(src, ext, folder, work, in_place, progress, quick)
         except Exception:
             shutil.rmtree(keep, ignore_errors=True)
             raise
@@ -426,4 +443,8 @@ def _import(src: Path, ext: str, progress) -> dict:
             "in_place": bool(in_place and (dst.parent == folder or dst.parent.parent == folder))}
     if conv is not None:
         info["convert"] = conv
+    if conv and conv.get("pending_full"):          # 先出的纯文本：MinerU 排进后台，转完换成完整版
+        from . import pdf_full
+        pdf_full.enqueue(src, dst, keep)
+        info["pending_full"] = True
     return info

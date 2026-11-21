@@ -1798,6 +1798,9 @@ function ClaudeNow({ brain, board, ai }: { brain: Brain; board: Board | null; ai
     if (w.started) bits.push(t('meeting.ai.secs', { s: String(since(brain, w.started)) }));
     back.push(bits.join(' · '));
   }
+  // revisions held back until their document (a new PDF, plain text first) is recognized in full: said before the plain
+  // queue count, it's why they haven't started
+  if (brain.waiting) back.push(t('meeting.ai.waiting', { n: String(brain.waiting) }));
   if (queued) back.push(t('meeting.ai.queued', { n: String(queued) }));
   if (brain.unspoken) back.push(t('meeting.ai.unspoken', { n: String(brain.unspoken) }));
   // notes don't make the back busy: the text wasn't changed; they are counted after the state
@@ -1815,7 +1818,8 @@ function ClaudeNow({ brain, board, ai }: { brain: Brain; board: Board | null; ai
         <span className="mt-now-m" title={(dp ? dp.model || brain.deep_model : brain.edit_model) || brain.back_model || undefined}>
           {(dp ? dp.model || brain.deep_model : brain.edit_model) || brain.back_model || t('meeting.ai.back')}
         </span>
-        <span className="mt-now-v">
+        {/* one line: what doesn't fit ends in "…", the whole of it on hover */}
+        <span className="mt-now-v" title={back.length ? back.join('；') + tail : undefined}>
           {back.length ? back.join('；') : t('meeting.ai.back_idle')}
           {tail && <span className="mt-now-notes">{tail}</span>}
         </span>

@@ -332,17 +332,20 @@ def wants_look(text: str) -> bool:
 _CN_VER = {"四点六": "4.6", "五点五": "5.5", "四六": "4.6", "五五": "5.5", "一百万": "1m", "一兆": "1m", "一m": "1m"}
 _SWITCH_VERB = r"(?:换成|换到|换为|换回|切成|切到|切回|切换成|切换到|切为|改成|改用|改为|改回|调到|调成|调为|调回|开到|设成|设到|设为)"
 _MODEL_TARGETS = [
+    # 对话模型三档（config.MODEL_OPTIONS["dialog"]）。排在改稿前面：一句里有"对话/聊天"才算对话模型，
+    # "对话模型换成 Opus"不会被认成改稿；"改稿模型换成 Opus"里没有对话的词，照旧落到下面的改稿
+    ("dialog", "claude-haiku-5-5", r"(?:claude|克劳德)?-?(?:haiku|海库|俳句)(?:-?5[.\-]?5)?"),
+    ("dialog", "claude-sonnet-5-5", r"(?:claude|克劳德)?-?(?:sonnet|索内特|十四行诗?)(?:-?5[.\-]?5)?"),
+    ("dialog", "claude-opus-5-5", r"(?:claude|克劳德)?-?(?:opus|欧帕斯|奥帕斯)(?:-?5[.\-]?5)?"),
     ("edit", "claude-opus-4-6[1m]", r"(?:claude|克劳德)?-?(?:opus|欧帕斯|奥帕斯)?-?4[.\-]?6(?:\[?1m\]?)?|(?:opus|欧帕斯)-?4\.?6"),
     ("edit", "claude-opus-5-5", r"(?:claude|克劳德)?-?(?:opus|欧帕斯|奥帕斯)?-?5[.\-]?5"),
-    ("dialog", "deepseek-flash", r"(?:deepseek|迪普西克)?-?(?:v4)?-?(?:flash|弗拉什|闪电版?)"),
-    ("dialog", "deepseek-v4-pro", r"(?:deepseek|迪普西克)?-?(?:v4)?-?(?:pro|普柔|专业版)"),
     ("effort", "max", r"max|麦克斯|最高|最大|拉满"),
     ("effort", "xhigh", r"extra|艾克斯特拉|xhigh|x-high|加强|超高"),
     ("effort", "high", r"high|高"),
     ("effort", "medium", r"medium|中等?"),
     ("effort", "low", r"low|低"),
 ]
-_PART_WORDS = {"dialog": r"对话|聊天|说话|快嘴|deepseek|迪普西克|chat|dialog|conversation|voice",
+_PART_WORDS = {"dialog": r"对话|聊天|说话|快嘴|haiku|sonnet|海库|索内特|chat|dialog|conversation|voice",
                "edit": r"改稿|改论文|改文章|写稿|claude|克劳德|opus|欧帕斯|edit|writing|rewrit|revision",
                "effort": r"思考强度|思考|推理强度|effort|thinking|reasoning"}
 _NOT_COMMAND = re.compile(r"为什么|是不是|会不会|有没有必要|要不要|能不能先别|别换|不要换|不用换|之前|刚才|以前"
@@ -360,7 +363,7 @@ def _norm_cmd(text: str) -> str:
         t = t.replace(k, v)
     t = re.sub(r"斜杠|反斜杠", "/", t)
     t = re.sub(r"中括号|方括号", "", t)
-    if re.search(r"model|opus|claude|欧帕斯|克劳德", t):          # 念出来的型号："杠"是短横，"点"是小数点，中文数字换成阿拉伯数字
+    if re.search(r"model|opus|haiku|sonnet|claude|欧帕斯|克劳德|海库|索内特", t):          # 念出来的型号："杠"是短横，"点"是小数点，中文数字换成阿拉伯数字
         t = t.replace("杠", "-").replace("点", ".").translate(str.maketrans("零一二三四五六七八九", "0123456789"))
     t = re.sub(r"\s+", "", t)
     return t
@@ -1215,6 +1218,8 @@ class Meeting:
         _orphan_timer = threading.Timer(20.0, lambda: None if self.meetings.current() else self.meetings.close_orphan())
         _orphan_timer.daemon = True
         _orphan_timer.start()
+        self._attach_pdf_full()
+        threading.Thread(target=self._resume_pdf_full, name="pdf-full-resume", daemon=True).start()
         self.hands.start()
         if replay_session:
             threading.Thread(target=ears_replay, args=(replay_session, self._on_event),
@@ -1284,6 +1289,11 @@ class Meeting:
                     self.ears.stop()
                 if self.viewer:
                     self.viewer.stop()
+            except Exception:
+                pass
+            try:                                  # MinerU 常驻服务（大厅里起的）跟着后端一起关，不留着占显存
+                from . import mineru_svc
+                mineru_svc.shutdown()
             except Exception:
                 pass
             if prog:
@@ -1390,6 +1400,86 @@ class Meeting:
         return {str(p["id"]): p for p in people if isinstance(people, list) and isinstance(p, dict)
                 and p.get("id") and p.get("id") not in ("me", "claude")}
 
+    # ---------- 新 PDF 先出文字、后台补全（zuhui/pdf_full.py、mineru_svc.py） ----------
+    def _attach_pdf_full(self) -> None:
+        """后台把纯文本版换成完整版时要做的事（换完 / 不换 / 失败）、换之前的核对、MinerU 常驻服务的开会状态和日志。"""
+        from . import mineru_svc, pdf_full
+        pdf_full.listeners[:] = [self._on_full_ready]
+        pdf_full.guard = self._full_guard
+        pdf_full.log = lambda s: self.log("ready", text=s)
+        mineru_svc.in_meeting = lambda: bool(self.meetings.current())
+        mineru_svc.log = lambda s: self.log("ready", text=s)
+
+    def _resume_pdf_full(self) -> None:
+        """后端重启前还没换成完整版的（摊开的单子、开着的会上、屏幕上那篇）：重新排上。"""
+        try:
+            from . import pdf_full
+            paths = [p.get("path") for p in load_open_papers()["papers"]] + [p.get("path") for p in papers_of(self.meetings.current())]
+            n = pdf_full.resume(list(dict.fromkeys([str(x) for x in paths if x] + [str(self.paper.path)])))
+            if n:
+                self.log("ready", text=self._L(f"接着在后台识别 {n} 篇文档的公式和表格", f"resuming formula and table recognition for {n} document(s)"))
+        except Exception as e:
+            self.log("fast_error", error=f"后台识别没接上：{e!r}")
+
+    def _full_guard(self, dst: Path) -> str | None:
+        """换成完整版之前：这篇上已经有 AI 改完的修订（没撤回的）就不换。"""
+        from .board import is_app_task
+        from .meetings import paper_id
+        pid = paper_id(dst)
+        for t in self.board.tasks():
+            if t.get("status") != "done" or t.get("note") or t.get("rejected") or is_app_task(t):
+                continue
+            if self._same_path(t.get("paper_path"), dst) or t.get("paper") == pid:
+                return "revised"
+        return None
+
+    def _on_full_ready(self, dst: Path, outcome: str, info: dict) -> None:
+        """后台转完了。换成了完整版：屏幕上这篇的对比页马上重做（基线 pdf_full 已经一起换了），摊开过的那几篇丢掉做好的旧页面，
+        快嘴重读全文；开着会、这篇在会上：这场"开会前"的版本快照也换成完整版（纪要、版本对比不把纯文本→完整版当成修改）。
+        不管换没换：叫醒工人，排着队等这篇的改稿任务开始。"""
+        try:
+            if outcome == "swapped":
+                got = self._paper_lock.acquire(timeout=30)
+                try:
+                    self._full_swapped(Path(dst))
+                finally:
+                    if got:
+                        self._paper_lock.release()
+        finally:
+            try:
+                self.hands.notify()
+            except Exception:
+                pass
+
+    def _full_swapped(self, dst: Path) -> None:
+        from .meetings import paper_id
+        v = self.viewer
+        if v is not None:
+            pages = getattr(v, "_pages", None)
+            if isinstance(pages, dict):
+                pages.pop(paper_id(dst), None)
+            if self._same_path(dst, v.mirror):
+                v._sig = None
+                v._ready_cache = (0.0, None)
+                for ev in (getattr(v, "_urgent", None), getattr(v, "_wake", None)):
+                    if ev is not None:
+                        ev.set()
+        if self._same_path(dst, self.paper.path):
+            try:
+                self.paper.reload()
+            except Exception:
+                pass
+            self.fast._recall = None
+            threading.Thread(target=self.fast.warm, name="fast-warm-full", daemon=True).start()
+        cur = self.meetings.current()
+        if cur and any(self._same_path(p.get("path"), dst) for p in papers_of(cur)):
+            try:
+                from . import paper_versions
+                name = next((p.get("name") for p in papers_of(cur) if self._same_path(p.get("path"), dst)), None)
+                paper_versions.rebase_before(dst, cur.get("id"), name, cur.get("title"))
+            except Exception as e:
+                self.log("fast_error", error=self._L(f"开会前的版本没换成完整版：{e!r}", f"updating the pre-meeting version failed: {e!r}"))
+
     def _on_paper_edited(self) -> None:
         """你在对比页里手改了一段：重读论文，检索索引下次重建，整篇论文的缓存重新热一下。"""
         threading.Thread(target=self.fast.warm, name="fast-rewarm", daemon=True).start()
@@ -1443,14 +1533,19 @@ class Meeting:
         out["unspoken"] = sum(1 for j in list(self.pending_answers) if not j.get("spoken"))   # 查好了、上了屏、还没念
         out["deep"] = deeps[-1] if deeps else None
         try:                                     # 改稿中的那条：进度和步骤跟着状态一起推
+            tasks = self.board.tasks()
             out["edits"] = [{"id": t.get("id"), "idx": t.get("idx"), "title": t.get("title"),
                              "started": (t.get("progress") or {}).get("started"),
                              "edits": (t.get("progress") or {}).get("edits") or 0,
                              "log": list((t.get("progress") or {}).get("log") or [])[-40:]}
-                            for t in self.board.tasks() if t.get("status") == "working"]
-            out["queued"] = sum(1 for t in self.board.tasks() if t.get("status") == "queued")
+                            for t in tasks if t.get("status") == "working"]
+            queued = [t for t in tasks if t.get("status") == "queued"]
+            # 排着队、等文档识别完（先出的纯文本还没换成完整版，pdf_full.py）的单独数：界面写"N 条等文档识别完"
+            waiting = getattr(self.hands, "waiting_doc", None)
+            out["waiting"] = sum(1 for t in queued if waiting is not None and waiting(t))
+            out["queued"] = len(queued) - out["waiting"]
         except Exception:
-            out["edits"], out["queued"] = [], 0
+            out["edits"], out["queued"], out["waiting"] = [], 0, 0
         return out
 
     def _talk_alive(self) -> bool:
@@ -1591,7 +1686,14 @@ class Meeting:
     def _gpu_up(self) -> None:
         """要开会了（点开会按钮 / 录屏开始）：配音服务、接话分类器没在跑就后台载入，都不等。
         配音服务冷启动约 20 秒，一般在第一次要 Claude 出声之前就好了；没好之前要说的话用备用嗓子顶上。
-        没有论文的会（AI 不出声）：都不载，显存留着。"""
+        没有论文的会（AI 不出声）：都不载，显存留着。
+        大厅开着时起好的 MinerU 常驻服务（mineru_svc.py）没在转 PDF 就关掉，显存留给配音和转写。"""
+        try:
+            from . import mineru_svc
+            if mineru_svc.status()["running"]:
+                threading.Thread(target=mineru_svc.on_meeting_start, name="mineru-release", daemon=True).start()
+        except Exception:
+            pass
         if self._chat_now():
             return
         self._gpu_want = time.time()

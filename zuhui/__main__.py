@@ -19,6 +19,42 @@ sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
 
 
+def _doc_waiting(t: dict) -> bool:
+    """这条任务改的那篇（旧任务没记：屏幕上那篇）还是先出的纯文本、后台正在识别公式和表格（pdf_full.py）。
+    CCD 工人在另一个进程里，看不到后端的队列：按 .md 旁边 meta 里的 pending_full 判断。"""
+    from .config import current_paper
+    from .pdf_full import waiting_on_disk
+    try:
+        return waiting_on_disk(t.get("paper_path") or (current_paper() or {}).get("path"))
+    except Exception:
+        return False
+
+
+def ccd_events(b, seen: set) -> list[dict]:
+    """worker watch 的一轮：新出现的排队任务。文档还在识别的先不报（也不记进 seen），换成完整版之后再报。"""
+    out = []
+    for t in b.tasks():
+        if t["status"] == "queued" and t["id"] not in seen and not _doc_waiting(t):
+            seen.add(t["id"])
+            out.append({"event": "task", "id": t["id"], "idx": t["idx"], "title": t["title"],
+                        "remark": t["remark"], "shot": t.get("shot"), "section": t.get("section"),
+                        "created": t.get("created"),
+                        # 会中能摊开几篇论文：这条改哪一篇（旧任务没有，改当前那篇）
+                        "paper_path": t.get("paper_path")})
+    return out
+
+
+def ccd_claim(b, task_id: str) -> dict:
+    """worker claim：文档还在识别的不领（照样排着，status 还是 queued，带 waiting），换成完整版后 watch 会再报这一条。"""
+    t = b.get(task_id)
+    if t is not None and t.get("status") == "queued" and _doc_waiting(t):
+        return {"id": t["id"], "status": "queued", "waiting": "doc", "title": t["title"], "remark": t["remark"],
+                "note": "文档还在识别公式和表格，换成完整版后 watch 会再报这一条，到时再领"}
+    t = b.claim(task_id)
+    return {"id": t["id"], "status": t["status"], "title": t["title"], "remark": t["remark"],
+            "shot": t.get("shot"), "section": t.get("section"), "paper_path": t.get("paper_path")}
+
+
 def worker(a):
     """CCD 工人会话经这些命令跟任务板打交道（任务板多进程安全）。"""
     import json
@@ -29,22 +65,13 @@ def worker(a):
         seen = set()
         try:
             while True:
-                for t in b.tasks():
-                    if t["status"] == "queued" and t["id"] not in seen:
-                        seen.add(t["id"])
-                        print(json.dumps({"event": "task", "id": t["id"], "idx": t["idx"], "title": t["title"],
-                                          "remark": t["remark"], "shot": t.get("shot"), "section": t.get("section"),
-                                          "created": t.get("created"),
-                                          # 会中能摊开几篇论文：这条改哪一篇（旧任务没有，改当前那篇）
-                                          "paper_path": t.get("paper_path")}, ensure_ascii=False), flush=True)
+                for ev in ccd_events(b, seen):
+                    print(json.dumps(ev, ensure_ascii=False), flush=True)
                 time.sleep(1.0)
         except KeyboardInterrupt:
             return
     elif a.wcmd == "claim":
-        t = b.claim(a.id)
-        print(json.dumps({"id": t["id"], "status": t["status"], "title": t["title"], "remark": t["remark"],
-                          "shot": t.get("shot"), "section": t.get("section"), "paper_path": t.get("paper_path")},
-                         ensure_ascii=False))
+        print(json.dumps(ccd_claim(b, a.id), ensure_ascii=False))
     elif a.wcmd == "finish":
         if not (a.result or a.error):
             raise SystemExit("finish 需要 --result 或 --error")

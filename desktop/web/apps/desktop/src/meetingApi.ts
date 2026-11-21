@@ -538,6 +538,9 @@ export interface PaperInfo {
   kind?: string;
   words?: number;
   outline?: string[];
+  /** a new PDF came in as plain text first; formulas and tables are still being recognized in the background
+   *  (zuhui/pdf_full.py). The lobby says so in the line under the name until the full version replaces it */
+  pending_full?: boolean;
   /** during a meeting: the paper's id in the meeting, and whether it was just added (false: it was open already) */
   id?: string;
   added?: boolean;
@@ -610,6 +613,8 @@ export interface Brain {
   /** the revision being made right now: its progress and steps, pushed with the rest */
   edits?: { id: string; idx: number; title: string; started?: number | null; edits?: number; log?: string[] }[];
   queued?: number;
+  /** queued revisions held back until their document is recognized in full (not counted in `queued`) */
+  waiting?: number;
   /** answers found and on screen, not said yet */
   unspoken?: number;
   /** the backend's clock when this was made (seconds); the page sets `skew` (backend − page) when it arrives */
@@ -993,7 +998,8 @@ function cleanOnly<T extends { transcript_raw?: unknown; cleanup?: unknown }>(d:
 }
 
 export const meetingApi = {
-  current: () => get<Current>('/api/current').then(cleanOnly),
+  /** lobby: the lobby is on screen (the backend gets the PDF recognizer ready, if it has one) */
+  current: (lobby?: boolean) => get<Current>(lobby ? '/api/current?lobby=1' : '/api/current').then(cleanOnly),
   invite: () => get<Invite>('/api/invite', 4000),
   // 第 8 批: `sample` lists the sample meeting while there is no meeting of the user's own (回顾 asks for it), in the
   // app's language (zuhui/sample.py)

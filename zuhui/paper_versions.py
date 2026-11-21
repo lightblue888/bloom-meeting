@@ -151,6 +151,29 @@ def snapshot(path, name: str | None = None, kind: str = "before", mid: str | Non
     return item
 
 
+def rebase_before(path, mid, name: str | None = None, title: str | None = None) -> dict | None:
+    """开会中这篇从先出的纯文本换成了完整版（pdf_full.py）：这场会"开会前"那一条换成现在的稿子，纪要和版本对比
+    不把纯文本→完整版当成会上的修改。这场会还没有"开会前"那一条（和上一条一样时不记）：补记一条。"""
+    p = Path(str(path))
+    try:
+        data = p.read_bytes()
+    except OSError:
+        return None
+    if len(data) > MAX_BYTES:
+        return None
+    pid = _pid(p)
+    with _lock:
+        d = _load(pid)
+        it = next((x for x in reversed(d["items"]) if x.get("kind") == "before" and mid and str(x.get("mid")) == str(mid)), None)
+        if it is not None:
+            it.update(sha=_put_blob(data), chars=_chars(data), bytes=len(data))
+            _save(pid, d)
+    if it is None:
+        return snapshot(p, name, "before", mid, title)
+    _gc()
+    return dict(it)
+
+
 def snapshot_meeting(meeting: dict | None, kind: str) -> list[dict]:
     """一场会上摊开的每一篇各存一份（开会时 kind=before，散会后 kind=after）。"""
     from .meetings import papers_of

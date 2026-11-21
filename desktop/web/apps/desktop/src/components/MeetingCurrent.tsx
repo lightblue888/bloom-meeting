@@ -62,6 +62,10 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
   // when it comes back
   const shown = useRef(active);
   shown.current = active;
+  // the lobby is on screen and the window visible (set below, once the view is known): the poll says so. When the
+  // lobby comes into view (after a gap in these), the backend gets the PDF recognizer ready for a paper about to be
+  // dropped in; an idle one is closed after 10 minutes however long the lobby stays up (zuhui/mineru_svc.py)
+  const lobbyShown = useRef(false);
   const kick = useRef<() => void>(() => {});
   // failures in a row: one slow answer is not a dead backend (it can be busy for seconds); only 3 in a row count
   const fails = useRef(0);
@@ -71,7 +75,7 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
     const tick = async () => {
       clearTimeout(h);
       try {
-        const c = await meetingApi.current();
+        const c = await meetingApi.current(lobbyShown.current && shown.current && document.visibilityState === 'visible');
         if (!alive) return;
         fails.current = 0;
         setCur(c);
@@ -274,6 +278,7 @@ export function MeetingCurrent({ onToast, active = true }: { onToast: (msg: stri
   // the lobby until a meeting is on; a meeting that started (here or already running when the app opened) brings up the
   // meeting page, which stays after it ends (its summary) until 新会议 goes back to the lobby
   const [view, setView] = useState<'lobby' | 'room'>('lobby');
+  lobbyShown.current = view === 'lobby' && !liveNow;
   const [lobbyTitle, setLobbyTitle] = useState('');
   // 开始会议 was clicked and the recording started: the backend says "live" a moment later; the button stays busy till then
   const [waitLive, setWaitLive] = useState(0);

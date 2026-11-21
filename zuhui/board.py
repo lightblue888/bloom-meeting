@@ -253,12 +253,13 @@ class Board:
             self._save()
             return dict(task)
 
-    def claim_next(self) -> dict | None:
-        """原子地把最早的 queued 置为 working 并返回；没有就 None。"""
+    def claim_next(self, skip=None) -> dict | None:
+        """原子地把最早的 queued 置为 working 并返回；没有就 None。
+        skip(task) 为真的先不领（它那篇文档还在识别公式和表格，换成完整版之后再改，见 pdf_full.py），照样排着。"""
         with self._lock:
             self.reload()
             for t in sorted(self._tasks, key=lambda x: x["idx"]):
-                if t["status"] == "queued":
+                if t["status"] == "queued" and not (skip is not None and skip(t)):
                     t["status"], t["started"] = "working", _now()
                     self._save()
                     return dict(t)

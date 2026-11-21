@@ -502,9 +502,18 @@ class Hands:
         self._threads = []
 
     # ---------- 工人循环 ----------
+    def waiting_doc(self, task: dict) -> bool:
+        """这条任务改的那篇（任务上记的，旧任务算屏幕上那篇）还是先出的纯文本、后台正在识别公式和表格（pdf_full.py）：
+        先不改，换成完整版（或识别失败）之后再开始。别的文档上的任务不受影响。"""
+        try:
+            from . import pdf_full
+            return pdf_full.pending(task.get("paper_path") or self._paper_file)
+        except Exception:
+            return False
+
     def _loop(self) -> None:
         while not self._stop.is_set():
-            task = self.board.claim_next()
+            task = self.board.claim_next(skip=self.waiting_doc)
             if task is None:
                 with self._cv:
                     self._cv.wait(2.0)

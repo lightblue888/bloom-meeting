@@ -156,8 +156,9 @@ const asCohost = (w: World) => {
 };
 const brainWith = (c: Ctx, patch: Record<string, unknown>) => ({ ...c.world.current.brain, now: NOW_S, ...patch });
 /** 2026-11-21: a big revision under way (全文去掉多余冒号分号: 41 places in 7 minutes) while the talk goes on. The bubble
- *  that asked for it is far up the column; the card at the transcript's foot says how far it is (EditDock.tsx). The
- *  worker's steps come in Chinese as the backend writes them ("在 3.2 节改第 12 处"; an English meeting translates them) */
+ *  that asked for it is far up the column; the AI strip above the transcript says how far it is, all of it on hover
+ *  (MeetingLayout's ClaudeNow, claudeNow.ts). The worker's steps come in Chinese as the backend writes them
+ *  ("在 3.2 节改第 12 处"; an English meeting translates them) */
 const LONG_SECS = ['2.2', '3.1', '3.2', '4.1', '5.5', 'F'];
 const longSec = (i: number) => LONG_SECS[Math.min(LONG_SECS.length - 1, Math.floor(i / 7))];
 const longLog = (n: number) => Array.from({ length: n }, (_, i) => `在 ${longSec(i)} 节改第 ${i + 1} 处`);
@@ -200,7 +201,7 @@ const withLongEdit = (w: World): World => {
   w.userStrings.push(title, ...longLog(45), ...longLog(45).map((_, i) => `edit ${i + 1} in “${longSec(i)}”`));
   return w;
 };
-/** nothing being revised, three waiting their turn (the card is one line) */
+/** nothing being revised, three waiting their turn */
 const withQueueOnly = (w: World): World => {
   withLongEdit(w);
   const c = w.current;
@@ -211,46 +212,48 @@ const withQueueOnly = (w: World): World => {
   c.ready = { ...c.ready!, working: 0, queued: 3 };
   return w;
 };
-/** the AI strip's words change with the card's */
-const DOCK_STILL = ['[data-testid="claude-now"] .mt-now-row *'];
-/** a new line: the lines above the card move up as always (turns, marks, system lines), the card stays */
-const LINES_MOVE = ['.mt-right-n', '[data-testid="transcript"] section', '[data-testid="transcript"] section *', '[data-testid="transcript-mark"]',
+/** only the AI strip's words change: the strip keeps its place and size */
+const STRIP_WORDS = ['[data-testid="claude-now"] .mt-now-row *'];
+/** a new line: the lines move up as always (turns, marks, system lines) */
+const LINES_MOVE =['.mt-right-n', '[data-testid="transcript"] section', '[data-testid="transcript"] section *', '[data-testid="transcript-mark"]',
   '[data-testid="transcript-mark"] *', '[data-testid="transcript"] .mt-sysline'];
 const newLine = async (c: Ctx) => {
   c.world.current.transcript.push({ t: '20:31', sec: 1231, who: 'teacher', text: c.T('那第三节的实验设置我们再统一一下表述。', "So let's word the setup in section 3 the same way throughout.") });
   await c.waitPoll();
 };
-const dockTransitions: Transition[] = [
+/** a big revision starts, goes on and ends while the talk goes on: only the strip's words change, and nothing shows up
+ *  at (or goes from) the transcript's foot */
+const longEditTransitions: Transition[] = [
   {
     name: 'the revision goes on (its count, step and time change)',
     act: (c) => c.push('brain', brainWith(c, { edits: [longRow(c.world, 42)], queued: 1 })),
-    expect: DOCK_STILL,
-    note: 'only the words in the card change: the card keeps its place and size',
+    expect: STRIP_WORDS,
+    note: 'only the words in the AI strip change: the strip and the transcript keep their places',
   },
   {
-    name: 'it finishes, the next one waits its turn (the card goes to one line)',
+    name: 'it finishes, the next one waits its turn',
     act: (c) => c.push('brain', brainWith(c, { edits: [], queued: 1 })),
-    expect: DOCK_STILL,
+    expect: STRIP_WORDS,
   },
   {
-    name: 'the queue empties (the card goes, its slot stays)',
+    name: 'the queue empties',
     act: (c) => c.push('brain', brainWith(c, { edits: [], queued: 0 })),
-    expect: DOCK_STILL,
-    note: 'nothing above it moves down',
+    expect: STRIP_WORDS,
+    note: 'nothing at the foot of the transcript moves',
   },
   {
-    name: 'the next revision starts (the card comes back)',
+    name: 'the next revision starts',
     act: (c) => {
       const t3 = c.world.current.board!.tasks.find((x) => x.id === 'T3')!;
       return c.push('brain', brainWith(c, { edits: [{ id: 'T3', idx: 3, title: t3.title, started: NOW_S - 2, edits: 0, log: ['读文档'] }], queued: 0 }));
     },
-    expect: DOCK_STILL,
+    expect: STRIP_WORDS,
   },
   {
-    name: 'a new line comes in (it goes above the card)',
+    name: 'a new line comes in',
     act: newLine,
-    expect: [...DOCK_STILL, ...LINES_MOVE],
-    note: 'the lines move up as always; the card stays at the foot',
+    expect: [...STRIP_WORDS, ...LINES_MOVE],
+    note: 'the lines move up as always',
   },
 ];
 /** scrolled up (by the wheel, as a person does: a scroll nobody asked for is pinned back) to the bubble that asked for
@@ -267,26 +270,51 @@ const toLiveEdit = async (c: Ctx) => {
   }
   await c.settle(250);
 };
-/** pointing at the AI strip's background row: its whole words in the window's own tip (Tooltip.tsx) */
+/** a point on the AI strip: its first row (the front's words) or its second (the background's), a share of its width */
+const stripAt = async (c: Ctx, row: 1 | 2, fx = 0.6) => {
+  const b = (await c.page.getByTestId('claude-now').first().boundingBox())!;
+  return { x: b.x + b.width * fx, y: b.y + (row === 1 ? b.height * 0.3 : b.height * 0.72) };
+};
+/** pointing at the AI strip (anywhere on it: the strip itself is the target): the whole status in the window's own
+ *  tip (Tooltip.tsx), one part a line */
 const openNowTip = async (c: Ctx) => {
   await c.page.mouse.move(2, 2);
-  await c.page.getByTestId('claude-now-back').hover();
-  await c.page.locator('.mw-tip').waitFor();
+  const p = await stripAt(c, 1);
+  await c.page.mouse.move(p.x, p.y);
+  await c.page.locator('.mw-tip.is-lines').waitFor();
   await c.settle(150);
 };
 const tipWords = (c: Ctx) => c.page.locator('.mw-tip').textContent({ timeout: 800 }).catch(() => null);
+const tipBox = (c: Ctx) => c.page.locator('.mw-tip').boundingBox({ timeout: 800 }).catch(() => null);
+const sameBox = (a: { width: number; height: number } | null, b: { width: number; height: number } | null) =>
+  !!a && !!b && Math.abs(a.width - b.width) < 0.5 && Math.abs(a.height - b.height) < 0.5;
 const tipTransitions: Transition[] = [
   {
-    name: 'the revision goes on while the tip is open (it keeps its words)',
+    name: 'the revision goes on while the tip is open (it keeps its words and size)',
     act: async (c) => {
       const before = await tipWords(c);
+      const box = await tipBox(c);
       await c.push('brain', brainWith(c, { edits: [longRow(c.world, 42)], queued: 1 }));
       await c.settle(1300);
       const after = await tipWords(c);
       if (after == null) throw new Error('the tip closed when the progress changed');
       if (after !== before) throw new Error(`the tip's words changed under the pointer: "${before}" → "${after}"`);
+      if (!sameBox(box, await tipBox(c))) throw new Error("the tip's size changed under the pointer");
     },
-    expect: [...DOCK_STILL, '[data-testid="edit-dock"] *', '.mw-tip'],
+    expect: [...STRIP_WORDS, '.mw-tip'],
+  },
+  {
+    name: 'the pointer moves along the strip to the background row (the same tip, it doesn\'t close and open again)',
+    act: async (c) => {
+      const before = await tipWords(c);
+      const p = await stripAt(c, 2, 0.75);
+      await c.page.mouse.move(p.x, p.y, { steps: 6 });
+      await c.settle(120);
+      const after = await tipWords(c);
+      if (after == null) throw new Error('the tip closed while the pointer moved along the strip');
+      if (after !== before) throw new Error(`another tip opened on the strip: "${before}" → "${after}"`);
+    },
+    expect: ['.mw-tip'],
   },
   {
     name: 'a new line comes in while the tip is open (the transcript scrolls itself; the tip stays)',
@@ -294,9 +322,45 @@ const tipTransitions: Transition[] = [
       await newLine(c);
       if ((await tipWords(c)) == null) throw new Error('the tip closed when the transcript scrolled to the new line');
     },
-    expect: [...DOCK_STILL, ...LINES_MOVE, '.mw-tip'],
+    expect: [...STRIP_WORDS, ...LINES_MOVE, '.mw-tip'],
   },
 ];
+/** everything at once in the background: two lookups (one found, not said yet), two revisions, two waiting on their
+ *  document, three queued, notes for after the meeting: the tip has a line for each */
+const withBusyBack = (w: World): World => {
+  withLongEdit(w);
+  const c = w.current;
+  const T = (zh: string, en: string) => (w.lang === 'zh' ? zh : en);
+  const t3 = c.board!.tasks.find((x) => x.id === 'T3')!;
+  Object.assign(t3, { status: 'working', started: isoAgo(50), progress: { edits: 3, started: NOW_S - 50, updated: NOW_S - 4, log: ['读文档', '在 4.3 节改第 3 处'] } });
+  const q1 = w.stress
+    ? T('TSGBench 的问题定义是怎么写的，和我们 2.1 节的写法比一下哪个更清楚，顺便看看它有没有把生成和预测分开说', 'how TSGBench words its problem definition, compared with our 2.1, and whether it keeps generation and forecasting apart')
+    : T('TSGBench 的问题定义是怎么写的', 'how TSGBench words its problem definition');
+  const topic1 = T('问题定义写法', 'problem definition wording');
+  const step1 = w.stress ? 'TSGBench: A Benchmark for Time Series Generation — problem definition and evaluation protocol' : 'TSGBench problem definition';
+  c.brain = {
+    ...c.brain!,
+    front: 'thinking',
+    deeps: [
+      { id: 1, q: q1, topic: topic1, secs: 14, t0: NOW_S - 14, last: NOW_S - 2, sec0: 1210, state: 'running', steps: [{ k: '读文档' }, { k: '联网搜索', v: step1 }], model: c.brain?.deep_model },
+      { id: 2, q: T('FinTS 在表 3 里出现了几次', 'how often FinTS appears in table 3'), topic: T('FinTS 次数', 'FinTS count'), secs: 6, t0: NOW_S - 6, last: NOW_S - 1, sec0: 1220, state: 'done', steps: [{ k: '读文档' }], model: c.brain?.deep_model, quick: true },
+    ],
+    edits: [longRow(w, 41), { id: 'T3', idx: 3, title: t3.title, started: NOW_S - 50, edits: 3, log: ['读文档', '在 4.3 节改第 3 处'] }],
+    waiting: 2,
+    queued: 3,
+    unspoken: 1,
+  };
+  w.userStrings.push(q1, topic1, step1, T('FinTS 次数', 'FinTS count'), t3.title);
+  return w;
+};
+/** the tip says every part, one a line: each revision with its step, each lookup with its question */
+const tipHasAll = async (c: Ctx) => {
+  const lines = await c.page.locator('.mw-tip .mw-tip-l').allTextContents();
+  const want = [c.T('在 F 节改第 41 处', 'Edit 41 in “F”'), c.T('在 4.3 节改第 3 处', 'Edit 3 in “4.3”'), c.T('问题定义写法', 'problem definition wording'),
+    c.T('2 条等文档识别完', '2 waiting on the paper'), c.T('3 条排队中', '3 more queued')];
+  for (const w of want) if (!lines.some((l) => l.includes(w))) throw new Error(`the tip doesn't say "${w}": ${JSON.stringify(lines)}`);
+  if (lines.length !== 8) throw new Error(`the tip has ${lines.length} lines, not one a part (8): ${JSON.stringify(lines)}`);
+};
 const openNotes = async (c: Ctx) => {
   await openMeeting(c);
   await c.page.getByTestId('meeting-tab-notes').click();
@@ -346,6 +410,51 @@ const openShareMenu = async (c: Ctx) => {
 const goAutosaveSettings = async (c: Ctx) => {
   await goSettings(c);
   await scrollTo('[data-setting="general.autosave"]')(c);
+};
+
+/** the lobby with 16 left-over items: more than one page at every window size */
+const withCarryPages = (w: World): World => {
+  withCarry(w);
+  const base = w.carry;
+  w.carry = Array.from({ length: 16 }, (_, i) => {
+    const x = base[i % base.length];
+    return { ...x, id: `${x.id}-${i}`, text: x.text + (i >= base.length ? ` (${i + 1})` : '') };
+  });
+  w.userStrings.push(...w.carry.map((x) => x.text));
+  return w;
+};
+/** the left-over list's pager ("‹ 1/2 ›"): both arrows the same size and stroke in the same colour, the one that can't
+ *  go on only fainter and still plain to see, the same room either side of the page number */
+const pagerEven = async (c: Ctx) => {
+  const m = await c.page.locator('.lb-pager').first().evaluate((p) => {
+    const [a, n, b] = [...p.children] as HTMLElement[];
+    const r = (e: Element) => e.getBoundingClientRect();
+    const svg = (e: Element) => e.querySelector('svg')!;
+    const cs = (e: Element) => getComputedStyle(e);
+    const range = document.createRange();
+    range.selectNodeContents(n);
+    const tr = range.getBoundingClientRect();
+    return {
+      btn: [r(a).width, r(a).height, r(b).width, r(b).height],
+      icon: [r(svg(a)).width, r(svg(a)).height, r(svg(b)).width, r(svg(b)).height],
+      stroke: [cs(svg(a)).strokeWidth, cs(svg(b)).strokeWidth],
+      color: [cs(a).color, cs(b).color],
+      opacity: [Number(cs(a).opacity), Number(cs(b).opacity)],
+      disabled: [(a as HTMLButtonElement).disabled, (b as HTMLButtonElement).disabled],
+      gaps: [r(n).left - r(a).right, r(b).left - r(n).right],
+      text: [tr.left - r(n).left, r(n).right - tr.right],
+    };
+  });
+  const near = (x: number, y: number, d = 0.6) => Math.abs(x - y) <= d;
+  const bad: string[] = [];
+  if (!near(m.btn[0], m.btn[2]) || !near(m.btn[1], m.btn[3])) bad.push(`buttons ${m.btn.join(',')}`);
+  if (!near(m.icon[0], m.icon[2]) || !near(m.icon[1], m.icon[3])) bad.push(`arrows ${m.icon.join(',')}`);
+  if (m.stroke[0] !== m.stroke[1]) bad.push(`stroke ${m.stroke.join(' / ')}`);
+  if (m.color[0] !== m.color[1]) bad.push(`colour ${m.color.join(' / ')}`);
+  for (let i = 0; i < 2; i++) if (m.opacity[i] < (m.disabled[i] ? 0.35 : 0.99)) bad.push(`opacity ${m.opacity[i]} (disabled ${m.disabled[i]})`);
+  if (!near(m.gaps[0], m.gaps[1])) bad.push(`gaps either side of the number ${m.gaps.join(' / ')}`);
+  if (!near(m.text[0], m.text[1], 1)) bad.push(`the number off centre ${m.text.join(' / ')}`);
+  if (bad.length) throw new Error(`the pager isn't even: ${bad.join('; ')}`);
 };
 
 /** the state changes on the live meeting page that must not move anything else */
@@ -835,6 +944,40 @@ export const SCREENS: Screen[] = [
       },
     ],
   },
+  {
+    // 2026-11-21 (the user: "大小都不等 怎么老是这种不对称的问题"): the arrow at the end used to be all but invisible
+    name: 'lobby-carry-pages',
+    what: 'Lobby: 16 left-over items over pages; the pager’s two arrows alike (the one at the end only fainter), the page in the middle',
+    page: 'main',
+    world: withCarryPages,
+    go: async (c) => {
+      await c.page.locator('.lb-pager').waitFor();
+      await pagerEven(c);
+    },
+    ready: '[data-testid="lobby-carry"]',
+    transitions: [
+      {
+        name: 'to the last page (the other arrow goes faint; nothing moves)',
+        act: async (c) => {
+          const next = c.page.getByTestId('lobby-carry-next');
+          for (let i = 0; i < 20 && (await next.isEnabled()); i++) await next.click();
+          await c.settle(200);
+          await pagerEven(c);
+        },
+        expect: ['.lb-list-box *'],
+      },
+      {
+        name: 'back to the first page',
+        act: async (c) => {
+          const prev = c.page.getByTestId('lobby-carry-prev');
+          for (let i = 0; i < 20 && (await prev.isEnabled()); i++) await prev.click();
+          await c.settle(200);
+          await pagerEven(c);
+        },
+        expect: ['.lb-list-box *'],
+      },
+    ],
+  },
   // "准备情况"那一行的新版本（zuhui/updates.py）：有新版 → 正在更新，以及更新失败
   {
     name: 'lobby-update',
@@ -953,22 +1096,26 @@ export const SCREENS: Screen[] = [
     ready: '[data-testid="transcript"] [data-testid="transcript-typed"]',
   },
   {
-    // 2026-11-21 (the user, 40:09: "为什么我看不到他的后台状态呢？")
-    name: 'meeting-edit-dock',
-    what: 'In a meeting: a big revision under way (41 places, 7 minutes) whose bubble is far up; the card under the newest line, one more queued',
+    // 2026-11-21 (the user, 40:09: "为什么我看不到他的后台状态呢？"; then "为什么你把本应该出现在上面的状态栏的东西放在了
+    // 下面": the card at the transcript's foot went, the AI strip above says it, all of it on hover)
+    name: 'meeting-long-edit',
+    what: 'In a meeting: a big revision under way (41 places, 7 minutes) whose bubble is far up, one more queued: the AI strip says it, nothing at the transcript\'s foot',
     page: 'main',
     world: withLongEdit,
-    ready: '[data-testid="edit-dock-card"]',
-    transitions: dockTransitions,
+    go: async (c) => {
+      await c.page.getByTestId('claude-now-back').getByText(c.T('已改 41 处', 'Edits so far: 41'), { exact: false }).waitFor();
+    },
+    ready: '[data-testid="claude-now"] .mt-now-dot',
+    transitions: longEditTransitions,
   },
   {
-    name: 'meeting-edit-dock-stress',
-    what: 'The revision card with the longest title, names and model names',
+    name: 'meeting-long-edit-stress',
+    what: 'The big revision with the longest title, names and model names (the strip ends in "…")',
     page: 'main',
     stress: true,
     world: withLongEdit,
-    ready: '[data-testid="edit-dock-card"]',
-    transitions: dockTransitions,
+    ready: '[data-testid="claude-now"] .mt-now-dot',
+    transitions: longEditTransitions,
   },
   {
     // more than 5 steps fold under "查看全部"; the "正在修改 · 已改 N 处 · 时间" line stays first (it used to fold away too)
@@ -986,27 +1133,55 @@ export const SCREENS: Screen[] = [
   },
   {
     name: 'meeting-edit-queue',
-    what: 'In a meeting: three revisions waiting their turn, none being made (the card names the next one)',
+    what: 'In a meeting: three revisions waiting their turn, none being made (the AI strip counts them)',
     page: 'main',
     world: withQueueOnly,
-    ready: '[data-testid="edit-dock-card"].is-wait',
+    go: async (c) => {
+      await c.page.getByTestId('claude-now-back').getByText(c.T('3 条排队中', '3 more queued')).waitFor();
+    },
+    ready: '[data-testid="claude-now"] .mt-now-dot',
     transitions: [
       {
-        name: 'one starts (the card goes to two lines)',
+        name: 'one starts',
         act: (c) => c.push('brain', brainWith(c, { edits: [{ ...longRow(c.world, 0), started: NOW_S - 1, log: ['读文档'] }], queued: 2 })),
-        expect: DOCK_STILL,
+        expect: STRIP_WORDS,
       },
     ],
   },
   {
-    // the user: "鼠标悬停在状态栏附近，会有完整状态，但是是一直闪烁的…是 html 原生页面"
+    // the user: "鼠标悬停在状态栏附近，会有完整状态，但是是一直闪烁的…是 html 原生页面"; then (2026-11-21) "我只需要鼠标悬停在
+    // 上面能展开完整状态即可": the strip itself is the target, the tip has every part with the step it is on
     name: 'meeting-now-tip',
-    what: "Pointing at the AI strip's background row: the whole status in the window's own tip, steady while it ticks",
+    what: "Pointing at the AI strip: the whole status in the window's own tip, one part a line with the step each is on, steady while it ticks",
     page: 'main',
     world: withLongEdit,
     go: openNowTip,
     reapply: openNowTip,
-    ready: '.mw-tip',
+    ready: '.mw-tip.is-lines',
+    transitions: tipTransitions,
+  },
+  {
+    name: 'meeting-now-tip-stress',
+    what: "The AI strip's tip with the longest title and steps: a part too long for a line goes on under itself, indented",
+    page: 'main',
+    stress: true,
+    world: withBusyBack,
+    go: openNowTip,
+    reapply: openNowTip,
+    ready: '.mw-tip.is-lines',
+    transitions: tipTransitions,
+  },
+  {
+    name: 'meeting-now-tip-all',
+    what: "The AI strip's tip with everything at once: two lookups, two revisions, waiting, queued, not said yet, notes",
+    page: 'main',
+    world: withBusyBack,
+    go: async (c) => {
+      await openNowTip(c);
+      await tipHasAll(c);
+    },
+    reapply: openNowTip,
+    ready: '.mw-tip.is-lines',
     transitions: tipTransitions,
   },
   {

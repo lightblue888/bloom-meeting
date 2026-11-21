@@ -115,6 +115,19 @@ def split_sentences(text: str) -> list[str]:
     return out
 
 
+def join_said(parts) -> str:
+    """切开的几句接回一段：中文直接接，英文句子之间补空格（"No,the""seed.It" 那种）。"""
+    out = ""
+    for p in parts:
+        p = (p or "").strip()
+        if not p:
+            continue
+        if out and re.match(r"[A-Za-z0-9]", p) and re.search(r"[A-Za-z0-9.,;:!?)]$", out):
+            out += " "
+        out += p
+    return out
+
+
 _CN_D = "零一二三四五六七八九"
 
 
@@ -321,6 +334,37 @@ def _ref_file(path, t_start: float, rate: float) -> None:
         log.debug("回声参考：%s 没读成", path, exc_info=True)
 
 
+def _suspend(proc, on: bool) -> bool:
+    """把正在放的 ffplay 挂起（on=True）/ 恢复。不杀进程，声音从停的地方接着放。→ 成了就 True。
+    Windows 用 ntdll 的 NtSuspendProcess / NtResumeProcess（要 PROCESS_SUSPEND_RESUME 权限）；别的系统 SIGSTOP / SIGCONT。"""
+    if proc is None or proc.poll() is not None:
+        return False
+    try:
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            nt = ctypes.WinDLL("ntdll")
+            k32.OpenProcess.restype = wintypes.HANDLE
+            k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            k32.CloseHandle.argtypes = [wintypes.HANDLE]
+            h = k32.OpenProcess(0x0800, False, int(proc.pid))       # PROCESS_SUSPEND_RESUME
+            if not h:
+                return False
+            try:
+                fn = nt.NtSuspendProcess if on else nt.NtResumeProcess
+                fn.argtypes, fn.restype = [wintypes.HANDLE], ctypes.c_long
+                return fn(h) == 0                                    # STATUS_SUCCESS
+            finally:
+                k32.CloseHandle(h)
+        import signal
+        os.kill(int(proc.pid), signal.SIGSTOP if on else signal.SIGCONT)
+        return True
+    except Exception:
+        log.warning("ffplay %s失败", "挂起" if on else "恢复", exc_info=True)
+        return False
+
+
 class Mouth:
     def __init__(self, cfg: dict):
         m = dict(cfg.get("mouth") or {})
@@ -366,11 +410,21 @@ class Mouth:
         self._gen = 0                          # stop() 时 +1，旧 gen 的队列项全部作废
         self._pending = 0                      # 当前 gen 里还没播完的句数（合成中 + 排队 + 播放中）
         self._proc: subprocess.Popen | None = None
+        # 先停一下（pause）：你开口了、还没听清是不是在打断，ffplay 挂起不杀。_paused_at 停下的时刻；
+        # _paused_s 累计停了多久（流式那句往回声参考里记时间要扣掉）；_rec 正在放的这一句在 played 里的那一行
+        self._paused_at: float | None = None
+        self._paused_s = 0.0
+        self._suspended = None
+        self._unpaused = threading.Event()
+        self._unpaused.set()
+        self._held_ref = None
+        self._rec: list | None = None
         self._synth_q: queue.Queue = queue.Queue()
         self._play_q: queue.Queue = queue.Queue()
         self._warm_thread: threading.Thread | None = None
         self._launched_at = 0.0
         self._edge_down_until = 0.0
+        self._air_init()
         threading.Thread(target=self._synth_loop, name="mouth-synth", daemon=True).start()
         threading.Thread(target=self._play_loop, name="mouth-play", daemon=True).start()
         if self.ffplay and self.stream:          # 第一句之前先起好一个 ffplay（冷起要一秒多）
@@ -434,11 +488,92 @@ class Mouth:
 
     @property
     def audible(self) -> bool:
-        """学生的声音此刻真的从音箱出来（或刚停不到 0.4 秒，算上余音）。合成中、排队中都不算。"""
-        if self._proc is not None:
+        """学生的声音此刻真的从音箱出来（或刚停不到 0.4 秒，算上余音）。合成中、排队中、先停一下（pause）都不算。"""
+        if self._proc is not None and self._paused_at is None:
             return True
         ends = [e for _, e in self.played[-3:] if e is not None]
         return bool(ends) and time.time() - max(ends) < 0.4
+
+    @property
+    def paused(self) -> bool:
+        """先停一下了（pause() 之后、resume() / stop() 之前）。这时 speaking 照旧为真：这一轮还没说完。"""
+        return self._paused_at is not None
+
+    @property
+    def paused_seconds(self) -> float:
+        """累计停过多少秒（不含正在停的这一下）：按墙上时间算念到哪了，要扣掉它。"""
+        return self._paused_s
+
+    def pause(self) -> bool:
+        """先停一下：你开口了，还没听清是附和还是要打断（app 等这段转写回来再定，见 app._barge）。
+        正在放的 ffplay 挂起、不杀，排着的句子先不放；语音桥推给访客的那一路跟着停（bridge._student_push）。
+        → 停住了就 True；挂不起来 → False（调用方照旧 stop）。"""
+        now = time.time()
+        with self._lock:
+            if self._paused_at is not None:
+                return True
+            if self._pending <= 0:
+                return False
+            proc = self._proc
+            if proc is not None and proc.poll() is None:
+                if not _suspend(proc, True):
+                    return False
+                self._suspended = proc
+            self._paused_at = now
+            self._unpaused.clear()
+            rec = self._rec
+            if rec is not None and rec[1] is None:
+                rec[1] = now                      # played 只记真出声的：回声判断、audible 都按它
+            # 回声参考里已经排好、停下以后才该出声的那截先拿下来，恢复时整体往后挪（不然停着的这几秒也算在放音）
+            self._held_ref = PLAYBACK.hold("tts", now)
+        return True
+
+    def resume(self) -> float:
+        """pause() 之后接着说：ffplay 从停的地方接着放（不从这一句开头重念：停一下一般就一两秒）。
+        → 停了多少秒；没停着 → 0。"""
+        now = time.time()
+        with self._lock:
+            t0 = self._paused_at
+            if t0 is None:
+                return 0.0
+            proc, self._suspended = self._suspended, None
+            held, self._held_ref = self._held_ref, None
+            if proc is not None:
+                _suspend(proc, False)
+                if self._rec is not None and proc is self._proc:
+                    rec = [now, None]             # 接着放的这一截在 played 里另起一行
+                    self.played.append(rec)
+                    del self.played[:-100]
+                    self._rec = rec
+            self._paused_s += now - t0
+            self._paused_at = None
+            self._unpaused.set()
+        if held is not None and len(held):
+            PLAYBACK.put_at("tts", held, now)
+        return now - t0
+
+    def _own_proc(self, proc, rec) -> None:
+        """锁里调：这一句的播放进程算数了。正好赶上先停一下（pause 刚好在等出声的那几毫秒里进来）：马上挂起。"""
+        self._proc, self._rec = proc, rec
+        if self._paused_at is not None and self._suspended is None and _suspend(proc, True):
+            self._suspended = proc
+            rec[1] = rec[0]
+
+    def _wait_unpaused(self, gen: int) -> bool:
+        """停着（pause）就等恢复。→ 这一轮没被打断就 True。"""
+        while self._paused_at is not None and gen == self._gen:
+            self._unpaused.wait(0.1)
+        return gen == self._gen
+
+    def _rec_close(self, rec) -> float:
+        """这一句放完 / 被打断：played 里它那一行（停过的话是恢复后另起的那行）记上结束时刻。→ 结束时刻。"""
+        now = time.time()
+        with self._lock:
+            cur, self._rec = self._rec, None      # 同一时间只放一句（播放线程只有一个）
+        for r in (cur, rec):
+            if r is not None and r[1] is None:
+                r[1] = now
+        return now
 
     def say(self, text: str, on_start=None) -> None:
         """非阻塞：切句后交给合成线程，边合成边播。先按原文切句，每句再换成读法送去合成；on_start 收到的是原文那句
@@ -446,8 +581,10 @@ class Mouth:
         shown = split_sentences(text)
         if not shown:
             return
+        key = on_start if on_start is not None else object()   # 同一个 on_start 念的几句算一段话（aired() 按段报）
         if self._pref() == "off":                     # 选了不出声：照样记进逐字稿，只是不念
             for d in shown:
+                self._air_new(d, d, key, self._gen, done=True)
                 if on_start:
                     on_start(d)
             return
@@ -456,7 +593,9 @@ class Mouth:
             self._pending += len(shown)
         for d in shown:
             cb = (lambda _s, d=d, f=on_start: f(d)) if on_start else None
-            self._synth_q.put((gen, speakable(d), cb))
+            spk = speakable(d)
+            # 记上、排队在同一把锁里：播放线程开始放时按（gen, 读法）认回这一句，两路同时 say 也不乱序
+            self._air_new(d, spk, key, gen, item=(gen, spk, cb))
 
     def ack(self) -> None:
         """没在说话时立刻播一条随机缓存接话；正在说/排着队就什么都不做。"""
@@ -477,13 +616,20 @@ class Mouth:
         self.last_ack_at = time.time()
         self._play_q.put((gen, pick, False, None, None))
 
-    def stop(self) -> None:
-        """打断：作废待合成/待播的句子，杀掉正在播的 ffplay。"""
+    def stop(self):
+        """打断：作废待合成/待播的句子，杀掉正在播的 ffplay。
+        → 被打断的那段话念出了哪些（aired() 的格式）；没有念到一半的话 → None。"""
         with self._lock:
+            old = self._gen
             self._gen += 1
             self._pending = 0
             proc, self._proc = self._proc, None
             conn = self._stream_conn
+            paused_at = self._paused_at              # 念出了哪些：停着的那段不算放了（下面就清掉了，先记下）
+            # 停着时被叫停（说的是正事）：挂起的 ffplay 直接杀（挂起的进程也杀得掉），等恢复的都放出来
+            self._paused_at = self._suspended = self._held_ref = None
+            self._unpaused.set()
+        cut = self._air_stop(old, paused_at)
         if conn is not None:                   # 正在收的那句流式合成：断开，把嗓子让给下一句
             try:
                 conn.shutdown(2)
@@ -502,6 +648,7 @@ class Mouth:
                 proc.kill()
             except Exception:
                 pass
+        return cut
 
     @property
     def speaking(self) -> bool:
@@ -557,6 +704,164 @@ class Mouth:
         except Exception as e:
             log.warning("关配音服务失败: %r", e)
             return False
+
+    # ------------------------------------------------------------ 念出了哪些
+    # 2026-11-21 那场 [18:09:58]：回话早生成完了，念到第一句就被打断，快嘴历史里还是整段，被叫"你继续说"时回
+    # "刚才那句我说完了"。这里只记账、不改放音：每句开始出声、放完、被打断各记一笔，同一个 on_start 念的几句算一段话。
+
+    AIR_KEEP = 200              # 只留最近这么多句
+    AIR_FULL = 0.9              # 一句放到九成以上：算整句念出口了
+    AIR_SOME = 0.15             # 一句放了不到一成半：这句当没念
+    AIR_LEAD = 0.2              # 整句 wav 交给 ffplay 后大约这么久才出声（流式的 ffplay 是提前起好的，不算）
+
+    def _air_init(self) -> None:
+        self._air: list[dict] = []
+        self._air_lock = threading.Lock()
+
+    def __getattr__(self, name):
+        # 没走 __init__ 的嘴（测试里的替身只摆几样东西）：记账那两样用到时现建，不让 say() 因为记账崩掉
+        if name in ("_air", "_air_lock"):
+            self._air_init()
+            return self.__dict__[name]
+        raise AttributeError(name)
+
+    def _air_new(self, text: str, spk: str, key, gen: int, done: bool = False, item=None) -> dict:
+        """记一句要念的话。item：同时排进合成队列（同一把锁里排，记账的顺序和放的顺序才一致）。"""
+        now = time.time()
+        r = {"text": text, "spk": spk, "key": key, "gen": gen, "state": "done" if done else "queued",
+             "t0": now if done else None, "t1": now if done else None, "dur": None, "st": None,
+             "lead": 0.0, "p0": 0.0, "frac": 1.0 if done else None}
+        with self._air_lock:
+            self._air.append(r)
+            del self._air[:-self.AIR_KEEP]
+            if item is not None:
+                self._synth_q.put(item)
+        return r
+
+    def _air_begin(self, gen: int, said, dur: float | None = None, st=None) -> dict | None:
+        """播放线程：读法是 said 的这一句真开始出声了。它前面同一批里还排着、却没放的（合成失败）记成 skipped。"""
+        if said is None:                       # 接话、试听：不记
+            return None
+        with self._air_lock:
+            if gen != self._gen:
+                return None
+            r = next((x for x in self._air if x["state"] == "queued" and x["gen"] == gen and x["spk"] == said), None)
+            if r is None:                      # 吞字后整句重念的那一遍：前面已经记过
+                return None
+            for x in self._air:
+                if x is r:
+                    break
+                if x["state"] == "queued" and x["gen"] == gen:
+                    x["state"] = "skipped"
+            r.update(state="playing", t0=time.time(), dur=dur, st=st, lead=0.0 if st is not None else self.AIR_LEAD,
+                     p0=float(getattr(self, "_paused_s", 0.0) or 0.0))   # 这句开始时已经累计停过多久（pause）
+        return r
+
+    def _air_end(self, r) -> None:
+        """这一句放完了。被打断杀掉的那句 stop() 已经记成 cut。"""
+        if r is None:
+            return
+        with self._air_lock:
+            if r["state"] == "playing":
+                self._air_close(r, time.time(), cut=r["gen"] != self._gen)
+
+    def _air_close(self, r: dict, now: float, cut: bool, paused_at: float | None = None) -> None:
+        # 锁里调：记下放了几成，流式那句的整段 PCM 不再留着
+        r["frac"] = self._air_frac(r, now, paused_at) if cut else 1.0
+        st = r.get("st")
+        if st is not None:
+            r["dur"] = st.seconds() if st.done else max(st.seconds(), self._est_seconds(r["text"]))
+            r["st"] = None
+        r["t1"], r["state"] = now, ("cut" if cut else "done")
+
+    def _air_frac(self, r: dict, now: float, paused_at: float | None = None) -> float:
+        """这一句放了几成（按墙上时间和倍速算；先停一下（pause）停着的那段不算）。锁里调。
+        paused_at：stop() 清掉停着的状态之前记下的停下时刻。"""
+        if r.get("t0") is None:
+            return 0.0
+        end = r["t1"] if r.get("t1") is not None else now
+        held = max(0.0, float(getattr(self, "_paused_s", 0.0) or 0.0) - float(r.get("p0") or 0.0))   # 这句开始后停过的
+        p = paused_at if paused_at is not None else getattr(self, "_paused_at", None)
+        if p is not None and r["state"] == "playing":                   # 正停着：停下以后的不算
+            held += max(0.0, end - max(p, r["t0"]))
+        played = max(0.0, end - r["t0"] - held - float(r.get("lead") or 0.0))
+        st, dur = r.get("st"), r.get("dur")
+        if st is not None:
+            dur = st.seconds() if st.done else max(st.seconds(), self._est_seconds(r["text"]))
+        if not dur:
+            dur = self._est_seconds(r["text"])
+        dur = float(dur) / max(float(getattr(self, "rate", 1.0) or 1.0), 0.5)
+        return max(0.0, min(1.0, played / dur)) if dur > 0 else 1.0
+
+    def _air_stop(self, gen: int, paused_at: float | None = None) -> dict | None:
+        """stop() 里：这一批（gen）没放完的都作废——正在放的记成 cut（放到几成），排着的记成 dropped。
+        paused_at：停着时被叫停的，停下的时刻（停着的那段不算放了）。
+        → 被打断的那段话的 aired()（正在放的那句所在的那段；没有在放的，就是最后排上的那段）；什么都没排着 → None。"""
+        with self._air_lock:
+            live = [r for r in self._air if r["gen"] == gen and r["state"] in ("queued", "playing")]
+            if not live:
+                return None
+            now = time.time()
+            cur = next((r for r in live if r["state"] == "playing"), None) or live[-1]
+            for r in live:
+                if r["state"] == "playing":
+                    self._air_close(r, now, cut=True, paused_at=paused_at)
+                else:
+                    r["state"] = "dropped"
+            key = cur["key"]
+        return self.aired(key)
+
+    def aired(self, key=None) -> dict | None:
+        """一段话（同一个 on_start 念的几句；不给 key：最近开始放的那段）念出了哪些。没有这段 → None，否则
+        {"key", "said": 整句念出口的, "part": 念到一半的那句（没有是 ""）, "frac": 那句放了几成,
+         "unsaid": 没念出口的几句（从念到一半那句起）, "heard": 对方听到的（整句 + 半句的前几成）, "full": 整段,
+         "aired": 有没有哪句开始出声过, "live": 还有没放完的, "t0": 最近一句开始出声的时刻（没有是 None）}"""
+        now = time.time()
+        with self._air_lock:
+            recs = list(self._air)
+            if key is None:
+                last = next((r for r in reversed(recs) if r["t0"] is not None), None)
+                if last is None:
+                    return None
+                key = last["key"]
+            mine = [r for r in recs if r["key"] is key]
+            if not mine:
+                return None
+            fr = {id(r): (r["frac"] if r["state"] in ("cut", "done") and r["frac"] is not None else self._air_frac(r, now))
+                  for r in mine}
+            gen = self._gen
+        said, part, frac, unsaid, live = [], "", 0.0, [], False
+        for r in mine:
+            st = r["state"]
+            if st == "queued" and r["gen"] != gen:
+                st = "dropped"                 # stop() 之后才记上的（和 stop 撞在一起）：不会再放了
+            live = live or st in ("queued", "playing")
+            if unsaid:
+                unsaid.append(r["text"])
+                continue
+            if st == "skipped":                # 合成失败没放、后面的照样念了：不算
+                continue
+            f = fr.get(id(r), 0.0)
+            if st == "done" or (st in ("playing", "cut") and f >= self.AIR_FULL):
+                said.append(r["text"])
+                continue
+            if st in ("playing", "cut"):
+                part, frac = r["text"], f
+            unsaid.append(r["text"])
+        head = part[: int(len(part) * frac)] if part and frac >= self.AIR_SOME else ""
+        starts = [r["t0"] for r in mine if r["t0"] is not None]
+        return {"key": key, "said": said, "part": part, "frac": round(frac, 2), "unsaid": unsaid,
+                "heard": join_said(said + [head]), "full": join_said(r["text"] for r in mine),
+                "aired": bool(starts), "live": live, "t0": max(starts) if starts else None}
+
+    @staticmethod
+    def _wav_seconds(path) -> float | None:
+        try:
+            import wave
+            with wave.open(str(path), "rb") as w:
+                return w.getnframes() / float(w.getframerate() or 1)
+        except Exception:
+            return None                        # mp3（edge-tts 没转成）：按字数估
 
     # ------------------------------------------------------------ 服务
 
@@ -984,6 +1289,8 @@ class Mouth:
                 self._kill(proc)
                 self._stream_sr = st.sr
                 proc = self._pipe_player(st.sr)
+            if not self._wait_unpaused(gen):               # 句与句之间先停一下了：下一句等恢复再放
+                return
             if not self._wait_gate(gen, first=cb is not None):
                 return
             if cb is not None:                             # 这一句开始出声了：逐字稿这时才显示它
@@ -998,7 +1305,8 @@ class Mouth:
                 if gen != self._gen:
                     rec[1] = time.time()
                     return
-                self._proc = proc
+                self._own_proc(proc, rec)
+            air = self._air_begin(gen, said, st=st)        # 这一句开始出声了（念出了哪些：被打断时报给 app）
             hook = getattr(self, "on_play_stream", None)   # 会议语音桥：同一句也推给通过链接进来的人
             if hook is not None:
                 try:
@@ -1007,6 +1315,7 @@ class Mouth:
                     log.exception("on_play_stream 回调出错")
             t_start, written, i, dry, gaps = time.time(), 0, 0, 0.0, 0
             t_play = t_start
+            p0 = self._paused_s                            # 这句开始以后停过的秒数要加进出声时刻（回声参考按真出声的时间记）
             bps = st.sr * 2.0 * self.rate
             try:
                 while gen == self._gen:
@@ -1016,21 +1325,24 @@ class Mouth:
                             break
                         continue
                     i += 1
-                    late = time.time() - (t_start + written / bps)   # >0：这一块到的时候前面的已经放完了（断流）
+                    late = time.time() - (t_start + self._paused_s - p0 + written / bps)   # >0：这一块到的时候前面的已经放完了（断流）
                     if late > 0.05 and written:
                         dry += late
                         gaps += 1
                         t_start += late
                     proc.stdin.write(b)
-                    PLAYBACK.put_at("tts", b, t_start + written / bps, st.sr or self._stream_sr, self.rate)
+                    if not self._wait_unpaused(gen):       # 停着：等恢复再记这一块，时间轴扣掉停的那几秒
+                        break
+                    PLAYBACK.put_at("tts", b, t_start + self._paused_s - p0 + written / bps, st.sr or self._stream_sr, self.rate)
                     written += len(b)
                 proc.stdin.close()
             except OSError:
                 pass                                       # ffplay 被打断杀掉了
             proc.wait()
             finished = True
-            rec[1] = time.time()
-            PLAYBACK.cut("tts", rec[1])                    # 被打断：后面排好的那截不算在放
+            end = self._rec_close(rec)                     # 停着被叫停的：played 里记的是停下那一刻
+            self._air_end(air)
+            PLAYBACK.cut("tts", end)                       # 被打断：后面排好的那截不算在放
             with self._lock:
                 if self._proc is proc:
                     self._proc = None
@@ -1214,6 +1526,8 @@ class Mouth:
                    f"(New-Object Media.SoundPlayer '{wav}').PlaySync()"]
         if gen != self._gen:
             return
+        if not self._wait_unpaused(gen):       # 句与句之间先停一下了：等恢复再放
+            return
         if not self._wait_gate(gen, first=cb is not None):
             return
         if cb is not None:                     # 这一句开始出声了：逐字稿这时才显示它
@@ -1230,7 +1544,8 @@ class Mouth:
                 return
             proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW)
-            self._proc = proc
+            self._own_proc(proc, rec)
+        air = self._air_begin(gen, said, dur=self._wav_seconds(path))   # 这一句开始出声了
         _ref_file(path, rec[0], self.rate)     # 这一句记进回声参考（ffplay 起来要一两百毫秒，正好趁这会儿读文件）
         hook = getattr(self, "on_play", None)  # 会议语音桥：同一句也推给通过链接进来的人（见 bridge.py）
         if hook is not None:
@@ -1239,8 +1554,9 @@ class Mouth:
             except Exception:
                 log.exception("on_play 回调出错")
         proc.wait()
-        rec[1] = time.time()
-        PLAYBACK.cut("tts", rec[1])            # 被打断：后面那截不算在放
+        end = self._rec_close(rec)             # 停着被叫停的：played 里记的是停下那一刻
+        self._air_end(air)
+        PLAYBACK.cut("tts", end)               # 被打断：后面那截不算在放
         with self._lock:
             if self._proc is proc:
                 self._proc = None

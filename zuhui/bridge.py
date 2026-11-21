@@ -28,6 +28,7 @@ import os
 import subprocess
 import threading
 import time
+from collections import deque
 
 from . import share as _share
 from .ears import MIC, PLAYBACK
@@ -660,6 +661,27 @@ class AudioBridge:
         threading.Thread(target=self._refill_spare, args=(sr, rate), name="bridge-spare", daemon=True).start()
         return p
 
+    def _student_hold(self, src, loop, recent, proc):
+        """嘴先停一下（mouth.pause）：推给访客的这一路跟着停。访客那边还排着没放的（最多约 1 秒）先清掉，
+        等嘴恢复后先补推这几帧再接着推，访客听到的和你这边一样从停的地方接上。→ 要补推的帧；这句被打断了 → None。"""
+        dead = lambda: proc is not None and proc.poll() is not None and proc.returncode not in (0, None)   # noqa: E731
+        try:
+            q = float(src.queued_duration or 0.0)
+        except Exception:
+            q = 0.0
+        try:
+            loop.call_soon_threadsafe(src.clear_queue)
+        except Exception:
+            pass
+        k = min(len(recent), int(round(q * SR / FRAME)))
+        again = list(recent)[len(recent) - k:] if k > 0 else []
+        recent.clear()
+        while getattr(self.mouth, "paused", False) and self.connected:
+            if dead():
+                return None
+            time.sleep(0.02)
+        return None if dead() or not self.connected else again
+
     def _student_push(self, path, rate: float, proc, st=None) -> None:
         from livekit import rtc
         src, loop = self._stu_src, self._loop
@@ -694,9 +716,18 @@ class AudioBridge:
                             pass
                 threading.Thread(target=feed, name="bridge-student-feed", daemon=True).start()
             n = FRAME * 2
+            recent: deque = deque(maxlen=int(1.5 * SR / FRAME))    # 最近推出去的帧：嘴停一下时访客那边还排着没放的，恢复后补推
             while True:
                 if proc is not None and proc.poll() is not None and proc.returncode not in (0, None):
                     break                                       # 被打断（ffplay 被杀）
+                if getattr(self.mouth, "paused", False):        # 嘴先停一下（你开口了，还在听是不是打断）：访客这边也停
+                    again = self._student_hold(src, loop, recent, proc)
+                    if again is None:
+                        break
+                    for b in again:
+                        asyncio.run_coroutine_threadsafe(src.capture_frame(rtc.AudioFrame(b, SR, 1, FRAME)), loop).result(timeout=3)
+                        recent.append(b)
+                    continue
                 buf = dec.stdout.read(n)
                 if not buf:
                     break
@@ -704,6 +735,7 @@ class AudioBridge:
                     buf += bytes(n - len(buf))
                 fut = asyncio.run_coroutine_threadsafe(src.capture_frame(rtc.AudioFrame(buf, SR, 1, FRAME)), loop)
                 fut.result(timeout=3)
+                recent.append(buf)
         except Exception as ex:
             log.debug("语音桥：学生这句没推完：%r", ex)
         finally:

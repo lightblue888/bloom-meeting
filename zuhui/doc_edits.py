@@ -25,6 +25,8 @@ SNIP = 160                 # 改前、改后片段各最多这么多字
 CTX = 16                   # 片段在改动前后各多带几个字
 MERGE_S = 180.0            # 同一段接着改，这么久以内并成一行
 DIFF_MAX = 8000            # 两段加起来超过这么长不逐字比（表格、整页公式）：直接截开头
+FULL_N = 2                 # 给快嘴的手改说明：最近这几处附上改后的整段（2026-11-21 组会：只给片段，快嘴说"看不到你改成什么样"）
+FULL_MAX = 700             # 每段最多这么多字
 
 _MD_H = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 _TEX_H = re.compile(r"^\s*\\(?:part|chapter|section|subsection|subsubsection|paragraph)\*?\{(.+)\}")
@@ -221,9 +223,26 @@ def fmt(ln: dict) -> str:
     return f"{ln.get('t') or ''} {ln.get('text') or ''}".strip() + (f"：{d}" if d else "")
 
 
-def note(lines, paper: str | None = None, limit: int = 8, chars: int = 1600) -> str:
-    """本场的手改，一行一处（新的在后），最多 limit 处、chars 字（超了丢最早的）。没有返回 ""。"""
-    rows = [fmt(ln) for ln in edits(lines, paper)]
+def current_para(text: str, ln: dict) -> str:
+    """这处手改现在在论文里是哪一整段：拿改后片段里最长的那截（片段是压了空白、两头带"…"的）去全文里找，
+    正好一段里有它就是那段。删掉的、后来又被改过找不到的、好几段都有的，返回 ""。"""
+    after = str(ln.get("after") or "")
+    if not text or not after:
+        return ""
+    key = max((p.strip() for p in after.split("…")), key=len, default="")
+    if len(re.sub(r"\s+", "", key)) < 6:
+        return ""
+    hits = [p for p in _paras(text) if key in " ".join(p.split())]
+    return hits[0] if len(hits) == 1 else ""
+
+
+def note(lines, paper: str | None = None, limit: int = 8, chars: int = 1600, text: str | None = None,
+         full: int = FULL_N) -> str:
+    """本场的手改，一行一处（新的在后），最多 limit 处、chars 字（超了丢最早的）。没有返回 ""。
+    text：论文现在的全文（给快嘴时传）：最近 full 处附上改后的整段，每段最多 FULL_MAX 字，
+    对方说"我改了 5.2 第一段"时快嘴照着新文字回话，不说看不到。"""
+    eds = edits(lines, paper)
+    rows = [fmt(ln) for ln in eds]
     dropped = max(0, len(rows) - limit)
     rows = rows[dropped:]
     while len(rows) > 1 and sum(len(r) + 1 for r in rows) > chars:
@@ -231,7 +250,18 @@ def note(lines, paper: str | None = None, limit: int = 8, chars: int = 1600) -> 
         dropped += 1
     if not rows:
         return ""
-    return "\n".join(([f"（更早的 {dropped} 处略）"] if dropped else []) + rows)
+    out = "\n".join(([f"（更早的 {dropped} 处略）"] if dropped else []) + rows)
+    blocks, seen = [], set()
+    for ln in reversed(eds if text and full > 0 else []):
+        if len(blocks) >= full:
+            break
+        p = current_para(text, ln)
+        if p and p not in seen:
+            seen.add(p)
+            blocks.append(f"〔{ln.get('where') or ln.get('section') or ''}〕{_one(p, FULL_MAX)}")
+    if blocks:
+        out += "\n最近改的段落现在整段是（论文全文里也是这样）：\n" + "\n".join(reversed(blocks))
+    return out
 
 
 def summary_block(lines) -> str:

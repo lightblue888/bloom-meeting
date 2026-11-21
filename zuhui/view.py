@@ -1593,10 +1593,16 @@ _GUEST_UP_LOCK = threading.Lock()
 _GCOLOR: dict = {}            # 访客 → 颜色（Viewer.guest_colors 定的，批注卡片里的名字也用它）
 
 
+_NO_DOUBT = re.compile(r"(?:\s*拿不准的(?:点|地方)[：:]\s*无|(?<=[。.\n])\s*无)[。.]?\s*$")
+
+
 def _task_brief(t: dict, me: str = "") -> dict:
     b = {k: t.get(k) for k in ("id", "idx", "title", "remark", "status", "result", "error", "section", "focus", "resolved",
                                "discussion_rows", "note", "plan", "need", "mode")}
     b["tags"] = note_tags(t)                       # 标注的标签：小旗卡片底下那排（会后改 + 要重新跑实验……）
+    # 工人记录的第二句"拿不准的点：无。"是写给快嘴的格式，卡片上只是噪音（2026-11-21 晚上那场每张卡都带着）
+    if b.get("result"):
+        b["result"] = _NO_DOUBT.sub("", str(b["result"])).strip() or b["result"]
     # 工人找不到地方时会写"无（文件读不到…）"这种占位：当成没有位置，别拿它去对小节标题、段落开头
     if str(b.get("section") or "").startswith("无"):
         b["section"] = None
@@ -1723,15 +1729,38 @@ def _hint(ch: dict) -> dict:
     return {"ins": [s for s in ins if len(s) >= 4][:6], "heads": [s for s in heads if len(s) >= 4][:6]}
 
 
+def _hand_heads(changes: dict) -> dict:
+    """手改把哪几条的改动整个盖掉了（changes/hand.json，见 Viewer._hand_into_bases）：{任务 id: [手改后那一段的开头]}。
+    这几条的修订标记没了、改出来的字也可能被删了，图钉按它贴到手改后的那一段上。只认改动记录还是当时那一份的（seq 对得上）。"""
+    try:
+        edits = json.loads((CHANGES_DIR / "hand.json").read_text(encoding="utf-8")).get("edits") or []
+    except (OSError, ValueError, AttributeError):
+        return {}
+    out: dict = {}
+    for r in edits:
+        if not isinstance(r, dict) or not r.get("new") or not isinstance(r.get("tasks"), dict):
+            continue
+        h = _KEY_RE.sub("", html.unescape(str(r["new"])))[:20]
+        for tid, seq in r["tasks"].items():
+            if len(h) >= 4 and (changes.get(str(tid)) or {}).get("seq") == seq:
+                out[str(tid)] = [h]                # 同一段又手改过：按最后一次的
+    return out
+
+
 def _briefs(tasks: list, me: str = "") -> list:
     changes = {str(t.get("id")): _load_changes(t.get("id")) for t in tasks}
     spots = _spots(tasks, changes)
+    hand = _hand_heads(changes)
     out = []
     for t in tasks:
+        if t.get("already") and t.get("status") == "done":
+            continue                       # 正文本来就是要的样子、这条没动：论文页上不打勾（2026-11-21 组会 T6、T8）
         b = _task_brief(t, me)
         b["spot"] = spots.get(str(t.get("id")))
         if t.get("status") == "done" and not t.get("note"):
             b["hint"] = _hint(changes.get(str(t.get("id"))) or {})
+            if hand.get(str(t.get("id"))):
+                b["hint"]["heads"] = hand[str(t.get("id"))] + b["hint"]["heads"]
         out.append(b)
     return out
 
@@ -2193,12 +2222,20 @@ class Viewer:
         with _DOC_LOCK:
             _copy_doc(p, b)
             _copy_doc(b, Path(str(b) + ".orig"))
+            try:
+                self._own_of(b).unlink(missing_ok=True)  # 上一场的"原文 + 手改"作废
+            except OSError:
+                pass
 
     def ensure_base(self, rebase: bool = False) -> None:
         with _DOC_LOCK:                         # 别和打勾、撤回同时改基线；稿子正被工人写到一半时读到完整的再拷
             if self.mirror.exists() and (rebase or not self.base.exists()):
                 _copy_doc(self.mirror, self.base)
                 _copy_doc(self.base, self.base0)
+                try:
+                    self._own_of(self.base).unlink(missing_ok=True)
+                except OSError:
+                    pass
             elif self.base.exists() and not self.base0.exists():
                 _copy_doc(self.base, self.base0)
 
@@ -2294,11 +2331,21 @@ class Viewer:
                 if not self._heal_base(mirror):
                     return False
                 text, bom, nl = _read_doc(base)
+            keep, gone = self._hand_guard(mirror, tid)
             out = self._apply_para_ops(text, ops)
+            if out is None and (keep or gone):
+                # 这条改的段落有的后来被手改过（底稿里已经是作者打的字）：那几处不用再并，只并别处
+                mine = list(keep) + gone
+                rest = [op for op in ops if not any(self._ratio(str(p), k) >= 0.5 for k in mine
+                                                    for p in (op.get("old") or []) + (op.get("new") or []))]
+                if len(rest) < len(ops):
+                    out = self._apply_para_ops(text, rest) if rest else text
             if out is None:
                 out = self._apply_tok_change(text, ch)
             if out is None:
                 return False
+            # 手改过的段落：别把这条的字再塞回去（不然作者的段落上又冒出删除线）
+            out = self._keep_paras(text, out, keep, gone)
             if out != text:
                 _write_doc(base, out, bom, nl)
             return True
@@ -2405,15 +2452,8 @@ class Viewer:
                     self.on_hand_edit(self.mirror, cur, new_n)
                 except Exception:
                     pass
-            # 这一段在"还没看过"的基线里原样还在：你自己的手改不算待看的修订，一并改进基线（散会快照里仍看得到）
-            try:
-                bt, bbom, bnl = _read_doc(self.base)
-                bs = self._spans(bt)
-                j = next((i for i, (_, _, k) in enumerate(bs) if norm(k) == norm(cur)), -1)
-                if j >= 0:
-                    _write_doc(self.base, bt[:bs[j][0]] + new_n + bt[bs[j][1]:], bbom, bnl)
-            except (OSError, DocReadError, UnicodeDecodeError):
-                pass
+            # 你自己打的字不算待看的修订：底稿里对应的那段换成同样的新文字，这一段不再有修订标记（见 _hand_into_bases）
+            self._hand_into_bases(src.replace("\r\n", "\n"), index, cur, new_n, by)
         self._sig = None
         try:                                          # 逐字稿上记一行：AI（快嘴、改稿工人、/bloom）都看得到改了哪里
             from . import doc_edits
@@ -2426,6 +2466,229 @@ class Viewer:
             except Exception:
                 pass
         return {"ok": True, "changed": True}
+
+    # ---------- 手改并进底稿（2026-11-21） ----------
+    # 第二场组会：5.2 第（1）段先被两条任务改过（都没打勾），作者又在编辑框里把这一段整段重写了，保存后整段标成修订
+    # （"这是我自己打进去的字"）。以前只有底稿里原样找得到这一段才跟着改，被 AI 改过的段落底稿里还是改前的样子，找不到。
+    # 现在按段落对齐找底稿里对应的那段（几段被并成一段的：那几段），换成同样的新文字；AI 新加的段插到对齐的位置。
+    # 开会时的原文（.orig）不动，另存一份"原文 + 手改"（.own）给散会快照比：散会的修订对比里只有 AI 的改动。
+    # 每次手改记进 changes/hand.json：之后撤回、打勾更早的任务时，手改过的段落原样留着（不撤掉作者的字，也不把 AI 的字塞回底稿）。
+    PAIR_MIN = 0.35        # 两段算"同一段改过"的相似度下限（和对比页生成器配对段落的门槛一样）
+
+    @staticmethod
+    def _hand_file() -> Path:
+        return CHANGES_DIR / "hand.json"
+
+    @staticmethod
+    def _own_of(base) -> Path:
+        """"开会时的原文 + 会上手改"那一份：散会快照从它比起。"""
+        return Path(str(base) + ".own")
+
+    @staticmethod
+    def _own_ok(base) -> bool:
+        """.own 能不能用：在，而且不比开会时的原文旧（原文后来整份换过，比如 PDF 换成完整版：旧的作废）。"""
+        own, orig = Path(str(base) + ".own"), Path(str(base) + ".orig")
+        try:
+            return own.is_file() and (not orig.is_file() or own.stat().st_mtime_ns >= orig.stat().st_mtime_ns)
+        except OSError:
+            return False
+
+    @classmethod
+    def _words(cls, s: str) -> list[str]:
+        return [t for t in cls._toks(s) if not t.isspace()]
+
+    @classmethod
+    def _ratio(cls, a: str, b: str) -> float:
+        """两段有多像（按词比，汉字一个字算一个词，不算空白）。低于 PAIR_MIN 的一律算 0。"""
+        import difflib
+        ta, tb = cls._words(a), cls._words(b)
+        if not ta or not tb:
+            return 0.0
+        sm = difflib.SequenceMatcher(None, ta, tb, autojunk=False)
+        if sm.real_quick_ratio() < cls.PAIR_MIN or sm.quick_ratio() < cls.PAIR_MIN:
+            return 0.0
+        return sm.ratio()
+
+    @classmethod
+    def _covered(cls, part: str, whole: str) -> float:
+        """part 的字有多少成片地（连着三个词以上）在 whole 里：几段被并成一段时，并进去的那几段这个比例高。太短的段不算。"""
+        import difflib
+        tp, tw = cls._words(part), cls._words(whole)
+        if len(tp) < 6:
+            return 0.0
+        blocks = difflib.SequenceMatcher(None, tp, tw, autojunk=False).get_matching_blocks()
+        return sum(b.size for b in blocks if b.size >= 3) / len(tp)
+
+    @classmethod
+    def _para_pairs(cls, a: list[str], b: list[str]) -> dict:
+        """a 的第几段对应 b 的第几段：一模一样的先整段对上，剩下的在同一处里按相似度配（不交叉），认出改过的段落。"""
+        import difflib
+        pairs: dict = {}
+        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+            if tag == "equal":
+                pairs.update({i1 + k: j1 + k for k in range(i2 - i1)})
+                continue
+            if tag != "replace":
+                continue
+            wide = (i2 - i1) * (j2 - j1) > 1600              # 一大片都改了：只比位置相近的
+            cand = []
+            for i in range(i1, i2):
+                for j in range(j1, j2):
+                    if wide and abs((i - i1) - (j - j1)) > 20:
+                        continue
+                    r = cls._ratio(a[i], b[j])
+                    if r >= cls.PAIR_MIN:
+                        cand.append((r, i, j))
+            got: list = []
+            for r, i, j in sorted(cand, key=lambda x: (-x[0], x[1], x[2])):
+                if i in pairs or any(j == y or (i < x) != (j < y) for x, y in got):
+                    continue
+                pairs[i] = j
+                got.append((i, j))
+        return pairs
+
+    @staticmethod
+    def _cut_para(text: str, a: int, b: int) -> str:
+        """删掉 text[a:b] 这一段，连带多出来的空行。"""
+        if not text[:a].strip():
+            return text[b:].lstrip("\n")
+        if not text[b:].strip():
+            return text[:a].rstrip("\n") + text[b:]
+        return text[:a].rstrip("\n") + "\n\n" + text[b:].lstrip("\n")
+
+    @classmethod
+    def _sync_para(cls, btext: str, mtext: str, index: int, new: str) -> str:
+        """mtext（稿子）的第 index 段在 btext（底稿）里对应的那段（几段被 AI 并成这一段的：那几段）换成 new，new 为空就删掉。
+        底稿里没有对应的（AI 新加的段）：插在前一段对应的那段后面。都是 \\n 换行的文字。"""
+        bs, ms = cls._spans(btext), cls._spans(mtext)
+        if not (0 <= index < len(ms)):
+            return btext
+        bk, mk = [k for _, _, k in bs], [k for _, _, k in ms]
+        pairs = cls._para_pairs(bk, mk)
+        inv = {j: i for i, j in pairs.items()}
+        if index in inv:
+            lo = hi = inv[index]
+            while lo > 0 and lo - 1 not in pairs and cls._covered(bk[lo - 1], mk[index]) >= 0.6:
+                lo -= 1
+            while hi + 1 < len(bk) and hi + 1 not in pairs and cls._covered(bk[hi + 1], mk[index]) >= 0.6:
+                hi += 1
+            a, b = bs[lo][0], bs[hi][1]
+            return btext[:a] + new + btext[b:] if new else cls._cut_para(btext, a, b)
+        if not new:
+            return btext                              # 删掉的是底稿里本来就没有的段（AI 加的）：底稿不用动
+        prev = next((inv[j] for j in range(index - 1, -1, -1) if j in inv), None)
+        if prev is None:
+            at = bs[0][0] if bs else len(btext)
+            return btext[:at] + new + ("\n\n" if bs else "\n") + btext[at:]
+        b = bs[prev][1]
+        return btext[:b] + "\n\n" + new + btext[b:]
+
+    @classmethod
+    def _keep_paras(cls, old: str, new: str, keep, gone=()) -> str:
+        """new 是 old 被撤回 / 并进改动之后的样子。old 里手改过的段落（keep）在 new 里被动了的，原样放回去
+        （被拆出去的碎段一起拿掉）；手删掉的段落（gone）被放回来的，再拿掉。别处照 new。"""
+        keep = {k for k in keep or () if k}
+        gone = [g for g in gone or () if g]
+        if old == new or not (keep or gone):
+            return new
+        os_, ns = cls._spans(old), cls._spans(new)
+        ok_, nk = [k for _, _, k in os_], [k for _, _, k in ns]
+        pairs = cls._para_pairs(ok_, nk)
+        inv = {j: i for i, j in pairs.items()}
+        # 手改后又被后面的任务改过的（还是那一段，只是不再一字不差）也算
+        held = {i for i, k in enumerate(ok_) if k in keep or any(cls._ratio(k, x) >= 0.6 for x in keep)}
+        ops = []                                        # (起, 止, 换成的字 / None = 删掉这一段)，落在 new 上
+        for i in sorted(held):
+            j = pairs.get(i)
+            if j is not None:
+                if nk[j] != ok_[i]:
+                    ops.append((ns[j][0], ns[j][1], ok_[i]))
+                continue
+            prev = next((pairs[x] for x in range(i - 1, -1, -1) if x in pairs), None)     # 被拿掉了：放回原处
+            ops.append((0, 0, ok_[i] + "\n\n") if prev is None else (ns[prev][1], ns[prev][1], "\n\n" + ok_[i]))
+        for j, k in enumerate(nk):
+            if j in inv:
+                continue
+            side = [next((inv[x] for x in range(j - 1, -1, -1) if x in inv), None),
+                    next((inv[x] for x in range(j + 1, len(nk)) if x in inv), None)]
+            if (any(i in held and cls._covered(k, ok_[i]) >= 0.6 for i in side if i is not None)
+                    or any(cls._ratio(k, g) >= 0.5 for g in gone)):
+                ops.append((ns[j][0], ns[j][1], None))
+        for a, b, rep in sorted(ops, key=lambda o: (o[0], o[1]), reverse=True):
+            new = cls._cut_para(new, a, b) if rep is None else new[:a] + rep + new[b:]
+        return new
+
+    def _hand_edits(self) -> list[dict]:
+        try:
+            d = json.loads(self._hand_file().read_text(encoding="utf-8"))
+            return [r for r in (d.get("edits") or []) if isinstance(r, dict)]
+        except (OSError, ValueError, AttributeError):
+            return []
+
+    def _hand_guard(self, paper, tid: str) -> tuple[set, list]:
+        """tid 改完之后才手改过的段落：(手改后的段落, 手删掉的段落)。撤回、打勾 tid 时这些段落原样留着。"""
+        try:
+            seq = float(self._changes(tid).get("seq") or 0)
+        except (TypeError, ValueError):
+            seq = 0.0
+        try:
+            pid = paper_id(paper)
+        except Exception:
+            pid = None
+        keep, gone = set(), []
+        for r in self._hand_edits():
+            if (pid and r.get("paper") and r.get("paper") != pid) or float(r.get("seq") or 0) <= seq:
+                continue
+            if r.get("new"):
+                keep.add(str(r["new"]))
+            elif r.get("old"):
+                gone.append(str(r["old"]))
+        return keep, gone
+
+    def _hand_swallowed(self, cur: str) -> dict:
+        """改过这一段、还没打勾的任务（这次手改把它们在这一段的改动盖掉了）：{任务: 它改动记录的 seq}。
+        对比页拿它把这几条的图钉贴到手改后的这一段上（它们的修订标记没了，按改出来的字找不到）。"""
+        out = {}
+        for t in self._active_tasks():
+            if t.get("status") != "done" or t.get("note") or t.get("resolved"):
+                continue
+            ch = self._changes(t["id"])
+            news = [str(p).replace("\r\n", "\n").strip() for op in ch.get("ops") or [] for p in op.get("new") or []]
+            if (any(p == cur or self._ratio(p, cur) >= 0.6 for p in news if p)
+                    or any(len(str(s)) >= 4 and str(s) in cur for s in ch.get("ins") or [])):
+                out[t["id"]] = ch.get("seq")
+        return out
+
+    def _hand_into_bases(self, src: str, index: int, cur: str, new: str, by: str | None) -> None:
+        """para_save 存好一段之后调（拿着 _DOC_LOCK）：底稿和 .own 里对应的那段换成 new，记一笔手改。
+        src：保存之前的整篇（\\n 换行）；index、cur：改的是它的第几段、原来的字。读写都按原来的换行和 BOM。"""
+        own = self._own_of(self.base)
+        try:
+            if not self._own_ok(self.base) and self.base0.is_file():
+                _copy_doc(self.base0, own)              # 这场会第一次手改：从开会时的原文起
+        except (OSError, DocReadError):
+            pass
+        for path in (self.base, own):
+            try:
+                text, bom, nl = _read_doc(path)
+                out = self._sync_para(text, src, index, new)
+                if out != text:
+                    _write_doc(path, out, bom, nl)
+            except (OSError, DocReadError, UnicodeDecodeError):
+                continue
+        try:
+            pid, edits = paper_id(self.mirror), self._hand_edits()[-199:]
+            tasks = {}
+            for r in edits:                             # 同一段接着手改：上一次盖掉的那几条照样算这一段的
+                if r.get("paper") == pid and r.get("new") == cur and isinstance(r.get("tasks"), dict):
+                    tasks.update(r["tasks"])
+            tasks.update(self._hand_swallowed(cur))
+            edits.append({"paper": pid, "seq": time.time(), "old": cur, "new": new,
+                          "by": " ".join(str(by or "").split())[:32], "tasks": tasks})
+            CHANGES_DIR.mkdir(parents=True, exist_ok=True)
+            _write_bytes_atomic(self._hand_file(), json.dumps({"edits": edits}, ensure_ascii=False, indent=1).encode("utf-8"))
+        except Exception:
+            pass
 
     @staticmethod
     def _revert_text(text: str, ops: list) -> tuple[str, int]:
@@ -2902,22 +3165,37 @@ class Viewer:
         mirror, base = self._files_of(t)            # 这条改的那一篇（切走了也撤那一篇，不碰屏幕上这篇）
 
         also: list = []
+        held: list = []
 
         def rewrite(path: Path, keep_also: bool = True) -> int:
             src, bom, nl = _read_doc(path)          # 换行统一成 \n 再撤，写回时 CRLF / LF、BOM 照原样
             out, n, more = self._rollback_text(src, tid)
             if keep_also:
                 also[:] = more
+            # 这条改完以后有人手改过的段落原样留着（2026-11-21：撤一条改动被整段重写盖掉的任务，作者打的半句话被撤没了）。
+            # 要撤的全在手改过的段落里，或者还要连带撤别的几条（它们的字可能就在留着的段落里）：一处都不撤，照实说
+            if n and out != src and (guard[0] or guard[1]):
+                kept = self._keep_paras(src, out, *guard)
+                same = [k for _, _, k in self._spans(kept)] == [k for _, _, k in self._spans(src)]   # 只差空行也算没撤
+                if keep_also and kept != out and (same or more):
+                    n = 0
+                    held.append(path)
+                else:
+                    out = src if same else kept
             if n and out != src:
                 _write_doc(path, out, bom, nl)
             return n
 
         with _DOC_LOCK:                              # 和打勾、手改一段、开会定原文不同时改同一份文件
+            guard = self._hand_guard(mirror, tid)
             try:
                 n = rewrite(mirror)
             except (OSError, DocReadError, UnicodeDecodeError) as e:
                 return {"ok": False, "error": f"读写文档失败：{e}"}
             if not n:
+                if held:
+                    en = getattr(self, "ui_lang", "zh") == "en"
+                    return {"ok": False, "error": "Undo failed: edited by hand" if en else "撤回失败：此处已手动修改"}
                 return {"ok": False, "error": "撤回失败：此处已被再次修改"}
             # 之前打过勾、已经并进基线的（它自己或连带撤下的那几条）：基线也撤回去
             if base.exists() and (t.get("accepted") or any((self.board.get(x) or {}).get("accepted") for x in also)):
@@ -3055,6 +3333,8 @@ class Viewer:
         en = self.ui_lang == "en"
         closing = (f"<h2>{'Unfinished edits' if en else '未完成的修改'}</h2><ul>{''.join(pending)}</ul>" if pending else "")
         before = base0 if (final and base0.exists()) else base
+        if final and self._own_ok(base):
+            before = self._own_of(base)       # 会上有人手改过：从"原文 + 手改"比起，散会的修订对比只算 AI 的改动
         docs = [{"name": self._doc_name() if paper is None else self._name_of(mirror), "before": str(before), "after": str(mirror)}]
         papers = [p for p in (getattr(self, "papers", None) or []) if Path(str(p.get("path") or "")).is_file()]
         if final and len(papers) > 1:
@@ -3062,7 +3342,7 @@ class Viewer:
             docs = []
             for p in papers:
                 b = base_for(p["path"])
-                b0 = Path(str(b) + ".orig")
+                b0 = self._own_of(b) if self._own_ok(b) else Path(str(b) + ".orig")
                 docs.append({"name": str(p.get("name") or Path(p["path"]).stem),
                              "before": str(b0 if b0.exists() else b if b.exists() else p["path"]), "after": str(p["path"])})
         return {
@@ -3189,7 +3469,7 @@ class Viewer:
         mirror = Path(str(paper))
         with _DOC_LOCK:
             base = self.base if _same_file(mirror, self.mirror) else base_for(mirror)
-            b0 = Path(str(base) + ".orig")
+            b0 = self._own_of(base) if self._own_ok(base) else Path(str(base) + ".orig")   # 会上手改过的：手改照样算看过
             try:
                 text, bom, nl = _read_doc(b0)
             except (OSError, DocReadError, UnicodeDecodeError):
@@ -3209,7 +3489,7 @@ class Viewer:
                 if out is None:
                     out = self._apply_tok_change(text, ch)
                 if out is not None:
-                    text = out
+                    text = self._keep_paras(text, out, *self._hand_guard(mirror, ch.get("id") or ""))
             try:
                 _write_doc(base, text, bom, nl)
             except OSError:

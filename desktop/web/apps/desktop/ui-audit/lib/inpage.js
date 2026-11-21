@@ -545,6 +545,9 @@
         }
       }
       if (seen < 16) continue;
+      // scrolled almost out of its panel: a sliver under 2px (the bottom 0.4px of a button above the list's top edge,
+      // under the fade) can't be seen or clicked, and its points land on the parent — not "covered"
+      if (v.bottom - v.top < 2 || v.right - v.left < 2) continue;
       // hit test: is it on top where it can be seen?
       const pts = [
         [0.5, 0.5],

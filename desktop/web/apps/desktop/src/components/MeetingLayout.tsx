@@ -11,7 +11,7 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { relayApi } from '../setupApi';
 import { useDismiss } from './useDismiss';
-import { EditDock, editsOf, elapsed } from './EditDock';
+import { backLine, backTip, elapsed, lookupsOf, notesOf } from './claudeNow';
 import { handOff } from './paperSwap';
 import { tidy, useMenu } from './Menu';
 import { isImeKey } from '../ime';
@@ -1687,6 +1687,18 @@ function peelHolds(text: string): [string, string] {
   return [head, rest];
 }
 
+/** the step the backend names the question it hands over with ("深入思考 要不要在第三章介绍表二的大类"; an English
+ *  meeting's words) */
+const DEEP_KS = new Set(['深入思考', 'Thinking deeper']);
+/** a hand-over to the background (#deep): one step saying what it is to think about. Its own steps name the question:
+ *  those; none does: "交给后台" and the question when the tag carries one ("#deep <问题>"). It used to add
+ *  "派任务 深入查找" under "深入思考 …": the same thing twice, and not what about (2026-11-21, the user) */
+function handOver(l: Line, own: Step[], at: (k: string, v?: string) => Step): Step[] {
+  if (own.some((x) => DEEP_KS.has(x.k) && x.v)) return own;
+  const q = (l.tag || '').replace(/^\S+\s*/, '').trim();
+  return [...own, at(t('meeting.ai.step.to_back'), q || undefined)];
+}
+
 /** one of Claude's lines → one or two pieces, each a single kind (cat) with what it was doing (detail) */
 export function splitClaude(l: Line): ShownLine[] {
   const tag = (l.tag || '').split(/\s+/)[0];
@@ -1717,7 +1729,7 @@ export function splitClaude(l: Line): ShownLine[] {
     add(hold, 'quick');
     // an old line (before 2026-11-12, no lat): the filler and then the background's answer, all in one line
     if (l.lat == null) add(rest, 'claude', own, true);
-    else add(rest, 'quick', [...own, at(t('meeting.ai.step.task'), t('meeting.ai.step.to_opus'))]);
+    else add(rest, 'quick', handOver(l, own, at));
   } else if (tag === '#find') {
     add(l.text, 'quick', [at(t('meeting.ai.step.task'), t('meeting.ai.step.to_find'))]);
   } else if (tag === '#ask') {
@@ -1814,59 +1826,31 @@ function useTick(ms = 1000) {
 const backendNow = (b: Brain | null | undefined) => Date.now() / 1000 + (b?.skew ?? 0);
 const since = (b: Brain | null | undefined, t0?: number | null, fallback = 0) =>
   t0 ? Math.max(0, Math.round(backendNow(b) - t0)) : fallback;
-const lookupsOf = (b: Brain | null | undefined): Lookup[] => b?.deeps ?? (b?.deep ? [b.deep] : []);
-// before Haiku has named it: the words as said, without the ums and fillers they start with
-const lookupName = (d: Lookup) => {
-  if (d.topic) return d.topic;
-  const q = d.q.replace(/^(?:[\s，,。.、！!？?]|嗯|呃|啊|哦|诶|欸|哎|那个|就是|然后|行|好|对|Claude)+/i, '') || d.q;
-  return q.length > 24 ? q.slice(0, 24) + '…' : q;
-};
 
 /** "Claude 现在…": two rows only — the front (listening / thinking / speaking / muted) and the background (what it is
  *  looking up, which revision it is on). The steps themselves hang under the transcript's bubbles (LiveDeep / LiveEdit).
  *  Several things at once read as one short line: "在查 3 件：问题定义写法、FinTS 次数 等；在改 T3：…；还有 2 条排队".
- *  Each lookup's short name is Haiku's, made once when it starts; the line is put together here, so it never lags. */
+ *  Each lookup's short name is Haiku's, made once when it starts; the line is put together here, so it never lags.
+ *  Pointed at anywhere (the strip itself is the target): all of it, one part a line, with the step each is on
+ *  (claudeNow.ts backTip), in the window's own tip (Tooltip.tsx), not the WebView's `title`: that one is a bare system
+ *  box, and a `title` whose seconds change every second made it blink the whole time it was pointed at (2026-11-21,
+ *  the user). The tip takes its words once, when it opens, and keeps them (and its size) until the pointer leaves */
 function ClaudeNow({ brain, board, ai }: { brain: Brain; board: Board | null; ai: string }) {
   useTick(1000);
-  const edits = editsOf(brain, board);
-  const queued = brain.queued ?? board?.counts?.queued ?? 0;
+  const now = backendNow(brain);
   const front = brain.front === 'muted' ? t('meeting.ai.muted', { ai }) : t(`meeting.ai.${brain.front}`);
-  const back: string[] = [];
+  const back = backLine(brain, board, now);
   const looks = lookupsOf(brain);
   const dp = looks[looks.length - 1] ?? null;
-  if (looks.length === 1) {
-    back.push(
-      (dp!.state === 'done' ? t('meeting.ai.deep_ready', { q: lookupName(dp!) }) : t('meeting.ai.deep_now', { q: lookupName(dp!) })) +
-        ' · ' +
-        t('meeting.ai.secs', { s: String(since(brain, dp!.t0, dp!.secs)) }),
-    );
-  } else if (looks.length > 1) {
-    const names = looks.slice(-2).map(lookupName).join('、') + (looks.length > 2 ? t('meeting.ai.and_more') : '');
-    back.push(t('meeting.ai.deeps', { n: String(looks.length), names }));
-  }
-  for (const w of edits) {
-    const bits = [t('meeting.ai.working', { title: w.title })];
-    if (w.edits) bits.push(t('meeting.ai.edits', { n: String(w.edits) }));
-    if (w.started) bits.push(elapsed(since(brain, w.started)));
-    back.push(bits.join(' · '));
-  }
-  // revisions held back until their document (a new PDF, plain text first) is recognized in full: said before the plain
-  // queue count, it's why they haven't started
-  if (brain.waiting) back.push(t('meeting.ai.waiting', { n: String(brain.waiting) }));
-  if (queued) back.push(t('meeting.ai.queued', { n: String(queued) }));
-  if (brain.unspoken) back.push(t('meeting.ai.unspoken', { n: String(brain.unspoken) }));
   // notes don't make the back busy: the text wasn't changed; they are counted after the state
-  const notes = board?.counts?.notes ?? (board?.tasks ?? []).filter((x) => x.note && x.status === 'done').length;
+  const notes = notesOf(board);
   const tail = notes ? ' · ' + t('meeting.ai.notes', { n: String(notes) }) : '';
   const backModel = (dp ? dp.model || brain.deep_model : brain.edit_model) || brain.back_model;
-  // the whole of it on hover, one part a line, in the window's own tip (Tooltip.tsx), not the WebView's `title`: that
-  // one is a bare system box, and a `title` whose seconds change every second made it blink the whole time it was
-  // pointed at (2026-11-21, the user). The tip takes its words once, when it opens, and keeps them until the pointer leaves
-  const whole = back.length ? back.join('\n') + (notes ? '\n' + t('meeting.ai.notes', { n: String(notes) }) : '') : undefined;
   return (
-    <div className="mt-now" role="status" aria-live="polite" data-testid="claude-now">
+    <div className="mt-now" role="status" aria-live="polite" data-testid="claude-now" data-tip={backTip(brain, board, now)}>
       <div className="mt-now-row">
         <span className={`mt-now-dot is-${brain.front}`} aria-hidden="true" />
+        {/* a model name cut with "…" shows itself on hover; whole, the strip's tip takes over (Tooltip.tsx) */}
         {brain.front_model && <span className="mt-now-m" data-tip={brain.front_model} data-tip-trunc="">{brain.front_model}</span>}
         <span className="mt-now-v">{front}</span>
       </div>
@@ -1876,7 +1860,7 @@ function ClaudeNow({ brain, board, ai }: { brain: Brain; board: Board | null; ai
           {backModel || t('meeting.ai.back')}
         </span>
         {/* one line: what doesn't fit ends in "…" */}
-        <span className="mt-now-v" data-tip={whole} data-tip-trunc="" data-testid="claude-now-back">
+        <span className="mt-now-v" data-testid="claude-now-back">
           {back.length ? back.join('；') : t('meeting.ai.back_idle')}
           {tail && <span className="mt-now-notes">{tail}</span>}
         </span>
@@ -2236,7 +2220,10 @@ export const Transcript = memo(function Transcript({
       <span className="mt-line-who" style={{ color: nameColor(colorOf('student')) }} title={nameOf('student')}>{nameOf('student')}</span>
     </>
   );
-  // · a revision being made: under the bubble that recorded it ("派任务 T3 …"), its steps as the worker goes
+  // · a revision being made: under the bubble that recorded it ("派任务 T3 …"), its steps as the worker goes. Every
+  //   revision under way, with the step it is on, is also in the AI strip's tip above the transcript (ClaudeNow): a big
+  //   one goes on for minutes, and by then its bubble is far up the column (the card that said so at the transcript's
+  //   foot went, 2026-11-21: "本应该出现在上面的状态栏的东西放在了下面")
   const liveEdit = (u: Turn): LiveEditInfo | null => {
     const f = u.lines[0];
     if (u.who !== 'student' || !(f.tag || '').startsWith('#edit') || !f.title) return null;
@@ -2245,13 +2232,6 @@ export const Transcript = memo(function Transcript({
     const w = (board?.tasks ?? []).find((x) => x.status === 'working' && x.title === f.title);
     return w ? { idx: w.idx, started: w.progress?.started, edits: w.progress?.edits, log: w.progress?.log } : null;
   };
-  // · and every revision under way, said in two lines at the foot, under the newest line (EditDock): a big one goes on
-  //   for minutes, and by then the bubble that asked for it is far up the column. One that no "派任务" bubble recorded
-  //   (asked in the same breath as a lookup) is only there. The slot is there all meeting long, filled or not, and
-  //   stays when the meeting ends (the page goes on showing it): the lines above it don't drop by its height
-  const hadDock = useRef(false);
-  if (!noAi && brain) hadDock.current = true;
-  const docked = !noAi && hadDock.current;
   const pickable = (l: Line) => !!onPick && l.vt != null;
   // the playing line: Claude's lines are split into pieces (new objects), so compare by place, not identity
   const isNow = (l: Line) => !!active && l.sec === active.sec && l.who === active.who && (l.vt ?? null) === (active.vt ?? null);
@@ -2435,7 +2415,6 @@ export const Transcript = memo(function Transcript({
                 </div>
               </section>
             )}
-            {docked && <EditDock brain={brain ?? null} board={board} />}
           </div>
         )}
       </div>

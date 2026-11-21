@@ -336,6 +336,37 @@ def invites_continuation(spoken: str) -> bool:
     return bool(_INVITE.search((spoken or "").strip()))
 
 
+# AI 刚被打断，对方叫它把话说完："继续，继续。""你你你继续说，我没有打断你。""接着说吧""说完""然后呢"
+# （2026-11-21 [18:10]：这两句一句被当成收尾确认，一句让它回了"刚才那句我说完了"）。"继续改""继续看"是别的事，不算
+_NOT_CUT_YOU = re.compile(r"我?(?:没有?|不是)(?:在)?(?:打断你|打断|跟你说|说你)|(?:刚才)?不是(?:在)?(?:跟你说|说你)(?:的)?")
+_RESUME_FILL = re.compile(r"可以|没事|[嗯呃啊哦诶哎好的行对那就你吧呀啦嘛呗，,。.！!？?、~～\s]")
+_RESUME = re.compile(r"^(?:(?:继续|接着)(?:说|讲)?(?:下去)?|往下(?:说|讲)|(?:先|把话)?说完|说下去|讲下去|然后呢|接着来)+$")
+_RESUME_EN = re.compile(r"^(?:please\s+)?(?:go\s+on|continue|keep\s+going|carry\s+on|finish(?:\s+what\s+you\s+were\s+saying)?)"
+                        r"(?:\s*,?\s*please)?[.!]?$", re.I)
+
+
+def wants_resume(text: str) -> bool:
+    s = (text or "").strip()
+    if _RESUME_EN.match(s):
+        return True
+    core = _NOT_CUT_YOU.sub("", s)
+    said_not_cut = core != s
+    core = _RESUME_FILL.sub("", core)
+    if not core:
+        return said_not_cut                    # 只说了"我没有打断你"：也是叫它接着说
+    return len(core) <= 16 and bool(_RESUME.match(core))
+
+
+# 只说了"做吧"、没说做什么："删了吧，删了吧。""删吧。""我没有打断你，你去删啊。""那你改吧""加上吧"
+_GO_FILL = re.compile(r"可以|没问题|[嗯呃啊哦诶哎好的行对那就你去快赶紧直接吧呀了啦嘛呗哈，,。.！!？?、~～\s]")
+_GO_VERB = re.compile(r"^(?:删(?:掉|除)?|改(?:掉)?|加(?:上)?|补(?:上)?|换(?:掉)?|写(?:上)?|去掉|拿掉|弄|做|办)+$")
+
+
+def bare_go_ahead(text: str) -> bool:
+    core = _GO_FILL.sub("", _NOT_CUT_YOU.sub("", text or ""))
+    return 0 < len(core) <= 8 and bool(_GO_VERB.match(core))
+
+
 # "你仔细想一想""再想想呢""好好想想""让后台想一下"：交给后台深想（"我再想想"是自己在想，不算；"深层模型在改"是要改稿，不算）
 _DEEPER = re.compile(
     r"(?:你|您)(?:再|好好|仔细|认真|深入|重新)+(?:地)?(?:想|思考|考虑)(?:一)?(?:想|下|一下)?"
@@ -545,7 +576,9 @@ _SUPPLEMENT = re.compile(r"打回来|重来|重做|换个(?:方法|思路|拆法
                          r"另外(?:还)?(?:要|得)|范围|除了|跳过|保留|只(?:扫|换|改|动|拆|删|留)|别的(?:地方)?(?:都)?不(?:用|要)|"
                          r"(?:都)?不用(?:动|管|改)|照这个|按这个|前面那条|刚才那条|上一条")
 # 快嘴的复述里说了是在改前面那条："前面那条扫描的范围我照这个改"
-_REFERS_BACK = re.compile(r"前面那条|上一条|刚才那条|刚记的那条|前一条|那条(?:扫描|任务)?的范围|照这个改|并进(?:去|那条)|一起(?:改进去|并进去)")
+_REFERS_BACK = re.compile(r"前面那条|上一条|刚才那条|刚记的那条|前一条|那条(?:扫描|任务)?的范围|照这个改|并进(?:去|那条)|一起(?:改进去|并进去)"
+                          # 2026-11-21 组会 [18:03:23]"「7 结论 第1段 改成先问后答」那条还在改，我去改它的写法"
+                          r"|那条(?:还|正)在(?:改|排队)|(?:去|再|一起)?改它的(?:写法|改法)|并到那条|在那条里(?:一起)?改")
 
 
 def supplements(text: str) -> bool:
@@ -554,6 +587,123 @@ def supplements(text: str) -> bool:
 
 def refers_back(spoken: str) -> bool:
     return bool(_REFERS_BACK.search(spoken or ""))
+
+
+# 对方手改过一段，快嘴却说看不到（2026-11-21 组会 [18:29:11]"我这边看不到你改成什么样，论文全文里是你改之前的版本，你念一下"）
+_DENY_HAND = re.compile(r"看不到(?:你|您)?(?:刚才?|刚刚)?(?:改|修改)|(?:看不到|不知道|不清楚)(?:你|您)?(?:改|写)成(?:了)?什么样|"
+                        r"(?:全文|论文|稿子)(?:里|全文里)?(?:还)?是(?:你|您)?改之前|(?:你|您)?念一下(?:你|您)?改(?:后|过|好)|"
+                        r"(?i:\bcan'?t\s+see\s+(?:your|the)\s+(?:edits?|changes?|revision)\b)")
+
+
+def denies_hand_edit(sentence: str) -> bool:
+    return bool(_DENY_HAND.search(sentence or ""))
+
+
+def names_task(spoken: str, title: str) -> bool:
+    """AI 的话里点了这条任务的标题（"「7 结论 第1段 改成先问后答」那条"，或者标题原样出现在话里）。"""
+    t, s = bare(title), bare(spoken)
+    if len(t) < 6:
+        return False
+    return t in s or any(bare(q) == t for q in re.findall(r"「([^」]{2,80})」", spoken or ""))
+
+
+# ---------------------------------------------------------------- 软件替 AI 补记的改稿：标题不照抄口语
+# 2026-11-21 组会：T6"不用点结论，不用点结论"、T7"你你你这个总起距为什么要扯到图三删掉啊"、T12"第一节 我说了要扩写的"。
+# 标题按 AI 的复述写；复述里没有改法，就按人话里的改法写，去掉结巴、重复、口头禅，前面带上在哪一节
+_STUTTER = re.compile(r"([你我他她它这那就呃嗯啊哦或])\1+")
+_ORAL_LEAD = re.compile(r"^(?:(?:我(?:说了|说过|是说|刚才说了?|的意思是)|你(?:应该|得|要|就)|你|我|那么|就是|其实|然后|而且|所以|"
+                        r"这个|那个|呃|嗯)[，,\s]*)*(?:要|得|应该)?")
+_WHY_EDIT = re.compile(r"为什么(?:要|会|还|又)?|干嘛(?:要)?|怎么(?:还|又)")
+_ORAL_END = re.compile(r"(扩写|展开|删掉|删了|删除|删去|去掉|改掉|拿掉|补上|加上|精简|压缩|合并|拆开)(?:的|了)+$")
+_ACK_LEAD = re.compile(r"^(?:(?:好的?|行|嗯|对|明白(?:了)?|了解|收到|可以|没问题|OK|ok)[，,\s]*)+")
+_ME_DO = re.compile(r"^(?:你是说|你的意思是|你是想|就是说)?\s*(?:(?:那|就)?我(?:这就|马上|现在|先|来|去|会|就|再)?(?:把|将)?)?")
+_RESTATE_ASK = re.compile(r"[？?]|[吗呢么][。！!]?\s*$|要不要|是不是|对不对|行不行|可以吗|好不好")
+_RESTATE_NOT = re.compile(r"建议|倾向|如果|的话|还是|或者|你定|你看|已经|改好了|改完了|不用改|不改|先不")
+_ACK_TAIL = re.compile(r"记下|记上|排队|交给后台|改完(?:了)?(?:再)?跟你说|这就去改|马上改|去改|我改一下")
+_TASK_QUOTE = re.compile(r"「[^」]{1,80}」(?:那条|这条|那一条|这一条)?")
+
+
+def oral_free(s: str) -> str:
+    """口语原话 → 能当标题的说法："你你你" → "你"，重复的半句只留一次，去掉开头的口头禅、人称和句末语气词；
+    "X 为什么要扯到 Y 删掉" → "X 把 Y 删掉"。"""
+    s = _STUTTER.sub(r"\1", clean_clause(s or ""))
+    out = []
+    for p in re.split(r"[，,]", s):
+        p = p.strip()
+        if p and not (out and bare(p) == bare(out[-1])):
+            out.append(p)
+    s = _ORAL_LEAD.sub("", "，".join(out)).strip(" ，,")
+    s = re.sub(r"[啊呀吧呢嘛哈]+$", "", s).strip(" ，,")
+    s = _ORAL_END.sub(r"\1", s)                    # "我说了要扩写的" → "扩写"
+    m = _WHY_EDIT.search(s)
+    e = EDIT_CUE.search(s, m.end()) if m else None
+    if m and e:
+        obj = re.split(r"扯到|提到|放到|写到|说到|放进|写进|到|把|将", s[m.end():e.start()])[-1].strip()
+        s = s[:m.start()].rstrip(" ，,") + (f"把{obj}" if obj else "") + s[e.start():]
+    return s if len(bare(s)) >= 2 else ""
+
+
+_NTH = r"第\s*[一二三四五六七八九十两\d]+\s*(?:段|节|章|条|句|部分)|[（(]\s*\d{1,2}\s*[）)]\s*(?:段|条)?"
+
+
+def where_of(text: str) -> str:
+    """话里说的是哪一处："五点二的第一节" → "5.2 第一节"，"5.2 第（1）条" → "5.2 第（1）条"；只说了小节号就是它；
+    都没有用 PLACE_FULL（"引言""第三段"）；没有返回空串。"""
+    t = text or ""
+    m = _SEC_NO.search(t)
+    sec = section_no(t)
+    if m and sec:
+        k = re.match(r"\s*节?\s*(?:的|里的?|里面的?)?\s*(" + _NTH + r"|第\s*[（(]\s*\d{1,2}\s*[）)]\s*(?:段|条|节))",
+                     t[m.end():m.end() + 12])
+        return (sec + " " + re.sub(r"\s+", "", k.group(1))) if k else sec
+    loc = PLACE_FULL.search(t)
+    return loc.group(0).strip() if loc else ""
+
+
+def restated_edit(spoken: str) -> str:
+    """AI 回话里复述的改法（"好，我把 5.2 开头那句删掉。我这就排队去改。" → "5.2 开头那句删掉"）：不是在问、不是在提议、
+    不是在说已经改过的；点了任务标题的那截（"「…」那条还在改"）不算。没有返回空串。"""
+    s = _TASK_QUOTE.sub("", spoken or "")
+    for x in _split_sents(s):
+        x = x.strip()
+        plain = re.sub(r"“[^”]*”", "", x)            # 引号里念的原文不算
+        if not has_edit(x) or _RESTATE_ASK.search(plain) or _RESTATE_NOT.search(plain):
+            continue
+        parts = [p.strip() for p in re.split(r"[，,]", x.rstrip("。！!；;"))]
+        while parts and _ACK_TAIL.search(parts[-1]) and not has_edit(_ACK_TAIL.sub("", parts[-1])):
+            parts.pop()                            # "我记下了""排队去改"：不是改法
+        body = _ME_DO.sub("", _ACK_LEAD.sub("", "，".join(p for p in parts if p))).strip(" ，,：:")
+        body = re.split(r"[：:]", body, maxsplit=1)[0].strip() if len(body) > 30 else body
+        if len(bare(body)) >= 4 and has_edit(body):
+            return body
+    return ""
+
+
+def edit_title(words: str, spoken: str = "", n: int = 40) -> str:
+    """软件替 AI 补记的改稿（漏记、嘴上答应了没打标签）的标题：AI 复述了改法就用复述；没有就按人话里说怎么改的那一两截，
+    去掉口语（oral_free），前面带上在哪一节（人话里没说就用 AI 回话里说的）。都取不出来返回空串。"""
+    r = restated_edit(spoken)
+    if r:
+        return short(r, n)
+    bits = []
+    for g in split_requests(words):
+        if g["kind"] != "paper":
+            continue
+        sents = _split_sents(g["text"])
+        for i, c in enumerate(sents):
+            if has_edit(c):
+                b = oral_free(_edit_bit(c, sents[i - 1] if i else ""))
+                if b and all(bare(b) != bare(x) for x in bits):
+                    bits.append(b)
+        if len(bits) >= 2:
+            break
+    body = "，".join(bits[:2]) or oral_free(title_from_words(words, n=80))
+    if not body:
+        return ""
+    place = where_of(words) or where_of(_TASK_QUOTE.sub("", spoken or ""))
+    if place and not PLACE.search(body):
+        body = f"{place} {body}"
+    return short(body, n)
 
 
 _SEC_NO = re.compile(r"(?<![\d.])(\d+(?:\.\d+)+)(?![\d.])|([一二三四五六七八九十\d]+)\s*点\s*([一二三四五六七八九十\d]+)")
@@ -595,23 +745,69 @@ def _split_sents(text: str) -> list[str]:
     return _glue([p for p in re.split(r"(?<=[。！？!?；;])", text or "") if p.strip()])
 
 
-def question_of(text: str) -> str:
+# 识别切出来的半截话（2026-11-21 组会 [18:13:36]"这个是不是写的太，就是你后面。"）：不当问题
+_FRAG = re.compile(r"(?:太|很|比较|有点|就是|然后|那个|这个|是不是|也|还)[，,]|(?:就是|然后|那个|这个|就是你|你后面)$")
+
+
+def _q_clause(s: str) -> str:
+    """一句话里有内容的问题（去掉口头禅、空问、句末语气词）；不是问题、没内容、是半截话返回空串。"""
+    if not ASK_CUE.search(s):
+        return ""
+    c = clean_clause(_Q_EMPTY.sub("", s))
+    c = re.sub(r"^(?:那么|那|你|您)+(?=\S)", "", c)
+    c = re.sub(r"[啊呀呢吧嘛哈]+$", "", c).strip(" ，,。.")
+    if len(bare(c)) < 6 or not (_Q_CONTENT.search(c) or PAPER_LOC.search(c) or has_edit(c)) or _FRAG.search(c):
+        return ""
+    return c
+
+
+def question_of(text: str, n: int = 60) -> str:
     """一段人话里真在问的那个问题（交给深想时显示、交过去用）：带问号或问话词、有实际内容的头一句，去掉口头禅、
-    "你怎么看"这种空问；这句没点位置、整段话点了（"第三章"），把位置带在前面。没有返回空串。
-    "我先叫个啥，我先啥？"这种没内容的不算。"""
-    for s in _split_sents(text):
-        if not ASK_CUE.search(s):
+    "你怎么看"这种空问；紧跟着的下一句也在问、问的不是同一件事，接上（"后面是不是写的太少了？是不是应该稍微展开一点？"）；
+    这句没点位置、整段话点了（"五点二的第一节"），把位置带在前面。没有返回空串。
+    "我先叫个啥，我先啥？"这种没内容的、"这个是不是写的太，就是你后面"这种半截话不算。"""
+    sents = _split_sents(text)
+    for i, s in enumerate(sents):
+        c = _q_clause(s)
+        if not c:
             continue
-        c = clean_clause(_Q_EMPTY.sub("", s))
-        c = re.sub(r"^(?:那么|那|你|您)+(?=\S)", "", c)
-        c = re.sub(r"[啊呀呢吧嘛哈]+$", "", c).strip(" ，,。.")
-        if len(bare(c)) < 6 or not (_Q_CONTENT.search(c) or PAPER_LOC.search(c) or has_edit(c)):
-            continue
-        loc = PLACE_FULL.search(text or "")
+        c2 = _q_clause(sents[i + 1]) if i + 1 < len(sents) else ""
+        if c2 and not same_question(c, c2) and len(c) + len(c2) <= 56:
+            c = f"{c}，{c2}"
+        loc = where_of(text or "")
         if loc and not PLACE.search(c):
-            c = f"{loc.group(0).strip()} {c}"
-        return short(c, 60)
+            c = f"{loc} {c}"
+        return short(c, n)
     return ""
+
+
+_PROPOSE = re.compile(r"我(?:可以|建议|倾向于?|打算|准备)(?:在|把|给)?|(?:可以|不如)(?=补|加|改|删|换|写|拆|挪|展开)")
+
+
+def proposal_of(text: str) -> str:
+    """AI 一句话里提的改法、倾向（"我可以补一句：五种……" → "提议补一句：五种……"；"我倾向不全部讲" → "倾向不全部讲"）；没有返回空串。"""
+    for x in _split_sents(text):
+        m = _PROPOSE.search(x)
+        if not m:
+            continue
+        body = x[m.end():].strip(" ，,。！!")
+        body = re.sub(r"[，,]?\s*(?:你(?:要|看|觉得)|要不要|行不行|可以吗|你定)[^，,]*$", "", body).strip(" ，,")
+        if len(bare(body)) >= 4:
+            return ("倾向" if "倾向" in m.group(0) else "提议") + short(body, 40)
+    return ""
+
+
+def think_question(user_q: str, ai_reply: str = "", n: int = 90) -> str:
+    """对方只说"你再想想""想想"：要想的问题 = 他前面问的（user_q）加上 AI 上一句的提议（"（我前面提议补一句……）"）；
+    他前面没问：用 AI 上一句的问话（"你要我这样展开吗" → "要不要这样展开"），前面带上在哪一节。都没有返回空串。"""
+    q = (user_q or "").strip()
+    prop = proposal_of(ai_reply)
+    if not q:
+        q = question_of(ai_reply)
+        q = re.sub(r"(?:你)?要(?:我|不要我)(.+?)[吗么]?$", r"要不要\1", q)
+    if prop and bare(prop[2:]) not in bare(q):
+        q = f"{q}（我前面{prop}）" if q else (where_of(ai_reply) + f" 我前面{prop}，要不要这样改").strip()
+    return short(q, n)
 
 
 def deep_question(text: str) -> str:

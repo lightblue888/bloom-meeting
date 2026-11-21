@@ -600,6 +600,47 @@ class PlaybackRef:
                 self._zero(tr, i, tr["end"])
                 tr["end"] = max(i, tr["end"] - len(tr["ring"]))
 
+    def hold(self, src: str, t: float):
+        """src 在 t 时刻先停一下（嘴 pause）：t 以后已经排好的那截拿下来（停着时不算在放）。
+        → 拿下来的样本（16 kHz int16），恢复时 put_at(src, 它, 恢复时刻) 放回去；没有 → None。"""
+        np = self._np()
+        with self._lock:
+            tr = self._tracks.get(src)
+            if tr is None or tr["t0"] is None:
+                return None
+            N = len(tr["ring"])
+            i = max(int(round((t - tr["t0"]) * REF_SR)), tr["end"] - N, 0)
+            if i >= tr["end"]:
+                return None
+            x = tr["ring"][np.arange(i, tr["end"]) % N].copy()
+            self._zero(tr, i, tr["end"])
+            tr["end"] = i
+            return x
+
+    def onset(self, w0: float, w1: float, kinds=None, quiet: float = 0.4) -> float | None:
+        """[w0, w1] 里放出去的声音最后一次"静了至少 quiet 秒之后开始出声"的时刻；没有 → None。"""
+        np = self._np()
+        q = max(1, int(round(quiet * REF_SR / REF_HOP)))
+        best = None
+        with self._lock:
+            for tr in self._tracks.values():
+                if tr["t0"] is None or (kinds and tr["kind"] not in kinds):
+                    continue
+                E = len(tr["env"])
+                b0 = int((w0 - tr["t0"]) * REF_SR) // REF_HOP
+                b1 = min(int((w1 - tr["t0"]) * REF_SR) // REF_HOP + 1, tr["end"] // REF_HOP)
+                if b1 <= b0:
+                    continue
+                idx = np.arange(b0 - q, b1)
+                on = (idx >= 0) & (tr["env"][idx % E] > REF_ON_DB)      # 这一场开始以前算静
+                cs = np.concatenate([[0], np.cumsum(on)])
+                k = np.arange(b1 - b0)
+                hit = np.where(on[q + k] & (cs[q + k] - cs[k] == 0))[0]
+                if len(hit):
+                    t = tr["t0"] + (b0 + int(hit[-1])) * REF_HOP / REF_SR
+                    best = t if best is None else max(best, t)
+        return best
+
     def read(self, w0: float, w1: float, kinds=None):
         """[w0, w1) 墙上时间里放出去的声音（几路加起来，float32，16 kHz）。没放的地方是 0。"""
         np = self._np()
@@ -801,8 +842,11 @@ class _AudioVAD:
         self.barge_ratio, self.barge_floor = 2.5, 0.02
         self._echo = deque(maxlen=150)   # 放音时麦克风每帧的音量（约 5 秒）
         self._loud = 0
+        self._loud_t0 = None         # 这一阵响的第一帧（录音秒）：AI 一句刚开头就响，按起声对齐再比一次回声（_onset_echo）
+        self._onset_hit = None       # (那句起声的墙上时刻, 对上的延迟)：同一句后面几阵沿用
         self._run_on = 0
         self._barged = False
+        self._was_muted = False      # 上一帧学生在不在出声：停一下（pause）后接着放时重新开始听你打断
         self._rest = b""
         self.frames: deque = deque(maxlen=1250)  # 最近约 40 秒每帧（结束秒, 是不是你在出声）：认声音时只取有声的帧
         self.probs: deque = deque(maxlen=1250)   # 同样这些帧（结束秒, Silero 概率）：学生出声时也照记，比回声用
@@ -916,9 +960,10 @@ class _AudioVAD:
         parts = [x[int(round((t - F - base) * 16000)):int(round((t - base) * 16000))] for t in ends]
         return np.concatenate(parts) if parts else None
 
-    def echo_at(self, t0: float, t1: float, kinds=None) -> dict | None:
+    def echo_at(self, t0: float, t1: float, kinds=None, lag: float | None = None) -> dict | None:
         """录音 t0..t1 秒这段和 Bloom 同一时间放出去的声音比花纹（见 echo_match）：
-        → {"echo": 是不是回声, "sim", "cover", "lag", "n", "voiced"}；读不到、那会儿什么都没放 → None。"""
+        → {"echo": 是不是回声, "sim", "cover", "lag", "n", "voiced"}；读不到、那会儿什么都没放 → None。
+        lag：已经知道大概的延迟（秒）时只在它附近找（见 _onset_echo）。"""
         np = self._np
         if np is None or t1 - t0 < 0.15:
             return None
@@ -929,7 +974,11 @@ class _AudioVAD:
             return None
         n = len(x) // self.FRAME
         w0 = self.wall(t0)
-        if len(self.lags) >= 3:                                   # 学到延迟了：只在它附近找
+        if lag is not None:
+            lo, hi, th = max(LAG_MIN, lag - 0.2), min(LAG_MAX, lag + 0.1), ECHO_SIM
+            if hi < lo:
+                return None
+        elif len(self.lags) >= 3:                                 # 学到延迟了：只在它附近找
             lag = sorted(self.lags)[len(self.lags) // 2]
             lo, hi, th = max(LAG_MIN, lag - 0.13), min(LAG_MAX, lag + 0.13), ECHO_SIM
         else:
@@ -1014,6 +1063,9 @@ class _AudioVAD:
         muted = bool(self.muted())
         off = bool(self.mic_off())
         pending = bool(self.pending()) if self.pending else False
+        if muted and not self._was_muted:
+            self._barged, self._loud = False, 0   # 又出声了（新的一句，或停一下以后接着放）：重新听你打断
+        self._was_muted = muted
         try:
             for i in range(k):
                 frame = np.frombuffer(buf[i * step:(i + 1) * step], dtype=np.int16).astype(np.float32) / 32768.0
@@ -1048,18 +1100,21 @@ class _AudioVAD:
                 self._echo.append(rms)
                 base = sorted(self._echo)[len(self._echo) // 2] if len(self._echo) >= 15 else 0.0
                 if p >= self.threshold and rms > max(self.barge_ratio * base, self.barge_floor):
+                    if self._loud == 0:
+                        self._loud_t0 = t_end
                     self._loud += 1
                 else:
                     self._loud = max(0, self._loud - 1)
                 if self._loud >= self.BARGE_FRAMES and not self._barged:
                     # 这一下响的花纹就是音箱正放的（学生自己声音的一阵大、访客的声音也在放）：不是你开口（访客插话由语音桥那一路判，
                     # 照样会停）。2026-11-14 家里没人时就这样误打断过一次（"音量是回声的 19.9 倍"）
-                    if self._guest_echo(t_end, kinds=None):
+                    if self._guest_echo(t_end, kinds=None) or self._onset_echo(t_end):
                         self._loud = 0
                         continue
                     self._barged = True
                     self.last_voice = t_end
-                    self._fire_barge(f"放音时你开口了（音量是回声的 {rms / max(base, 1e-4):.1f} 倍）")
+                    # 不再写"是回声的几倍"：放音时的中位数几乎就是底噪（录音这一路已经消过回声），倍数总是几十上百，看不出什么
+                    self._fire_barge(f"放音时听到人声（音量 {rms:.3f}）")
         except Exception as e:
             log.warning("判停推理出错（%r），退回能量门限", e)
             self._sess = None
@@ -1081,6 +1136,31 @@ class _AudioVAD:
             return False
         if r is not None and r.get("echo") and r["sim"] >= BARGE_ECHO_SIM:
             log.info("录到的是音箱的回声（花纹相关 %.2f，延迟 %s 秒），不算你开口", r.get("sim") or 0.0, r.get("lag"))
+            return True
+        return False
+
+    def _onset_echo(self, t_end: float) -> bool:
+        """AI 静了一阵、一句刚开头就听到"你开口"：多半是回声消除还没跟上，AI 自己的头几个字整段漏进了麦克风。
+        2026-11-21 17:52:33：AI 停了 8 秒后开口，录音里头 0.7 秒消回声前后一样响（没消掉），判成你打断了；
+        那次在大范围里找延迟的花纹比对没认出来。这里拿两边起声的时间差当延迟，只在它附近、按普通门槛再比一次。"""
+        if not self.echo_gate or self._loud_t0 is None:
+            return False
+        t_a = self._loud_t0 - self.FRAME / 16000.0               # 这一阵响的第一帧开头
+        try:
+            w_a = self.wall(t_a)
+            on = PLAYBACK.onset(w_a - LAG_MAX, w_a - LAG_MIN, kinds=("tts",))
+            if on is None:
+                return False
+            hit = getattr(self, "_onset_hit", None)
+            # 同一句：头一阵已经按起声对上了，后面接着漏进来的几阵用同一个延迟（它们的起点不再是这句的起声）
+            lag = hit[1] if hit is not None and abs(hit[0] - on) < 0.05 else w_a - on
+            r = self.echo_at(t_a - 0.1, t_end, kinds=("tts",), lag=lag)
+        except Exception:
+            log.exception("起声对齐比回声出错")
+            return False
+        if r is not None and r.get("echo"):
+            self._onset_hit = (on, r["lag"] if r.get("lag") is not None else lag)
+            log.info("AI 刚开口就听到的是它自己的回声（花纹相关 %.2f，延迟 %s 秒），不算你开口", r.get("sim") or 0.0, r.get("lag"))
             return True
         return False
 

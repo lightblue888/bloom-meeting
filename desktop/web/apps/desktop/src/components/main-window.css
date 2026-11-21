@@ -416,6 +416,20 @@ body.mw-resizing * {
   pointer-events: none;
   animation: mw-pop 90ms ease-out;
 }
+/* several parts, one a line (the AI strip's whole status): a little wider, and a part too long for it goes on under
+   itself, indented, so where each part starts stays plain */
+.mw-tip.is-lines {
+  max-width: min(440px, calc(100vw - 16px));
+  white-space: normal;
+}
+.mw-tip-l {
+  padding-left: 1em;
+  text-indent: -1em;
+  overflow-wrap: anywhere;
+}
+.mw-tip-l + .mw-tip-l {
+  margin-top: 3px;
+}
 
 /* E: the title's field sits exactly over the title — same x, size and line — one rim (the field's), the row keeps its
    normal selected fill; the whole title column is the field's */

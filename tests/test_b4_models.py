@@ -509,8 +509,21 @@ class Http(Base):
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
         s.close()
-        v = Viewer(port=port)
-        v.serve(open_browser=False)
+        # 用编的稿子、用完停掉：不给 cfg 会读仓库 config.json 里那篇真论文；不停的话它的生成线程一直在，和后面
+        # 测试模块起的对比页共用 view/ 目录，别人一改稿子（手改记录 changes/hand.json）它也跟着重建，把那页换成它的
+        paper = HOME / "b4-http-paper.md"
+        paper.write_text("# 测试稿\n\n只为起一个对比页服务。\n", encoding="utf-8")
+        v = Viewer(cfg={"paper": {"file": str(paper)}, "meeting": {"me": "测试"}}, port=port)
+        srv = v.serve(open_browser=False)
+
+        def stop():
+            v._stop.set()
+            try:
+                srv.shutdown()
+                srv.server_close()
+            except Exception:
+                pass
+        self.addCleanup(stop)
 
         def req(method, path, body=None):
             c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)

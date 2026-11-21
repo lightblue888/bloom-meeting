@@ -139,6 +139,46 @@ def parse_note(text: str) -> dict | None:
     return out
 
 
+_ALREADY_HEAD = re.compile(r"^#\s*already\b[ \t:：，,]*", re.I)
+
+
+def parse_already(text: str) -> str | None:
+    """工人说正文已经是要的样子（见 prompts/worker.md「已经是要的样子」）：第一行 #already，后面一句说哪一处现在是什么样。
+    返回那句话（没写是空串）；不是这个格式返回 None。"""
+    lines = [x.strip() for x in str(text or "").strip().splitlines() if x.strip()]
+    if not lines or not _ALREADY_HEAD.match(lines[0]):
+        return None
+    first = _ALREADY_HEAD.sub("", lines[0]).strip()
+    return " ".join(([first] if first else []) + lines[1:]).strip()
+
+
+# 工人没写 #already、说明里却明摆着"前面已经改过 / 已经没有了"（2026-11-21 组会 T6、T8：上一条已经删掉了，全文找不到这句）：
+# 也按已是要的样子算。问回去的（"你指的是哪句"）、读不到、定位不到的不算，照旧进修改清单
+_ALREADY_SAID = re.compile(
+    r"(?:已经|早就|早已)(?:被)?(?:改成|改为|改好|改过|改了|改掉|删掉|删了|删除|删去|去掉|拿掉|换成|换了|换掉|补上|补了|补过|加上|加了|"
+    r"写了|写成|写明|写上|统一|拆成|拆开|并成|合并|挪到|移到|是|没有|不在|有了|有这|有那)"
+    r"|本来就(?:是|没有|有|写)|原文(?:本来)?就(?:是|没有|写)"
+    r"|(?i:\balready\s+(?:says|reads|has|had|removed|deleted|changed|done|there|gone|in\s+place|been)\b"
+    r"|\bwas\s+already\b|\bis\s+already\b|\bno\s+longer\s+(?:there|in)\b)")
+_ALREADY_NOT = re.compile(r"你指的是|是不是指|可能指|指的是哪|哪一句|哪一处|哪一段|找不到对应|定位不到|读不到|打不开|不是论文|说的是软件|"
+                          r"要新的?数据|要重跑|(?i:\bwhich\s+(?:sentence|one|part)\b|\bcouldn'?t\s+(?:find|read|open)\b)")
+
+
+def said_already(text: str) -> bool:
+    """工人的说明（正文没动时）里说的是"已经是要的样子"。"""
+    s = str(text or "")
+    return bool(_ALREADY_SAID.search(s)) and not _ALREADY_NOT.search(s)
+
+
+def tidy_already(text: str) -> str:
+    """兜底认出来的那段说明：去掉开头的"我没改稿子，因为"和第二句"拿不准的点：无"，留下"哪一处已经是什么样"。"""
+    s = " ".join(str(text or "").split())
+    s = re.sub(r"\s*(?:拿不准的点|拿不准的地方)[：:]\s*(?:无|没有)[。.]?\s*$", "", s).rstrip(" ，,")
+    s = re.sub(r"[。.]\s*(?:无|None)[。.]?\s*$", "。", s)
+    s = re.sub(r"^(?:这条)?(?:我)?(?:没(?:有)?(?:改|动)(?:稿子|正文|论文)?|正文没动|论文没动)[，,]?\s*(?:因为|是因为|原因是)?\s*", "", s)
+    return s.strip()
+
+
 ANNOTATE_PROMPT = """你是组会上负责改稿的那位。对方这条要求这会儿不改论文，只钉成一条标注，记进会后的修改清单。你只读、不改任何文件。
 
 论文文件 `{paper_file}` 在当前目录里。
@@ -1177,7 +1217,7 @@ class Hands:
         self._conclude(task, prog, before, result)
 
     def _conclude(self, task: dict, prog: WorkerProgress, before: str, result: str) -> None:
-        """工人交回最后那段话之后怎么收场：标注 / 没改成 / 改好了。Claude 和 API（hands_api.run_edit）两路共用。"""
+        """工人交回最后那段话之后怎么收场：标注 / 已是要的样子 / 没改成 / 改好了。Claude 和 API（hands_api.run_edit）两路共用。"""
         nt = parse_note(result)
         if nt is not None and self._read_paper() == before:
             # 看过原文，这条要新数据、新结果才能做：正文没动，钉成标注（标注模式，2026-11-14）
@@ -1189,6 +1229,19 @@ class Hands:
             return
         if nt is not None:                        # 写了 #note 却又动了论文：按改过了算，汇报用它写的改法
             result = (nt.get("plan") or result).strip()
+        already = parse_already(result)
+        if already is not None:
+            result = already or result
+        if self._read_paper() == before and already is None and said_already(result):
+            already = tidy_already(result)        # 没写 #already，说明里明摆着前面已经改过、已经没有了
+        if already is not None and self._read_paper() == before:
+            # 正文已经是要的样子（前面那条做掉了、手改过、原文本来就这样）：改完了就是改完了，不进修改清单；
+            # 正文没动，对比页上不打勾、不留修订，任务板上算完成（2026-11-21 组会 T6、T8 被记成"没改成、会后处理"）
+            prog.done("已完成")
+            self.board.annotate(task["id"], already=True)
+            self.board.finish(task["id"], result=already or self._en_text("正文已经是要的样子，没动",
+                                                                           "The text already reads that way; nothing changed"))
+            return
         if self._read_paper() == before and not str(task.get("title") or "").startswith(("撤销", "Undo")):
             # 跑完了正文却一个字没动（读不到文件、找不到地方、说的根本不是论文）：不算"改好了"，
             # 不在正文里打勾，记进修改清单会后处理（2026-11-14 组会：没改成的三条也挂了勾、并排钉在滚动条边上）
@@ -1489,4 +1542,5 @@ class Hands:
             toc=ctx.get("toc") or "（没认出标题）",
         )) + ("\n\n这场会用英文开：上面要你最后输出的那两句，改用英文写（会被念给与会的人听，也会显示在任务板上）。"
               "写成标注时那五行也用英文：#note / Where: / Section: / Change: / Needs:。"
+              "正文已经是要的样子时，#already 下面那一句也用英文。"
               if str((self.cfg.get("meeting") or {}).get("lang") or "zh") == "en" else "")

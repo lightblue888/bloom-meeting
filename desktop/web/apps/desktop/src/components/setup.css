@@ -995,14 +995,18 @@
 .app .lb-pager-b:hover:not(:disabled) {
   background: var(--hover);
 }
+/* the end it can't go past: the same arrow in the same colour, only fainter. In --line-2 (on top of the buttons' 0.5)
+   it all but vanished, and the two arrows looked a different size (2026-11-21, the user: "大小都不等") */
 .app .lb-pager-b:disabled {
-  color: var(--line-2);
+  opacity: 0.45;
 }
+/* the page in the middle of its own box, the same room either side of it (it used to sit at the box's right: .lb-num) */
 .lb-pager-n {
   min-width: 3.4em;
   font-size: 12.5px;
   color: var(--mute);
   text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 /* 一条遗留：勾、内容、谁、哪一类、哪一场（点日期打开那场会）；比最近的会议矮一点，小窗口也放得下几条 */
 .lb-carry {

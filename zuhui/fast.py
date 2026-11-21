@@ -96,6 +96,17 @@ def _cut_note(s: str, n: int) -> str:
     return s if len(s) <= n else s[:n] + "……（后面截掉了）"
 
 
+# 一段话念到一半被打断：历史里那条写成"念出口的（说到这里被打断了）"，下一行括号里是没说出口的（mark_cut）
+CUT_MARK = "（说到这里被打断了）"
+NONE_HEARD = "（一个字都没念出来就被打断了"
+UNSAID_HEAD = "（没说出口、对方没听到的："
+_NW = re.compile(r"[\W_]+")
+
+
+def _nw(s: str) -> str:
+    return _NW.sub("", s or "")
+
+
 class FastBrain:
     def __init__(self, cfg: dict, paper, board):
         self.cfg = cfg
@@ -147,7 +158,9 @@ class FastBrain:
             if h.get("role") != "assistant":
                 continue
             body = re.sub(r"^#\S*[^\n]*\n?", "", h.get("content") or "").strip()
-            body = body.replace("（说到这里被打断了）", "").strip()
+            body = body.split(CUT_MARK[:-1])[0].strip()   # 被打断的：只算念出口的那截（后面是没说出口的）
+            if body.startswith(NONE_HEARD):
+                body = ""
             if body and body not in ("#silent", "（没出声）"):
                 out.append(body)
             if len(out) >= n:
@@ -343,6 +356,54 @@ class FastBrain:
                                  "（更正：我上一轮生成的话没念出来，实际说出口的是"
                                  + (f"「{said}」" if said else "（什么都没说）") + "，没念的那些不算数。"
                                  + (why or "") + "）"})
+
+    @staticmethod
+    def cut_text(heard: str, unsaid: str, tag: str = "", more: str = "") -> str:
+        """被打断的那段话在历史里的写法：念出口的 + "（说到这里被打断了）"，下一行是没说出口的、写明对方没听到。
+        more：跟在打断标记后面的说明（"后台接着查，查好了会念"）。"""
+        heard, unsaid = (heard or "").strip(), (unsaid or "").strip()
+        mark = CUT_MARK[:-1] + "；" + more + "）" if more else CUT_MARK
+        body = (f"{heard}{mark}" if heard else
+                NONE_HEARD + ("；" + more if more else "") + "，对方什么都没听到）")
+        if unsaid:
+            body += f"\n{UNSAID_HEAD}{unsaid}）"
+        return f"{tag}\n{body}" if tag else body
+
+    def mark_cut(self, heard: str, unsaid: str, full: str = "", tag: str = "", add: bool = True, more: str = "") -> bool:
+        """一段话念到一半被打断（嘴记着念出了哪些，mouth.aired()）：历史里那条换成只含念出口的，后面写明没说出口的
+        对方没听到。模型才知道对方听到了哪儿，被叫"继续"时接得上（2026-11-21 [18:10]：整段只念了第一句，历史里是全文，
+        它回"好，我接着说。刚才那句'偏差'的意思我说完了"）。改稿汇报、补念的答案、报进度都一样。
+        认是哪一条：最近几条自己的话里，含着没说出口那段（或念出口那段、全文）开头的那条。改了 → True；
+        找不到：add 就补一条（回话线程自己记、还没进历史的），不补 → False。"""
+        heard, unsaid = (heard or "").strip(), (unsaid or "").strip()
+        if not unsaid:
+            return False
+        probes = [p[:16] for p in (_nw(unsaid), _nw(heard), _nw(full)) if len(p) >= 4]
+        hit = None
+        for h in reversed(list(self.history)[-8:]):
+            c = str(h.get("content") or "")
+            if h.get("role") == "assistant" and not c.startswith("（更正：") and any(p in _nw(c) for p in probes):
+                hit = h
+                break
+        if hit is None:
+            if add:
+                self.history.append({"role": "assistant", "content": self.cut_text(heard, unsaid, tag, more)})
+            return False
+        old = str(hit.get("content") or "")
+        first, _, rest = old.partition("\n")
+        tagline = first.strip() if first.strip().startswith("#") else (tag or "")
+        body = rest if first.strip().startswith("#") else old
+        # 跟在话后面的说明（"（查到的完整结果在逐字稿上……）"）不是念的：留着
+        m = re.search(r"\n（[^\n]*）\s*$", body)
+        tail = m.group(0).strip() if m and not m.group(0).strip().startswith((UNSAID_HEAD, NONE_HEARD)) else ""
+        new = self.cut_text(heard, unsaid, tagline, more) + (f"\n{tail}" if tail and _nw(unsaid)[:8] not in _nw(tail) else "")
+        hit["content"] = new
+        if self.is_cli and new != old:
+            # 常驻进程自己记得生成过的整段，改这边的历史它看不到：补一句更正，下一轮随"会上还有这几句"送过去
+            self.history.append({"role": "assistant", "content":
+                                 "（更正：我上面那段话" + (f"只念到「{heard[-40:]}」" if heard else "一个字都没念出来")
+                                 + f"就被打断了，后面「{_cut_note(unsaid, 80)}」对方没听到，不算说过）"})
+        return True
 
     def reply(self, text: str, light: bool = False, remember: bool = True):
         """light=True：短闲聊（"你是什么模型""辛苦了"之外的那种），前缀里不放整篇论文，只放目录，出字更快。
@@ -801,7 +862,9 @@ class FastBrain:
             print(f"[fast] 手改记录读不出来：{e!r}", file=sys.stderr)
             he = ""
         if he:
+            # 2026-11-21 组会：对方说"我改了 5.2 第一段"，快嘴回"我这边看不到你改成什么样，你念一下"，其实全文早是新版
             lines.append("本场有人在文档里直接改过的地方（是他们自己打字改的，不是你派的任务；论文全文里已经是改后的样子，"
+                         "对方说他改了哪段，就照全文里那段现在的文字回话，别说看不到、别叫他念一遍；"
                          "别说成是你改的，也别提议改回去）：\n" + "\n".join(_strip_ctl(x) for x in he.splitlines()))
         lines.append(f"现在时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}")
         pr = self._past_recall(text)

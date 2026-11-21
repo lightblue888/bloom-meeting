@@ -10,7 +10,8 @@
 改稿交回的 JSON（prompts/worker_api.md）：
     {"edits": [{"old": 论文里现在的原文（正好出现一次）, "new": 换成什么（删掉是 ""）}, ...],
      "report": 第一句, "unsure": 第二句（没有写"无"）,
-     "note": null 或 {"anchor", "section", "plan", "need"}（会上改不了、钉成标注时，edits 为 []）}
+     "note": null 或 {"anchor", "section", "plan", "need"}（会上改不了、钉成标注时，edits 为 []），
+     "already": 正文已经是要的样子（edits 为 []，report 一句话说现在是什么样）}
 """
 from __future__ import annotations
 
@@ -269,7 +270,8 @@ def _parse(reply: str) -> tuple[dict | None, str]:
     def s_(k):
         v = d.get(k)
         return v.strip() if isinstance(v, str) else ""
-    return {"edits": out, "report": s_("report"), "unsure": s_("unsure"), "note": note}, ""
+    already = d.get("already") is True or str(d.get("already") or "").strip().lower() in ("true", "yes", "1")
+    return {"edits": out, "report": s_("report"), "unsure": s_("unsure"), "note": note, "already": already}, ""
 
 
 def _near(text: str, old: str) -> str:
@@ -348,6 +350,7 @@ def _tool_ev(name: str, inp: dict) -> dict:
 def _fix_msg(bad: list[str], en: bool) -> str:
     return ("你上一次交回的改法有问题，论文一个字都没改：\n" + "\n".join(f"- {x}" for x in bad)
             + "\n对照论文原文重新输出完整的 JSON（所有要改的地方都列上，不只是出错的那几处；old 一字不差地抄论文现在的原文）。"
+            + "那一处已经是要的样子（前面已经改过、要删的已经没有了）就写 \"edits\": []、\"already\": true，report 说现在是什么样。"
             + "只输出 JSON。" + ("report 和 unsure 仍用英文写。" if en else ""))
 
 
@@ -541,7 +544,13 @@ def run_edit(hands, task: dict) -> None:
         wrote = True
     else:
         wrote = False
-    result = _note_text(plan["note"]) if plan["note"] else _two(plan["report"], plan["unsure"], en)
+    if plan["note"]:
+        result = _note_text(plan["note"])
+    elif plan.get("already") and not wrote:      # 正文已经是要的样子：和 Claude 那一路一样交 #already 那两行
+        result = "#already\n" + " ".join(x for x in (plan["report"], "" if _none_if_empty(plan["unsure"]) is None
+                                                      else plan["unsure"]) if x)
+    else:
+        result = _two(plan["report"], plan["unsure"], en)
     # 没写：拿现在的稿子当"改前"，这一会儿别处动过稿子也不会被当成这条改的
     hands._conclude(task, prog, before if wrote else hands._read_paper(), result)
 

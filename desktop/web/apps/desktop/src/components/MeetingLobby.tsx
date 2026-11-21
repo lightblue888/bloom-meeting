@@ -287,7 +287,7 @@ export function MeetingLobby({ cur, paperName, busy, importText, notice, title, 
                     <button className="lb-pager-b" disabled={pg === 0} onClick={() => setPage(pg - 1)} aria-label={t('lobby.carry.prev')} data-testid="lobby-carry-prev">
                       <Icon name="chevron-left" size={14} />
                     </button>
-                    <span className="lb-pager-n lb-num">{`${pg + 1}/${pages}`}</span>
+                    <span className="lb-pager-n">{`${pg + 1}/${pages}`}</span>
                     <button className="lb-pager-b" disabled={pg >= pages - 1} onClick={() => setPage(pg + 1)} aria-label={t('lobby.carry.next')} data-testid="lobby-carry-next">
                       <Icon name="chevron-right" size={14} />
                     </button>

@@ -318,6 +318,41 @@ _STOP_WORDS = re.compile(r"(?i)打住|停一下|停停|先停|别说了|闭嘴|�
                          r"|\bthat'?s\s+enough\b|(?:^|[,.!?]\s*)enough\b(?=\s*[,.!]|$)"     # "that's good enough"不算
                          r"|\bokay,?\s+okay\b|\bshut\s+up\b")
 
+# AI 说着话时你插的一句：附和、应答、短答不算打断——AI 接着说，这句等它说完再当回答处理；提问、反对、叫停、点名、
+# 有内容的话才停（barge_kind）。2026-11-21 17:42 那场 17 次音量打断里 16 次是你真出了声，多半是"没有啊""明白了"
+# "好好，我知道了""啊，就等你"这种：18:04:45 它正汇报"已经删了"，你回它前一句"要不要删，你定"说"删了吧"，它就停了
+_ACK_ZH = re.compile(
+    r"^(?:(?:嗯+|哦+|喔+|啊+|呃+|诶|欸|哎|唉|对+|对的|是+|是的|好+|好的|好嘞|行+|可以|没问题|没事|没关系|"
+    r"我?(?:明白|知道|了解|懂|清楚|收到)|没有?|不用|"
+    r"(?:那|那就|就|你)?(?:这么|这样)?(?:去)?(?:删|改|加|换|记|留|写|用|弄)(?:了|掉|上|下|下来|一下)?|"
+    r"继续|接着|(?:你|接着|继续)说完?|你先说|说吧|你讲|(?:就|我)?等你(?:说完)?|在听|我在听|那?就这样|这样就行|行吧|好吧|"
+    r"(?:就|就是|是)?这个意思|没错|有道理|说得对)"
+    r"[了吧啊呀嘛哈啦的哦]*)+$")
+_ACK_EN = re.compile(r"(?i)^(?:(?:yeah|yes|yep|yup|ok|okay|right|sure|fine|alright|all\s+right|got\s+it|i\s+see|uh[\s-]*huh|"
+                     r"mm+|mhm|hmm+|cool|great|good|thanks|thank\s+you|exactly|true|go\s+on|go\s+ahead|keep\s+going|continue|"
+                     r"sounds\s+good|makes\s+sense|do\s+it|delete\s+it|i'?m\s+listening)[\s,.!]*)+$")
+_ASKS = re.compile(r"[？?]|吗|么|呢|什么|怎么|为什么|哪|谁|几|多少|(?i:\b(?:what|why|how|which|who|when|where)\b)")
+_HALT = re.compile(r"停|别说|先别|不要说|插一句|我说一下|我问一下|我问个")
+_LISTEN_LOCK = threading.Lock()                  # 停一下在听（Meeting._listen）：耳朵线程和主循环都会去定，只定一次
+
+
+def barge_kind(text: str) -> str:
+    """AI 正在说话时你插的这句：ack 附和、应答、短答（"好好好""删了吧""没有啊""你继续"），AI 接着说；
+    stop 提问、反对（"不是不是"）、叫停、点名、有内容的一句话，AI 停下；没字 → none。"""
+    t = (text or "").strip()
+    core = _bare(t)
+    if not core:
+        return "none"
+    if _STOP_WORDS.search(t) or _HALT.search(t) or _CALL_NAME.search(t):
+        return "stop"
+    resume = _rules.wants_resume(t)                  # "然后呢""你继续说，我没有打断你"：让它接着说
+    if _ASKS.search(t) and not resume:
+        return "stop"
+    if len(core) <= 16 and (resume or _rules.bare_go_ahead(t) or _ACK_ZH.match(core)
+                            or _ACK_EN.match(t.strip(" ,.!。，！")) or quick_kind(t) == "close"):
+        return "ack"
+    return "stop"
+
 
 def wants_look(text: str) -> bool:
     """这句是不是叫 Claude 截图看屏幕：只认"截图 / 截个图 / 截一下图 / 截张图（截屏）"。"""
@@ -564,6 +599,7 @@ class Meeting:
         self._last_dispatch_sec = 0.0                  # 上一次派改稿时逐字稿走到第几秒（多人讨论从这之后算起）
         self._named_at = 0.0                           # 上一次有人点学生的名（多人在聊时"刚在跟它说话"的判断）
         self._barge_t = 0.0                            # 上一次放音时你开口（打断）的时刻
+        self._listen: dict | None = None               # 放音时听到人声、先停一下在听（_barge / _listen_tick）
         self._deep_job: dict | None = None             # 正在查 / 刚查完的那一次（快嘴照这个说进度，不编）
         self.last_speech = 0.0
         self.ears: Ears | None = None
@@ -655,7 +691,8 @@ class Meeting:
     def _speech_line(self, tag: str | None = None, heard: float | None = None, extra: dict | None = None):
         """给 mouth.say 的 on_start：学生这一轮的第一句开始出声时在逐字稿里开一行，后面每句出声时接在同一行后面。
         heard（你说完的时刻）给了的话，第一句出声时记一笔"说完到出声"（kind=audio_latency）。"""
-        box = {"line": None, "talk": threading.current_thread()}   # 哪一轮（回话线程）念的这行：被打断时只标这一轮的
+        box = {"line": None, "talk": threading.current_thread(),   # 哪一轮（回话线程）念的这行：被打断时只标这一轮的
+               "tag": tag, "extra": extra}
 
         def on_start(sentence):
             if not sentence:
@@ -681,6 +718,7 @@ class Meeting:
             else:
                 self.meetings.extend_line(box["line"], sentence)
             self._speaking_line = box["line"]        # 正在念的是逐字稿哪一行（被打断时在它上面标一笔）
+        on_start.box = box                           # 嘴按 on_start 认一段话：被打断时从它找回是哪一行、哪个标签（_cut_memory）
         return on_start
 
     def say(self, text: str, remember: bool = True, record: bool = True):
@@ -716,6 +754,7 @@ class Meeting:
         self._deep_drop()
         self._last_guest_t = self._barge_t = self._named_at = 0.0
         self._held, self._barge_check = [], 0.0          # 上一场压着没处理的话、打断后等字的记号：新的一场不带
+        self._cut = self._cut_report = self._last_cut = None   # 上一场被打断的那段话（"继续"接着念的）：新的一场不带
         self._spoke = {}
         self._ended = 0.0
         self._last_dispatch_sec = 0.0
@@ -1044,14 +1083,19 @@ class Meeting:
         return text
 
     def _hand_edits_note(self) -> str:
-        """本场有人在对比页里直接改过的地方（屏幕上这篇的）：快嘴每一轮的上下文里带上（doc_edits.note）。"""
+        """本场有人在对比页里直接改过的地方（屏幕上这篇的）：快嘴每一轮的上下文里带上（doc_edits.note）。
+        最近一两处附上改后的整段（从现在的全文里取）：2026-11-21 组会对方说"我改了 5.2 第一段"，快嘴只见到片段，回"看不到你改成什么样"。"""
         from . import doc_edits
         from .meetings import paper_id
         try:
             pid = paper_id(self.paper.path)
         except Exception:
             pid = None
-        return doc_edits.note(self.meetings.current_lines(), paper=pid)
+        try:
+            text = self.fast._paper_text()
+        except Exception:
+            text = None
+        return doc_edits.note(self.meetings.current_lines(), paper=pid, text=text)
 
     def _past_recall(self, text: str) -> str:
         """这一句问到了以前的会（"上次""上周"……）：往期纪要和逐字稿里最相关的几段；没问就空串。"""
@@ -1282,7 +1326,8 @@ class Meeting:
                     c = self.board.counts()
                     prog.beat(note=f"{kind} · 排队{c['queued']} 改中{c['working']} 已改{c['done']}")
                 if kind == "utterance":
-                    if not self._hold_late(payload):     # 转写晚到 / 多半是回声：不截断正在说的 AI，压到它说完
+                    self._listen_tick(payload)           # 先停一下在听时这句落地了：按它定接着说还是停
+                    if not self._hold_late(payload):     # 转写晚到 / 多半是回声 / 附和：不截断正在说的 AI，压到它说完
                         self._start_talk(self.handle, self._with_held(payload))
                 elif kind == "partial":
                     self.on_partial(payload)
@@ -1306,7 +1351,12 @@ class Meeting:
                 elif kind == "bridge_ready":
                     self.log("ready", text="耳朵就绪")   # 接话分类模型不在这里载入：点开会时才载（_gpu_up）
                 elif kind == "log" and isinstance(payload, dict):   # 耳朵要记的一行（回声丢了哪段、静音、主持人在别的设备上）
-                    self.log(str(payload.pop("kind", "echo")), **payload)
+                    lk = str(payload.pop("kind", "echo"))
+                    self.log(lk, **payload)
+                    lst = getattr(self, "_listen", None)
+                    if lk == "echo" and lst is not None:  # 先停一下在听：耳朵按花纹认出是回声（这段字到不了 _drop_segment）
+                        lst["echo"] = True
+                        self._listen_tick()
         except KeyboardInterrupt:
             print("\n再见。", flush=True)
         finally:
@@ -1584,8 +1634,8 @@ class Meeting:
         return bool(t and t.is_alive())
 
     def _interrupt(self) -> None:
-        """你开口了：正在念的停下，模型还没说完的不要了。被打断时正在念的那一行标 cut；回话已经生成完、只是还没念完的
-        （长答案、查好的答案、改稿汇报），历史里补一句"对方没听完"，被问到时别说"刚念过"。"""
+        """你开口了：正在念的停下，模型还没说完的不要了。嘴记着那段话念出了哪些（mouth.stop() 返回）：快嘴历史里那条
+        改成只含念出口的、写明后面对方没听到，逐字稿上那一行标 cut（_cut_memory）。"""
         was = bool(getattr(self.mouth, "speaking", False))
         # cut 只标在这一轮自己念的那行上：下一轮的回话还在合成、一个字没出声时被撤掉，别把上一轮早念完的那行标成"被打断"
         # （2026-11-21 下午那场：24 条"已被打断"里 4 条是这样标错的，那几行念完一分多钟了）
@@ -1593,8 +1643,13 @@ class Meeting:
         aired = was and (bool(getattr(self.mouth, "audible", False))
                          or (talk is not None and talk is getattr(self, "_talk", None)))
         self._cancel.set()
-        self.mouth.stop()
-        if was:
+        info = self.mouth.stop()
+        if isinstance(info, dict):
+            self._cut_memory(info)
+            return
+        if hasattr(self.mouth, "aired"):
+            return                               # 嘴记着账、没有念到一半的话（只是"嗯"这种接话在放）：不标、不改历史
+        if was:                                  # 嘴没记账（哑嘴、老的嘴）：照旧
             if aired:
                 try:
                     self.meetings.annotate(getattr(self, "_speaking_line", None), cut=True)
@@ -1602,6 +1657,114 @@ class Meeting:
                     pass
             if not self._talk_alive():
                 self.fast.remember("assistant", "（我上面那段话说到一半被打断了，后半段对方没听到）")
+
+    def _stop_mouth(self) -> None:
+        """只停嘴（不动回话线程）：念到一半的那段照样记下念出了哪些。"""
+        info = self.mouth.stop()
+        if isinstance(info, dict):
+            self._cut_memory(info)
+
+    CUT_RESUME_S = 120.0                         # 被打断后这么久之内说"继续"：直接把没说出口的念完
+
+    def _cut_memory(self, info: dict) -> None:
+        """一段话被打断（info = mouth.aired()）：没说出口的记下来。
+        - 逐字稿：这段话真开始念过才标它那一行 cut（下一轮还在合成、一个字没出声就撤掉的，不标上一轮那行）；
+        - 快嘴历史：那条换成念出口的 +"（说到这里被打断了）"+ 没说出口的（fast.mark_cut）。2026-11-21 [18:09:58]
+          整段只念了第一句，历史里是全文，被叫"你继续说"时它回"刚才那句我说完了"。回话线程还在生成的，它自己记；
+        - 记下来给"继续"（_resume_cut）和汇报被打断后的"删吧"（_cut_done_task）用。"""
+        self._last_cut = info
+        unsaid = _cat(*(info.get("unsaid") or []))
+        if not unsaid:
+            return                               # 最后一句也放到九成以上了：对方都听到了
+        key = info.get("key")
+        box = getattr(key, "box", None) or {}
+        heard = str(info.get("heard") or "")
+        tag = str(box.get("tag") or "")
+        line = box.get("line") if info.get("aired") else None
+        if line is not None:
+            try:
+                self.meetings.annotate(line, cut=True)
+            except Exception:
+                pass
+        alive = self._talk_alive() and box.get("talk") is getattr(self, "_talk", None)
+        found = False
+        try:                                     # 已经进了历史的（生成完了、还在念）：现在就改；还在生成的回话线程自己记
+            found = self.fast.mark_cut(heard, unsaid, full=str(info.get("full") or ""), add=False)
+        except Exception as e:
+            self.log("fast_error", error=self._L(f"改打断的历史出错：{e!r}", f"cut history rewrite failed: {e!r}"))
+        if (found or not alive) and _bare(unsaid)[:12] in _bare(str(self._last_reply or "")):
+            self.__dict__["_last_reply_v"] = heard   # 他听到的只有这些：没念出来的问话他答不了（时刻不变）
+        task = box.get("report")
+        self.log("cut", text=heard, unsaid=_short(unsaid, 200), tag=tag or None,
+                 why=self._L("被打断：念出口的在 text，没念的在 unsaid", "cut off: heard in text, the rest in unsaid"))
+        if task and not alive and not info.get("aired") and self.meetings.current():
+            # 改稿汇报一个字没出声就被打断（在门口等你说完时）：留着，等空下来再报
+            if task not in self.pending_reports:
+                self.pending_reports.insert(0, task)
+            self._cut = None
+        elif tag == "#hold":
+            self._cut = None                     # "稍等，我查一下"这种垫话：叫"继续"时不再念一遍
+        else:
+            self._cut = {"t": time.time(), "key": key, "heard": heard, "unsaid": unsaid, "tag": tag,
+                         "complete": bool(found or not alive), "extra": box.get("extra")}
+        if task:
+            self._cut_report = {"t": time.time(), "task": task, "heard": heard}
+
+    def _cut_for(self, line) -> dict | None:
+        """回话线程里：这一轮（on_start = line）刚被打断时嘴报的念出了哪些；不是这一轮的 → None。"""
+        c = getattr(self, "_last_cut", None)
+        return c if (c and line is not None and c.get("key") is line) else None
+
+    def _resume_cut(self, u: Utterance, said: str, guest: str | None):
+        """刚被打断（两分钟内、之后没再出声），他说"继续""你接着说""说完"：不过模型，从被打断的那一句开头把没说出口的念完，
+        历史跟着记（2026-11-21 [18:10]："继续，继续。"被当成收尾确认；"你继续说，我没有打断你。"它回"刚才那句我说完了"）。
+        → True：念了；字符串：话没生成完就被打断，交给模型接着说，这是给它的说明；None：不是这种情况。"""
+        c = getattr(self, "_cut", None)
+        if not c or getattr(self, "_mute", False) or not _rules.wants_resume(u.text):
+            return None
+        now = time.time()
+        last = None
+        try:
+            last = self.mouth.aired() if hasattr(self.mouth, "aired") else None
+        except Exception:
+            pass
+        spoke_since = (float(getattr(self, "_aired_at", 0.0) or 0.0) > c["t"]
+                       or bool(last and last.get("key") is not c["key"] and float(last.get("t0") or 0) > c["t"]))
+        if now - c["t"] > self.CUT_RESUME_S or spoke_since or self.mouth.speaking:
+            return None
+        self._cut = None
+        if not c.get("complete"):
+            return (f"【对话情况：你刚才那段话还没说完就被他打断了，他听到的到「{_short(c['heard'], 80) or '（什么都没听到）'}」为止。"
+                    "他这句是让你接着说：从没说完的那句接着往下说，别重复他已经听到的，也别说“我说完了”】")
+        spec = getattr(self, "_spec", None)
+        if spec:
+            spec["cancel"].set()
+            self._spec = None
+        tag = c.get("tag") or "#chat"
+        head = {"#report": "#status", "#deep-answer": "#ask"}.get(tag, tag if tag in ("#ask", "#chat", "#status") else "#chat")
+        text = c["unsaid"]
+        if tag == "#report":
+            self._cut_report = None              # 汇报念完了：他知道改好了
+        ex = {k: v for k, v in (c.get("extra") or {}).items() if k in ("task", "title", "ok", "model")}
+        self.mouth.say(text, on_start=self._speech_line(tag, heard=getattr(u, "heard", None), extra=ex or None))
+        self.fast.remember("user", said)
+        self.fast.remember("assistant", f"{head}\n{text}")
+        self._last_reply = text
+        self.log("assistant", tag=head, text=text, ttft=0.0, resume=True)
+        self._end_turn(u, guest, head, text, False)
+        return True
+
+    def _cut_done_task(self, u: Utterance) -> dict | None:
+        """改稿汇报刚被打断（他没听到已经改好了），他说"删吧""改吧""我没有打断你，你去删啊"：说的就是那条已经改完的。
+        → 那条任务（任务板上的）；不是 → None。2026-11-21 [18:04:47]：两次"删吧"都被判了 #silent，
+        接着"你去删啊"又派了一条重复的 T8"""
+        c = getattr(self, "_cut_report", None)
+        if not c or time.time() - c["t"] > self.CUT_RESUME_S or not _rules.bare_go_ahead(u.text):
+            return None
+        t = self.board.get(c["task"].get("id")) or c["task"]
+        if t.get("status") != "done" or t.get("rejected") or t.get("note") or t.get("unchanged"):
+            return None
+        return t
 
     def _start_talk(self, fn, *args) -> None:
         if self._talk_alive():
@@ -1620,12 +1783,111 @@ class Meeting:
         self._talk.start()
 
     def _barge(self, why: str = "") -> None:
-        """你开口了：学生正在说、或者回话还在路上，都停下。"""
-        if self.mouth.speaking or self._talk_alive():
-            self.log("barge", text=why or self._L("你开口了，学生停下", "you started talking, Claude stopped"))
-            self._barge_t = time.time()
-            self._barge_check = self._barge_t        # 之后几秒要是一个字都没收到：记一笔（多半是回声或杂音，见 _check_barge_heard）
+        """你开口了：学生正在说、或者回话还在路上。声音正从音箱出来时先停一下（mouth.pause，不盖住你的话），
+        等这段转写回来再定（_listen_tick）：附和、回声、没听到字就接着说，正事才停。
+        回话还没出声、停不住、config ears.barge.pause 关了 → 照旧马上停。"""
+        if not (self.mouth.speaking or self._talk_alive()):
+            return
+        if getattr(self, "_listen", None) is not None:
+            return                                   # 已经停下在听了
+        now = time.time()
+        pause = getattr(self.mouth, "pause", None)
+        if pause is not None and getattr(self.mouth, "audible", False) and self._bc("pause", 1.0) and pause():
+            self._barge_t = now
+            self._listen = {"t": now, "why": why, "segs": [], "echo": False}
+            self.log("barge", text=self._L(f"停一下听：{why}" if why else "停一下听", f"pausing to listen: {why}" if why else "pausing to listen"),
+                     paused=True)
+            return
+        self.log("barge", text=why or self._L("你开口了，学生停下", "you started talking, Claude stopped"))
+        self._barge_t = now
+        self._barge_check = self._barge_t        # 之后几秒要是一个字都没收到：记一笔（多半是回声或杂音，见 _check_barge_heard）
+        self._interrupt()
+
+    def _voice_age(self) -> float:
+        """你最后一次出声离现在几秒（耳朵判停那一路）；听不到、静音了 → 很大。"""
+        v = getattr(self.ears, "vad", None) if self.ears is not None else None
+        try:
+            if v is None or not v.knows or v.last_voice < 0 or v.mic_off():
+                return 1e9
+            return (v.audio_now - v.last_voice) + (time.time() - v.pump_wall)
+        except Exception:
+            return 1e9
+
+    def _listen_seg(self, ws, we, text: str, v: str) -> None:
+        """停一下在听时落地的一段转写（_drop_segment 判过的）：记下来，马上定一次（回声、附和不用等）。"""
+        lst = getattr(self, "_listen", None)
+        if lst is None or we is None or we < lst["t"] - 1.0 or v == "stale":
+            return                                   # 停下以前就说完了的，不是这次
+        if v == "echo":
+            lst["echo"] = True
+        elif (text or "").strip():
+            lst["segs"].append((ws, we, text))
+        self._listen_tick()
+
+    def _listen_tick(self, u=None) -> None:
+        """停一下在听：转写回来了、等够了就定。每段转写、每句落地（u）、主循环空转时都问一次。
+        有字 → barge_kind：附和接着说（你还在出声就再等等，后面可能有正事），别的停下；
+        没字 → 认出是回声、你停了 listen_quiet_s 秒、总共等了 listen_max_s 秒（这时你还在说 = 正事）就定。"""
+        lst = getattr(self, "_listen", None)
+        if lst is None:
+            return
+        m = self.mouth
+        if not getattr(m, "paused", False) or not getattr(m, "speaking", False):
+            self._listen_end(lst, None)              # 停着时被别处收了（打断、散会、这一轮撤了）：不用再定
+            return
+        if u is not None and (getattr(u, "guest", None) or getattr(u, "typed", False) or getattr(u, "participant", False)):
+            u = None
+        now = time.time()
+        waited = now - lst["t"]
+        cap = self._bc("listen_max_s", 4.0)
+        age = self._voice_age()
+        talking = age < 0.4
+        text = "，".join(s[2].strip("，,。. ") for s in list(lst["segs"]) if s[2].strip("，,。. "))
+        if not text and u is not None:
+            text = getattr(u, "text", "") or ""
+        if text:
+            kind = barge_kind(text)
+            if kind == "ack" and talking and u is None:
+                if waited < cap:
+                    return                           # 附和完还在说：等后面那段落地
+                kind = "stop"                        # 附和完一直说到现在：在说正事
+            self._listen_end(lst, kind, text)
+        elif lst.get("echo") and not talking:
+            self._listen_end(lst, "echo")
+        elif waited >= cap:
+            self._listen_end(lst, "long" if talking else "none")
+        elif not talking and min(waited, age) >= self._bc("listen_quiet_s", 2.5):
+            self._listen_end(lst, "none")
+
+    def _listen_end(self, lst, kind, text: str = "") -> None:
+        """停一下听完了：stop / long 停下（_interrupt），ack / echo / none 接着说。附和的那几段记成 ack，
+        整句落地时压到 AI 说完再当回答处理（_hold_late / _release_held）。"""
+        with _LISTEN_LOCK:
+            if getattr(self, "_listen", None) is not lst:
+                return                               # 别的线程已经定了
+            self._listen = None
+        if kind is None:
+            return
+        L, s = self._L, _short(text, 16)
+        if kind in ("stop", "long"):
+            self.log("barge", text=(L(f"在说正事（{s}），停下", f"you're making a point ({s}); stopping") if kind == "stop"
+                                    else L("说了好一会儿还没说完，停下", "you kept talking; stopping")), verdict=kind)
+            self._barge_check = 0.0
             self._interrupt()
+            return
+        if kind == "ack":
+            for ws, we, _t in lst["segs"]:
+                self._seg_mark(ws, we, "ack")
+        try:
+            dt = float(self.mouth.resume() or 0.0)
+        except Exception as e:
+            self.log("fast_error", error=L(f"接着说失败：{e!r}", f"resume failed: {e!r}"))
+            self._interrupt()
+            return
+        self.log("barge", text={"ack": L(f"是附和（{s}），接着说", f"a backchannel ({s}); carrying on"),
+                                "echo": L("是回声，接着说", "it was echo; carrying on"),
+                                "none": L("没听到话，接着说", "no words heard; carrying on")}[kind],
+                 verdict=kind, paused=round(dt, 2))
 
     def _stall_watch(self) -> None:
         """卡顿取证（2026-11-12 排查：访客进会时整个后端卡了 5-9 秒，桌面端判成"后端没了"，但查不到是谁卡的）：
@@ -1895,8 +2157,8 @@ class Meeting:
         if not played:
             return None
         s, e = played[-1][0], played[-1][1]
-        if e is not None and time.time() - e > gap:
-            return None
+        if e is not None and time.time() - e > gap and not getattr(m, "paused", False):
+            return None                                  # 先停一下（pause）不算没在出声：这一轮还没说完
         start = s
         for s0, e0 in reversed(played[:-1]):
             if e0 is None or start - e0 <= gap:
@@ -2002,6 +2264,7 @@ class Meeting:
         记下来，on_partial、_hold_late 按墙上起止查。"""
         r = self._echo_segment(ws, we, text)
         if r is True:
+            self._listen_seg(ws, we, text, "echo")
             return True
         try:
             v = self._seg_verdict(ws, we, r if isinstance(r, str) else text)
@@ -2009,29 +2272,48 @@ class Meeting:
             self.log("fast_error", error=self._L(f"判能不能打断出错：{e!r}", f"barge check failed: {e!r}"))
             v = "ok"
         if v == "echo":
+            self._listen_seg(ws, we, text, "echo")
             return True
+        kept = r if isinstance(r, str) else text
+        self._seg_mark(ws, we, v, kept)
+        self._listen_seg(ws, we, kept, v)            # 停一下在听：这段就是要等的转写
+        return r
+
+    def _seg_mark(self, ws, we, v: str, text: str = "") -> None:
+        """记下这段（墙上起止）判成了什么：ok / stale / unsure / ack（附和，压到 AI 说完）。后记的算数。"""
         segv = getattr(self, "_segv", None)
         if segv is None:
             from collections import deque
             segv = self._segv = deque(maxlen=60)
-        segv.append((ws, we, v))
-        return r
+        segv.append((ws, we, v, text))
 
-    def _seg_lookup(self, ws, we) -> str:
+    def _seg_row(self, ws, we):
         if ws is None or we is None:
-            return "ok"
+            return None
         try:
             rows = list(getattr(self, "_segv", None) or [])
         except Exception:
-            return "ok"
-        for a, b, v in reversed(rows):
-            if abs(a - ws) < 0.05 and abs(b - we) < 0.05:
-                return v
-        return "ok"
+            return None
+        for row in reversed(rows):
+            if abs(row[0] - ws) < 0.05 and abs(row[1] - we) < 0.05:
+                return row
+        return None
+
+    def _seg_lookup(self, ws, we) -> str:
+        row = self._seg_row(ws, we)
+        return row[2] if row else "ok"
+
+    def _seg_text(self, ws, we) -> str:
+        """这一段自己的字（on_partial 拿到的是这句到目前为止所有段连起来的）。"""
+        for row in reversed(list(getattr(self, "_segv", None) or [])):
+            if ws is not None and we is not None and abs(row[0] - ws) < 0.05 and abs(row[1] - we) < 0.05 and len(row) > 3 and row[3]:
+                return row[3]
+        return ""
 
     def _hold_late(self, u) -> bool:
-        """你这句说完了，AI 这会儿正在出声：这句是转写晚到的（话在 AI 开口前就说完了），或者每段都判成拿不准
-        （_seg_verdict 的 unsure）→ 不截断 AI，压着，等它这一轮说完再处理（_release_held）。→ 压了就 True。"""
+        """你这句说完了，AI 这会儿正在出声：这句是转写晚到的（话在 AI 开口前就说完了）、每段都判成拿不准
+        （_seg_verdict 的 unsure），或者是附和、短答（barge_kind 的 ack："删了吧"等它说完当回答）
+        → 不截断 AI，压着，等它这一轮说完再处理（_release_held）。→ 压了就 True。"""
         if getattr(u, "guest", None) or getattr(u, "typed", False) or getattr(u, "participant", False):
             return False
         air0 = self._air_start()
@@ -2039,23 +2321,28 @@ class Meeting:
             return False
         text = getattr(u, "text", "") or ""
         heard = getattr(u, "heard", None)
+        vs = [self._seg_lookup(a, b) for a, b in (getattr(u, "segs", None) or [])]
         if heard is not None and heard < air0 - self._bc("stale_s", 0.3):
             if _STOP_WORDS.search(text):
                 return False                             # AI 开口前就叫停了（"等一下"）：照样停
-            kind = "stale"
+            kind = "ack" if "ack" in vs else "stale"     # 停一下时说的附和：停得久，接着放的那截算新开口
         else:
-            vs = [self._seg_lookup(a, b) for a, b in (getattr(u, "segs", None) or [])]
-            if not vs or any(v not in ("stale", "unsure") for v in vs):
+            if vs and all(v in ("stale", "unsure", "ack") for v in vs):
+                kind = "ack" if "ack" in vs else ("unsure" if "unsure" in vs else "stale")
+            elif barge_kind(text) == "ack":
+                kind = "ack"                             # 整句是附和、短答：照样不打断（按文字判的那条路也一样）
+            else:
                 return False
-            kind = "unsure" if "unsure" in vs else "stale"
         held = getattr(self, "_held", None)
         if held is None:
             held = self._held = []
         held.append((u, kind, time.time()))
         self.log("hold", text=text, verdict=kind, why=self._L(
             "这句在 AI 开口前就说完了，转写晚到：不打断，等 AI 说完再接" if kind == "stale"
+            else "附和、短答：不打断，等 AI 说完再当回答处理" if kind == "ack"
             else "放音时录到的，音量上没听出你开口：不打断，等 AI 说完再当成你的话处理",
             "said before the AI started, the transcript came late: not interrupting, handled after the AI finishes" if kind == "stale"
+            else "a backchannel or short answer: not interrupting, handled as a reply after the AI finishes" if kind == "ack"
             else "picked up during playback with no sign of you talking: not interrupting, handled after the AI finishes"))
         return True
 
@@ -2091,11 +2378,12 @@ class Meeting:
         return self._merge_utts([h[0] for h in held] + [u])
 
     def _release_held(self) -> None:
-        """压着的话：AI 这一轮说完了（你也没在说）就交给它；最多压 hold_max_s 秒。"""
+        """压着的话：AI 这一轮说完了（你也没在说）就交给它；最多压 hold_max_s 秒。
+        只压着附和、短答的不设上限：为一句"好好好"把 AI 截断不值得。"""
         held = getattr(self, "_held", None)
         if not held:
             return
-        if time.time() - held[0][2] < self._bc("hold_max_s", 45.0):
+        if all(h[1] == "ack" for h in held) or time.time() - held[0][2] < self._bc("hold_max_s", 45.0):
             if getattr(self.mouth, "speaking", False) or self._talk_alive():
                 return                                   # AI 这一轮还没说完
             if self.ears is not None and self.ears.user_talking(1.0):
@@ -2106,7 +2394,9 @@ class Meeting:
         self._start_talk(self.handle, u)
 
     def _check_barge_heard(self) -> None:
-        """音量上判了你打断、AI 停了，之后 6 秒一个字都没收到：记一笔（多半是回声或杂音），以后查"莫名其妙被打断"有据可查。"""
+        """音量上判了你打断、AI 停了，之后 6 秒一个字都没收到：记一笔（多半是回声或杂音），以后查"莫名其妙被打断"有据可查。
+        先停一下在听的（_barge 暂停了）在这里按时间定：等不到字就接着说（_listen_tick）。"""
+        self._listen_tick()
         t = getattr(self, "_barge_check", 0.0)
         if t and time.time() - t > 6.0:
             self._barge_check = 0.0
@@ -3147,12 +3437,22 @@ class Meeting:
         # 预览（还没断句的那一截）只显示，不拿来打断学生：打断交给听音量的判停；"好的""嗯嗯"这种也不打断
         if (len(_bare(text)) >= 4 and (self.mouth.speaking or self._talk_alive()) and not p.get("preview")
                 and quick_kind(text) not in ("think", "close")):
+            if getattr(self, "_listen", None) is not None:
+                self._listen_tick()
+                return                                    # 先停一下在听：停不停由 _listen_tick 按这段的字定
             v = self._seg_lookup(ws, we)
-            if v in ("stale", "unsure"):
-                return                                    # 转写晚到 / 多半是回声：不截断正在说的 AI（这句压到它说完，见 _hold_late）
+            if v in ("stale", "unsure", "ack"):
+                return                                    # 转写晚到 / 多半是回声 / 附和：不截断正在说的 AI（这句压到它说完，见 _hold_late）
+            seg = self._seg_text(ws, we) or text          # 按最新这一段判：前面几段已经判过不打断了
+            if barge_kind(seg) == "ack" and self._air_start() is not None:
+                # 附和、短答：不截断，这句压到 AI 说完再当回答（2026-11-21 18:04:47："删了吧，删了吧"按字把它截断了）
+                self._seg_mark(ws, we, "ack", seg)
+                self.log("barge", text=self._L(f"是附和（{_short(seg, 16)}），接着说", f"a backchannel ({_short(seg, 16)}); carrying on"),
+                         by="text", verdict="ack")
+                return
             if getattr(self.mouth, "audible", False):
-                self.log("barge", text=self._L(f"听到你说话（{_short(text, 16)}），AI 停下", f"heard you ({_short(text, 16)}), the AI stopped"),
-                         by="text")
+                self.log("barge", text=self._L(f"在说正事（{_short(seg, 16)}），停下", f"you're making a point ({_short(seg, 16)}); stopping"),
+                         by="text", verdict="stop")
             self._interrupt()
 
     def _strip_echo(self, text: str) -> str:
@@ -3269,7 +3569,7 @@ class Meeting:
                                                               or _CALL_NAME.search(u.text or "")):
             self._mute = True                    # 先别出声：谁的话都不接，叫一声 Claude 才恢复
             if self.mouth.speaking:
-                self.mouth.stop()
+                self._stop_mouth()
             self.log("mute", text=self._L("静音：叫一声 Claude 再接话", "muted: say Claude to resume"))
             # "就按这个来……你先别说了"：别说话不等于别办事——这句里交代了要办的事照常记下，口头只说"好"
             if len(_bare(_MUTE.sub("", u.text or ""))) < 6:
@@ -3314,14 +3614,21 @@ class Meeting:
         cmd = None if is_part else parse_model_command(u.text)     # 参会者换模型在 _on_guest 里已经回过了
         if cmd:                                      # "对话模型换成 Flash""/model claude-opus-4-6[1m]"：不过模型，换完说一句
             if self.mouth.speaking:
-                self.mouth.stop()
+                self._stop_mouth()
             self._switch_by_voice(u, said, cmd, guest)
             return
         if not hush and not only_edit and _rules.wants_deeper(u.text) and \
                 (self.cfg.get("deep") or {}).get("enabled", True) is not False:
             self._think_deeper(u, said, cancel)      # "你仔细想一想""再想想呢"：交给后台深想，前台只说一句交接
             return
-        qk = quick_kind(u.text)
+        rs = None if is_part or hush else self._resume_cut(u, said, guest)
+        if rs is True:
+            return                                   # "继续""你接着说"：刚被打断的那段从没说完的那句念完，不过模型
+        qk = None if rs else quick_kind(u.text)      # 话没生成完就被打断：交给模型接着说（"继续，继续。"别当收尾确认）
+        if rs:
+            said = rs + said
+            if isinstance(getattr(self, "_turn", None), dict):
+                self._turn["fresh"] = True           # 抢跑时模型没看到这句说明：不用抢跑的
         if (hush or only_edit) and qk in ("greet", "bye", "hold", "close", "think"):
             self.fast.remember("user", said)
             self.log("quiet", text=self._L("多人在聊，这句没叫学生，不接", "people are talking to each other and this line didn't call Claude; staying quiet"))
@@ -3339,7 +3646,7 @@ class Meeting:
                            self._L("参会者不是在问", "the participant isn't asking"))
             return
         if self.mouth.speaking:
-            self.mouth.stop()  # 老师开口，学生闭嘴
+            self._stop_mouth()  # 老师开口，学生闭嘴（念到一半的那段照样记下念出了哪些）
         if qk in ("greet", "bye", "hold"):
             # 打招呼试麦、散会、让学生等一下：不过模型，直接放提前录好的那句
             tag, text = {"greet": ("#chat", self._L("在的在的，你说。", "I'm here, go ahead.")),
@@ -3409,10 +3716,15 @@ class Meeting:
             gen = _drain()
         else:
             light = (len(_bare(u.text)) <= 14 and not _PAPERISH.search(u.text) and not re.search(r"[A-Za-z]{2}", u.text)
-                     and not (getattr(self, "_turn", None) or {}).get("answer_to"))   # 回答它的问话多半要记改稿：带全文
+                     and not (getattr(self, "_turn", None) or {}).get("answer_to")    # 回答它的问话多半要记改稿：带全文
+                     and not (getattr(self, "_turn", None) or {}).get("done_task"))   # 说改完的那处现在什么样：带全文
             gen = self.fast.reply(said, light=light)
         if (getattr(self, "_turn", None) or {}).get("answer_to") and not is_part:
             gen = self._no_silent(gen, said)     # 在回答它刚问的话：判了不接就再问一次
+        elif (getattr(self, "_turn", None) or {}).get("done_task") and not is_part:
+            # 汇报被打断后他说"删吧"：那条早改完了，不能不吭声（2026-11-21 [18:04:47] 两次 #silent）
+            gen = self._no_silent(gen, said, fallback=self._L("这条已经删了。" if "删" in (u.text or "") else "这条已经改好了。",
+                                                              "That one's already done."))
         ground = None                        # 这一轮的核对器：快嘴说"论文里有 X"而论文里没有，那句不念
         held = ""                            # #deep：已经说了的那句"稍等，我查一下"
         unground = None                      # 核对没过的理由（"论文里找不到“RM”"）
@@ -3487,6 +3799,8 @@ class Meeting:
                         muzzle_rest = True   # 撤回：快嘴的话不念，撤完由软件按实际做了什么说（_undo_tell）
                         muzzle_why = "撤回由软件去办，办成什么样以软件念的那句为准。"
                     dup = self._same_task(tag[len(head0):]) if (head0 == "#edit" and not is_part) else None
+                    if dup is None and head0 == "#edit" and not is_part and (getattr(self, "_turn", None) or {}).get("done_task"):
+                        dup = self._turn["done_task"]    # 汇报被打断后的"删吧"：要的就是那条已经改完的，不另派（2026-11-21 T8）
                     if dup is not None and (_REVERT.search(tag) or _REVERT.search(u.text or "")):
                         # 同一处、说的是"改回 / 撤回"：这是撤回那一条，不是重复的改稿（2026-11-13 演示会："刚才 pioneering
                         # 改成 new 那条，撤回吧"，快嘴标了 #edit 改回，被当成重复吞掉，回了句"已经改好了"，撤回没发生）
@@ -3573,6 +3887,10 @@ class Meeting:
                                 continue     # 那几条这一轮已经照实说过：这句不念，免得说两遍
                             val = fixed
                     why = ground.check(val) if ground is not None else None
+                    if not why and _rules.denies_hand_edit(val) and self._hand_edits_note():
+                        # 对方手改过、全文已经是新版，快嘴却说"看不到你改成什么样，你念一下"（2026-11-21 组会 [18:29:11]）：
+                        # 这句不念，转给 Claude 去读改后的那段
+                        why = self._L("说看不到手改，可论文全文里已经是改后的样子", "said it couldn't see the hand edit, but the paper already has it")
                     if why:                  # 这句说了论文里没有的东西：别念，后面的也不要了，转给 Claude 去论文里查
                         unground = why
                         self.log("ungrounded", text=val, why=why)
@@ -3648,17 +3966,26 @@ class Meeting:
             return
         if cut:
             gen.close()
-            # 生成器没走完，历史要自己补：只记真说出口的那几句，模型下一轮才知道自己被打断了
-            self.fast.remember("user", said)
-            if spoken:
+            # 生成器没走完，历史要自己补：只记真念出口的那几句（嘴报的：送去念不等于念出了口），后面写明没说出口的，
+            # 模型下一轮才知道对方听到了哪儿。生成器其实刚走完、整段已经进了历史的：mark_cut 认出那条改掉，不重复记
+            if not any(h.get("role") == "user" and h.get("content") == said for h in list(self.fast.history)[-3:]):
+                self.fast.remember("user", said)
+            c = self._cut_for(line)
+            if c and c.get("unsaid"):
+                self.fast.mark_cut(c.get("heard") or "", _cat(*c["unsaid"]), full=_cat(*spoken), tag=tag)
+            elif spoken:
                 self.fast.remember("assistant", f"{tag}\n{_cat(*spoken)}（说到这里被打断了）")
             h0 = (tag.split() or ["#chat"])[0].lower()
             if spoken and not is_part and (h0 in ("#deep", "#find") or _unkept_promise(_cat(*spoken))):
                 # 已经说出口"我去查""Let me find the exact wording"，话被打断：查询照样转给后台，查好了上屏、等空下来念
                 # （话题过去了按 STALE 规则只上屏不念）。英文老师场：被打断后这件事整场再没回来
-                job = self._deep_start(said, host=self._may_web(u), quick=h0 == "#find")
+                hint = tag[len(h0):].strip() if h0 == "#deep" else ""
+                job = self._deep_start(said, host=self._may_web(u), quick=h0 == "#find",
+                                       topic=self._deep_topic(u, hint) if h0 != "#find" else "")
                 with job["lock"]:
                     job["deliver"] = True
+                if h0 != "#find":
+                    self._deep_step(line, u, hint)  # 逐字稿上那一行写明交给后台的是哪个问题
                 self.log("deep", text=self._L("答应了要查、话被打断：照样转给后台，查好了上屏、等空下来念",
                                               "promised to look it up but got cut off: still handed to the background; shown when ready, read at the next pause"))
         self._fast_status(getattr(self.fast, "last_error", None) is None, round(first * 1000) if first else None)
@@ -3671,6 +3998,8 @@ class Meeting:
             self._end_turn(u, guest, head, _cat(*spoken), False)
             # 要想的是哪个问题：快嘴在 #deep 后面写了就用它；这句只是叫后台去想（"那你让后台查查吧"）就从上文取
             topic = self._deep_topic(u, tag[len(head):].strip()) if head == "#deep" else ""
+            if head == "#deep":
+                self._deep_step(line, u, tag[len(head):].strip())   # 逐字稿上那一行写明交给后台的是哪个问题
             self._deep(u, said, cancel, line, spoken, remembered=True, held=held, quick=head == "#find", topic=topic)
             return
         if head == "#silent" and self._multi_party():
@@ -3689,7 +4018,8 @@ class Meeting:
             self.mouth.say(text, on_start=line)
             spoken.append(text)
             self.fast.remember("assistant", "#status\n" + text)
-        self._last_reply = _cat(*spoken)
+        cc = self._cut_for(line) if cut else None
+        self._last_reply = (cc.get("heard") or "") if (cc and cc.get("unsaid")) else _cat(*spoken)   # 被打断：他只听到这些
         self.log("assistant", tag=tag, text=(_cat(*spoken) or (self._L("（不接话）", "(stays quiet)") if tag == "#silent" else ""))
                  + (" ⟂被打断" if cut else ""), ttft=round(first or 0.0, 2), light=light)
         # 秒表：你说完 → 文字落地 → 耳朵发出 → 模型出第一句，各用了多久
@@ -3993,7 +4323,19 @@ class Meeting:
             said = (f"【对话情况：他上一句「{_short(pending, 160)}」说完你还没回（被这句打断了），这句是接着说的，"
                     f"连起来是「{_short(words, 220)}」：按连起来的意思理解，里面说清了怎么改的照常写 #edit】" + said)
             self._turn["fresh"] = True
-        q = self._last_question() if addressed and not cont else ""
+        dt = self._cut_done_task(u) if addressed else None
+        if dt:
+            # 改稿汇报被打断（他没听到已经改好了），他说"删吧""你去删啊"：要的就是那条（2026-11-21 [18:04:47] 两次 #silent，
+            # [18:05:04] 又派了重复的 T8）。还排着等念的同一条汇报不用再念
+            self._turn["done_task"] = dt
+            self._turn["fresh"] = True
+            self.pending_reports[:] = [x for x in self.pending_reports if x.get("id") != dt.get("id")]
+            heard = str((getattr(self, "_cut_report", None) or {}).get("heard") or "")
+            said = ("【对话情况：你刚才那条改稿汇报" + (f"说到「{_short(heard, 60)}」" if heard else "一个字都没念出来")
+                    + f"就被他打断了，后面他没听到。那条「{_short(dt.get('title'), 40)}」任务板上已经改好了，"
+                    "他这句就是要你做这件已经做完的事：用一句话告诉他已经改好了（删的就说已经删了），说清现在是什么样；"
+                    "别标 #silent，也别再记 #edit】" + said)
+        q = self._last_question() if addressed and not cont and not dt else ""
         if q and _rules.answers_question(u.text, q):
             # 2026-11-21 下午 [42:13]"要统一的话你点个头" → [42:35]"统一，统一。"被标成"半句话或口头禅"跳过了
             self._turn["answer_to"] = q
@@ -4003,7 +4345,7 @@ class Meeting:
         # AI 刚提议过改哪一处（"改成逗号会顺一些，要不要改？"）：他说"把顿号改一下"是在同意，不拦
         proposed = self._asked_back() and time.time() - float(self.__dict__.get("_last_reply_t", 0) or 0) <= 90
         vague = (_rules.vague_edit(words) if addressed and not getattr(u, "anchor", None) and not cont and not pending
-                 and not proposed else None)
+                 and not proposed and not dt else None)
         if vague is not None:
             # 2026-11-21 下午 [14:40]"把标点符号改一下。"：没说哪一处、怎么改，快嘴编了个"全文标点按前后句改"派了出去
             self._turn["vague"] = vague
@@ -4070,14 +4412,16 @@ class Meeting:
             # 他要后台"看看到底怎么改""想办法"：改法还没定，只深想，不替它记改稿（2026-11-21 T10：深想回答说
             # "你觉得行，我就交给后台去改"，补记的这条却已经把论文改了）。他认可了深想给的改法，快嘴再记
             edits = []
-        if _rules.holds_off(spoken_text) or t.get("vague") is not None:
+        if _rules.holds_off(spoken_text) or t.get("vague") is not None or t.get("done_task"):
+            # （done_task：汇报被打断后他说"删吧"，要的是那条已经改完的，不补记新的）
             # 嘴上说了"先不动""等你确认"（2026-11-21 下午 [13:10]，兜底照样记了 T4 开始改）、或者他没说改哪一处怎么改：不替它记
             edits = []
         promised = bool(_rules.promised_change(spoken_text))
         if (edits and not heads & {"#edit", "#note"}
                 and (promised or not (_rules.asked_back(spoken_text) or _rules.disagrees(spoken_text)))):
-            title = _rules.title_from_words(edits)
-            if title and self._same_task(title) is None:
+            # 标题按快嘴的复述或改动的意思写，不照抄口语（2026-11-21 组会 T7"你你你这个总起距为什么要扯到图三删掉啊"）
+            title = _rules.edit_title("".join(g["text"] for g in edits), spoken_text) or _rules.title_from_words(edits)
+            if title and self._same_task(title) is None and self._join_supplement(u, title, spoken_text) is None:
                 self.log("missed", text=self._L(f"补记改稿：{title}", f"added a missed edit: {title}"),
                          why=self._L("说了改论文，这一轮没记任务", "a paper change was asked for but not recorded"))
                 if spoken_text:
@@ -4100,8 +4444,9 @@ class Meeting:
         if (not edits or _rules.asked_back(spoken_text) or _rules.disagrees(spoken_text)
                 or _rules.holds_off(spoken_text)):   # "好，那我先不动，等你确认要补的写法再记"：不替它派（2026-11-21 下午 T4）
             return
-        title = _rules.title_from_words(edits)
-        if title and self._same_task(title) is None:
+        # 标题只按被打断那句的人话起（这一轮的回话说的可能是别的事），不照抄口语
+        title = _rules.edit_title("".join(g["text"] for g in edits)) or _rules.title_from_words(edits)
+        if title and self._same_task(title) is None and self._join_supplement(u, title, spoken_text) is None:
             self.log("missed", text=self._L(f"补记被打断那句的改稿：{title}", f"added the edit from the cut-off line: {title}"),
                      why=self._L("那句话被打断、没回，下一句也没记", "that line was cut off and the next turn did not record it"))
             if spoken_text:
@@ -4237,7 +4582,7 @@ class Meeting:
         if not recent:
             return False
         if self.mouth.speaking:
-            self.mouth.stop()
+            self._stop_mouth()
         stopped = []
         for t in recent:
             tid = t["id"]
@@ -4383,16 +4728,17 @@ class Meeting:
             return None                              # 说的是另一节：新的一条
         strip = lambda s: _rules.PLACE_FULL.sub("", s or "")   # noqa: E731  同一节的前缀不算像
         sim = _rules.similar(strip(new_title), strip(last.get("title")))
-        if _rules.refers_back(spoken) or sim >= 0.5:
+        # 快嘴的话里点了那条的标题（"「7 结论 第1段 改成先问后答」那条还在改，我去改它的写法"，2026-11-21 组会 T6）也算
+        if _rules.refers_back(spoken) or _rules.names_task(spoken, last.get("title") or "") or sim >= 0.5:
             return last
         if _rules.supplements(words) and ((a and a == b) or sim >= 0.3):
             return last
         return None
 
-    def _amend_running(self, u: Utterance, new_title: str) -> dict | None:
+    def _amend_running(self, u: Utterance, new_title: str, spoken: str = "") -> dict | None:
         """对正在改的那条的补充：交给正在改的工人（hands.amend），成了返回那条，不另记；工人那边接不了（没有这个口子、
-        返回 False）返回 None，照旧另记一条。"""
-        t = self._supplement_target(u, new_title)
+        返回 False）返回 None，照旧另记一条。spoken：这一轮已经说出口的话（兜底补记时有，看它是不是点了那条）。"""
+        t = self._supplement_target(u, new_title, spoken)
         if not t or t.get("status") != "working":
             return None
         amend = getattr(self.hands, "amend", None)
@@ -4410,16 +4756,17 @@ class Meeting:
                                                          f"amended running {t['id']}: {_short(words, 40)}"))
         return t
 
-    def _fold_supplement(self, u: Utterance, new_title: str, spoken: str) -> bool:
+    def _fold_supplement(self, u: Utterance, new_title: str, spoken: str, keep_title: bool = False) -> bool:
         """对还在排队那条的补充、限制（37:16"结论是要整张都跳过的……这些冒号得保留。只换标点"）：并进那一条，
-        备注里接上这次的原话和复述，标题换成这次的（快嘴写的是合并后的要求），不另记一条。并上了返回 True。"""
+        备注里接上这次的原话和复述，标题换成这次的（快嘴写的是合并后的要求），不另记一条。并上了返回 True。
+        keep_title：软件兜底补记的（标题是从人话里拼的，不是合并后的要求）：标题不换。"""
         t = self._supplement_target(u, new_title, spoken)
         if not t or t.get("status") != "queued":
             return False
         words = (getattr(self, "_turn", None) or {}).get("words") or u.text or ""
-        remark = (str(t.get("remark") or "") + f"（原来记的标题：{t.get('title')}）（又补充了：{words}）"
+        remark = (str(t.get("remark") or "") + ("" if keep_title else f"（原来记的标题：{t.get('title')}）") + f"（又补充了：{words}）"
                   + (f"（当场复述的补充：{_short(spoken, 300)}）" if spoken else ""))
-        title = new_title.strip() if len(_bare(new_title)) >= 6 else None
+        title = new_title.strip() if len(_bare(new_title)) >= 6 and not keep_title else None
         if not self.board.merge_queued(t["id"], remark=remark, title=title):
             return False                             # 刚被领走：照常另记一条
         if isinstance(getattr(self, "_turn", None), dict):
@@ -4429,11 +4776,32 @@ class Meeting:
         self.hands.notify()
         return True
 
+    def _join_supplement(self, u: Utterance, title: str, spoken: str, mark: bool = True) -> dict | None:
+        """软件替快嘴补记的改稿（嘴上答应了没打标签、漏记、被打断那句）其实是在补充正在改或排队的那条：正在改的交给工人，
+        排队的并进去，不另开一条（2026-11-21 组会 [18:03:23]：T5 正在改同一段，快嘴说"那条还在改，我去改它的写法"，
+        兜底却按原话"不用点结论"另记了 T6）。并上了返回那条，快嘴下一轮也知道并到了哪条。"""
+        t = self._amend_running(u, title, spoken)
+        if t is None:
+            t0 = self._supplement_target(u, title, spoken)
+            if t0 is not None and self._fold_supplement(u, title, spoken, keep_title=True):
+                t = t0
+        if t is None:
+            return None
+        turn = getattr(self, "_turn", None)
+        if mark and isinstance(turn, dict) and not any(str(a).startswith("#edit") for a in turn.setdefault("acts", [])):
+            turn["acts"].append(f"#edit {title}")  # 这一轮算记过改稿：后面的兜底、补漏检查别再补一条
+        self.log("missed", text=self._L(f"补充并进「{_short(t.get('title'), 30)}」：{_short(title, 40)}",
+                                        f"folded into {self._q(t)}: {_short(title, 40)}"),
+                 why=self._L("和正在改、排队的那条是同一处", "same spot as the edit in progress or queued"))
+        self.fast.remember("assistant", self._L(f"（软件把这句并进了「{_short(t.get('title'), 30)}」那条，没另记）",
+                                                f"(Folded this into {self._q(t)}; no new edit.)"))
+        return t
+
     def _think_deeper(self, u: Utterance, said: str, cancel) -> None:
         """"你仔细想一想""再想想呢""让后台好好想想"：把刚才那个问题交给后台深想，前台只说一句交接，不自己再答一遍
         （2026-11-14 [13:21]"你仔细想一想呢"，前台回"我想过了，还是不妥"）。"""
         if self.mouth.speaking:
-            self.mouth.stop()
+            self._stop_mouth()
         last = str(self._last_reply or "").strip()
         # 要想的是哪个问题：这句本身问了就是它，不然是他前面问的那个（2026-11-21 下午 [10:54]"我先叫个啥……你让后台的模型想一个答案"：
         # 逐字稿上那一步显示的、交给后台的都是这句原话，真正要想的是 [10:30] 那个"要不要在第三章把表二的大类都介绍一遍"）
@@ -4452,23 +4820,38 @@ class Meeting:
         self._end_turn(u, getattr(u, "guest", None), "#deep", handoff, False)
         self._deep(u, q, cancel, line, [], held=handoff, topic=question)
 
-    def _no_silent(self, gen, said: str):
-        """他在回答 AI 刚问的话（"统一，统一。"），模型却判了 #silent：这一轮作废，点明是回答再问一次（只一次）。"""
+    def _no_silent(self, gen, said: str, fallback: str = ""):
+        """他在回答 AI 刚问的话（"统一，统一。"），模型却判了 #silent：这一轮作废，点明是回答再问一次（只一次）。
+        fallback：再问一次还是 #silent 就念这句（汇报被打断后的"删吧"：那条已经改完了，一定要回一句）。"""
         for kind, val in gen:
             if kind == "tag" and (str(val or "").split() or [""])[0].lower() == "#silent":
                 gen.close()
-                self.log("quiet", text=self._L("回答问话被判了不接：再问一次", "an answer to Claude's question was judged as no-reply: asking again"))
-                yield from self.fast.reply("【你刚才判了不接，可这句是在回答你刚问的话：他同意就照办（要改的写 #edit），"
-                                           "不同意就回一句，不能标 #silent】" + said)
+                self.log("quiet", text=self._L("要做的事早做完了却被判了不接：再问一次" if fallback else "回答问话被判了不接：再问一次",
+                                               "asked for something already done, judged as no-reply: asking again" if fallback else
+                                               "an answer to Claude's question was judged as no-reply: asking again"))
+                again = self.fast.reply("【你刚才判了不接，可这句是在" + ("要你做你已经做完的那件事：用一句话告诉他已经做好了，别再记 #edit"
+                                        if fallback else "回答你刚问的话：他同意就照办（要改的写 #edit），不同意就回一句")
+                                        + "，不能标 #silent】" + said)
+                for k2, v2 in again:
+                    if fallback and k2 == "tag" and (str(v2 or "").split() or [""])[0].lower() == "#silent":
+                        again.close()                # 停在标签上：快嘴这一轮什么都没记进历史，这里补上
+                        self.fast.remember("user", said)
+                        self.fast.remember("assistant", "#chat\n" + fallback)
+                        yield "tag", "#chat"
+                        yield "sentence", fallback
+                        yield "done", fallback
+                        return
+                    yield k2, v2
                 return
             yield kind, val
 
     def _deep_question(self, u: Utterance, hint: str = "") -> str:
         """交给后台想的到底是哪个问题：快嘴在 #deep 后面写了就用它；这句话本身问了有内容的问题就是这句；都没有就从上文找
-        他（同一个人，五分钟内、最近六句）最近问的那个实质问题；再没有用 AI 上一句的问话。找不到返回空串。"""
+        他（同一个人，五分钟内、最近六句）最近问的那个实质问题，再带上 AI 上一句的提议（think_question）；再没有用 AI 上一句的问话。
+        找不到返回空串。2026-11-21 组会 [18:13:59]"你再想想。"：交过去的成了半截话"5.2 这个是不是写的太，就是你后面"。"""
         h = (hint or "").strip()
         if len(_bare(h)) >= 4:
-            return _short(_rules.question_of(h) or _rules.clean_clause(h), 60)
+            return _short(_rules.question_of(h, n=90) or _rules.clean_clause(h), 90)
         own = _rules.deep_question(u.text)
         if own:
             return own
@@ -4492,8 +4875,25 @@ class Meeting:
                 break
             q = _rules.question_of(l.get("text") or "")
             if q:
-                return q
-        return _rules.question_of(str(self._last_reply or ""))
+                return _rules.think_question(q, str(self._last_reply or ""))
+        return _rules.think_question("", str(self._last_reply or ""))
+
+    def _deep_step(self, line, u: Utterance, hint: str = "") -> None:
+        """交给后台深想的那一行补一步"深入思考 <问题>"（逐字稿上那一行只显示这一步；以前只有"对照"，界面上只剩"交给后台"四个字）。
+        还没出声：记进开行要用的 extra；已经开了行：补到那一行上。问题按 _deep_question 取，取不到用这句原话。"""
+        box = getattr(line, "box", None)
+        if not isinstance(box, dict):
+            return
+        q = self._deep_question(u, hint) or _short(_rules.clean_clause(u.text or ""), 60)
+        if not q:
+            return
+        k = self._L("深入思考", "Thinking deeper")
+        step = {"t": self.meetings.clock(), "k": k, "v": _short(q, 60)}
+        ln, ex = box.get("line"), box.get("extra")
+        if ln is not None:
+            self.meetings.annotate(ln, steps=[s for s in (ln.get("steps") or []) if s.get("k") != k] + [step])
+        elif isinstance(ex, dict):
+            ex["steps"] = [s for s in (ex.get("steps") or []) if s.get("k") != k] + [step]
 
     def _deep_topic(self, u: Utterance, hint: str = "") -> str:
         """快嘴打了 #deep 的这一轮，交给后台的题目：快嘴写了问题就用；这句话本身就是问题（或者是一大段话）：照旧用原话，返回空串；
@@ -4595,6 +4995,8 @@ class Meeting:
                     if (_rules.holds_off(spoken_text) or _rules.asked_back(spoken_text)
                             or turn.get("vague") is not None):
                         continue                     # 嘴上说了先不动、在反问，或者他没说改哪一处：不替它记（2026-11-21 下午 T4、T6）
+                    if self._join_supplement(u, what, spoken_text, mark=False) is not None:
+                        continue                     # 是在补充正在改、排队的那条：并进去，不另记（2026-11-21 组会 T6）
                     if evidence and self._same_task(what) is None:
                         # 人说的话里确实有说清了怎么改的那段（软件自己切出来的，不只是 Haiku 说的）：照常记成改稿
                         self.log("missed", text=self._L(f"补记改稿：{what}", f"added a missed edit: {what}"))
@@ -4655,14 +5057,18 @@ class Meeting:
             # 人说的是软件的事就记成软件意见。说出口的"会改"由这条兑现，模型下一轮也知道记了什么
             obj = _rules.promise_object(spoken_text, pc)
             app = _rules.is_app_item(obj, words) if obj else _rules.utterance_kind(words) == "app"
-            title = (_rules.title_from_words(words, kind="app" if app else "paper") or obj
-                     or self._note_title(spoken_text, pc, words))
-            self.log("missed", text=self._L(f"嘴上答应改、没打标签：按原话记上 {title}", f"promised a change without a tag: recorded {title}"),
-                     why=_short(spoken_text, 80))
-            self.act(f"{'#app' if app else '#edit'} {title}", self._with_words(u, words), section)
-            self.fast.remember("assistant", self._L(f"（软件按我刚才答应的记上了{'一条软件意见' if app else '一条改稿'}：{title}）",
-                                                    f"(Recorded what I promised as {'app feedback' if app else 'an edit'}: {title})"))
-            heads.add("#app" if app else "#edit")
+            # 标题按快嘴的复述或改动的意思写，不照抄口语（2026-11-21 组会 T6"不用点结论，不用点结论"）
+            title = ((_rules.title_from_words(words, kind="app") if app else _rules.edit_title(words, spoken_text))
+                     or obj or self._note_title(spoken_text, pc, words))
+            if not app and self._join_supplement(u, title, spoken_text) is not None:
+                heads.add("#edit")               # 是在补充正在改、排队的那条：并进去了，不另记
+            else:
+                self.log("missed", text=self._L(f"嘴上答应改、没打标签：按原话记上 {title}", f"promised a change without a tag: recorded {title}"),
+                         why=_short(spoken_text, 80))
+                self.act(f"{'#app' if app else '#edit'} {title}", self._with_words(u, words), section)
+                self.fast.remember("assistant", self._L(f"（软件按我刚才答应的记上了{'一条软件意见' if app else '一条改稿'}：{title}）",
+                                                        f"(Recorded what I promised as {'app feedback' if app else 'an edit'}: {title})"))
+                heads.add("#app" if app else "#edit")
         m = (_NOTE_PROMISE.search(spoken_text or "") if head in ("#chat", "#ask", "#status") and not turn.get("agenda_only")
              and not held_off else None)
         if m:
@@ -4682,9 +5088,11 @@ class Meeting:
             later = re.search(r"先别改|先不改|别改|不用改|先别动|先不动|记一下就行|记着就行|回头再|会后再|散会后再|(?i:\bdon'?t\s+change\b|\bnot\s+yet\b)", words)
             direct = [] if (app or later) else [g for g in _rules.split_requests(words) if g.get("directive")]
             if direct and not (_rules.asked_back(spoken_text) or _rules.disagrees(spoken_text)):
-                # 人明着说了怎么改，快嘴只说"我先记着"：记成改稿（标题用人的原话），不是只记不改的标注
+                # 人明着说了怎么改，快嘴只说"我先记着"：记成改稿（标题按复述、去掉口语），不是只记不改的标注
                 # （2026-11-15 重放："……的方式。我觉得这样会更好"→"我先记着"，记成了一条标题是"你是觉得这样更合适"的标注）
-                self.act(f"#edit {_rules.title_from_words(direct) or title}", self._with_words(u, words), section)
+                et = _rules.edit_title("".join(g["text"] for g in direct), spoken_text) or title
+                if self._join_supplement(u, et, spoken_text) is None:
+                    self.act(f"#edit {et}", self._with_words(u, words), section)
             else:
                 self.act(f"{'#app' if app else '#note'} {title}", self._with_words(u, words), section)
         if want:
@@ -5094,7 +5502,12 @@ class Meeting:
                 self._post_answer(job)
             if not remembered:
                 self.fast.remember("user", said)
-            self.fast.remember("assistant", f"#ask\n{_cat(before, hold)}（说到这里被打断了；后台接着查，查好了会念）")
+            c = self._cut_for(line)
+            if c and c.get("unsaid"):                # 先说的那几句念到一半：只记念出口的（嘴报的），后面写明没说出口的
+                self.fast.mark_cut(c.get("heard") or "", _cat(*c["unsaid"]), full=before, tag="#ask",
+                                   more="后台接着查，查好了会念")
+            else:
+                self.fast.remember("assistant", f"#ask\n{_cat(before, hold)}（说到这里被打断了；后台接着查，查好了会念）")
             self.log("assistant", tag="#deep", text=_cat(before, hold) + self._L(" ⟂被打断（接着查）", " ⟂cut off (still looking it up)"), ttft=round(time.time() - t0, 2))
             return
         answer, err = job.get("answer"), job.get("err")
@@ -5356,6 +5769,7 @@ class Meeting:
 
         def on_start(_s, line=first):
             self._speaking_line = line
+        on_start.box = {"line": first, "talk": threading.current_thread(), "tag": "#deep-answer", "extra": None}
         for j in jobs:
             j["spoken"] = True
             try:
@@ -5424,6 +5838,10 @@ class Meeting:
         gap = 3.5 if self._multi_party() else 2.0   # 三人会：大家都停下来久一点再插播，别打断人和人说话
         if self.mouth.speaking or time.time() - self.last_speech < gap or self._guests_talking(0.0 if gap < 3 else gap):
             return  # 等老师说完、嘴空下来再插播
+        if time.time() - float(getattr(self, "_barge_t", 0.0) or 0.0) < 4.0:
+            # 刚被你打断（你正在说，字还没转出来）：汇报别趁嘴空了插进来（2026-11-21 [18:04:45] 你一开口它停下，
+            # 改稿汇报马上开口，念了半句又被打断，你说的"删吧"它当成了确认）
+            return
         if getattr(self.meetings, "partial", None) and time.time() - self.last_speech < 30:
             return  # 主持人一句话还没说完（半句还挂着，只是中间停了停）：等他说完
         fl = getattr(self, "_floor", None)
@@ -5469,13 +5887,17 @@ class Meeting:
             note = (f"[系统] 你在后台看了「{task.get('title')}」这一处：光改文字做不到，要新的数据或结果，所以正文没动，"
                     f"钉成了一条标注{('，在「' + where + '」') if where else ''}，会记进散会后的修改清单。\n"
                     f"<<<标注>>>\n怎么改：{_short(task.get('plan'), 120)}\n要补：{_short(task.get('need'), 40)}\n<<<标注结束>>>\n")
+        elif task.get("status") == "done" and task.get("already"):
+            # 正文已经是要的样子（前面那条做掉了、手改过）：改完了就是改完了，不说没改成、不说进修改清单（2026-11-21 组会 T6、T8）
+            note = (f"[系统] 你在后台看了「{task.get('title')}」这一处：正文里已经是要的样子，这次没动，不用再改，也不进修改清单。"
+                    f"记录：\n<<<改稿记录>>>\n{_short(task.get('result'), 200)}\n<<<记录结束>>>\n")
         elif task.get("status") == "done":
             note = (f"[系统] 你在后台刚改完「{task.get('title')}」这一处，改稿时写下的记录：\n"
                     f"<<<改稿记录>>>\n{_short(task.get('result'), 300)}\n<<<记录结束>>>\n")
         else:
             note = (f"[系统] 你在后台改「{task.get('title')}」这一处没改成，原因：\n"
                     f"<<<改稿记录>>>\n{_short(task.get('error'), 200)}\n<<<记录结束>>>\n")
-        spoken, cut = [], False
+        spoken, cut, enough = [], False, False
         brief = "会上还有别人在讨论：只用一句话说改好了哪一处，别展开。" if self._multi_party() else ""
         if self._en():
             brief += "这场会用英文开：用英文汇报。"
@@ -5484,7 +5906,12 @@ class Meeting:
                "说清是哪里、有哪两种改法，问一句；“无”、措辞小事、定位提示和实际位置不一样这类都不用说，也别每次都问“要不要再改”。"
                "记录里说没按对方原话改的，要说清原话是什么、改成了什么、为什么。"
                "别的任务只按上下文里的任务板说，没标“已改”的就是还没改完。这是你自己改的：说“我”。" + brief)
-        if task.get("note") and task.get("unchanged"):
+        already = task.get("status") == "done" and bool(task.get("already")) and not task.get("note")
+        if already:
+            # 不在这里举例句：念出来的话和这段指令有十个字一样就当成复述指令不念（_echoes）
+            ask = ("。请只用一句口语照记录告诉对方：哪一处现在已经是要的样子，所以不用再改。"
+                   "不说“没改成”“正文没动”“记进修改清单”“会后处理”，也不说“改好了”，别提别的任务。这是你自己看的：说“我”。" + brief)
+        elif task.get("note") and task.get("unchanged"):
             ask = ("。请用一句口语告诉对方：这条没改成、正文没动，照记录说清原因，已经记进修改清单会后处理。"
                    "不说“改好了”，也不说“要新数据”。这是你自己处理的：说“我”。" + brief)
         elif task.get("note"):
@@ -5505,6 +5932,8 @@ class Meeting:
         line = self._speech_line("#report", extra={"task": f"T{task.get('idx')}" if task.get("idx") else task.get("id"),
                                                     "title": str(task.get("title") or ""),
                                                     "ok": task.get("status") == "done", "steps": steps})
+        if isinstance(getattr(line, "box", None), dict):   # 被打断时认得出是哪条的汇报（_cut_memory：没出声就留着再报，"删吧"答已经改好）
+            line.box["report"] = task
         try:
             for kind, val in gen:
                 if cancel is not None and cancel.is_set():
@@ -5518,16 +5947,39 @@ class Meeting:
                     self.log("fast_error", error=self._L(f"汇报里夹着给模型的指令，没念：{_short(val, 40)}", f"a report line echoed the instructions, not read: {_short(val, 40)}"))
                     continue
                 if kind == "sentence":
+                    if already and len(_bare(_cat(*spoken))) >= 8:
+                        enough = True        # 已是要的样子：只说一句，后面的不念
+                        break
                     self.mouth.say(val, on_start=line)
                     spoken.append(val)
         except Exception as e:
             self.log("fast_error", error=repr(e))
+        if enough and not cut:
+            gen.close()
+            self.fast.remember("assistant", "#status\n" + _cat(*spoken))
         if cut:
             gen.close()
-            if not spoken:                   # 还没开口就被你打断：这条汇报留着，等你说完再报
-                self.pending_reports.insert(0, task)
+            c = self._cut_for(line)
+            if not spoken or (c and not c.get("aired")):   # 还没出声就被你打断：这条汇报留着，等你说完再报
+                if task not in self.pending_reports:
+                    self.pending_reports.insert(0, task)
+                if c and (getattr(self, "_cut", None) or {}).get("key") is line:
+                    self._cut = None             # 会再报一遍：不用"继续"接着念
+                return
+            if c and c.get("unsaid"):        # 只记真念出口的，后面写明没说出口的（他没听到改好了没有）
+                self.fast.mark_cut(c.get("heard") or "", _cat(*c["unsaid"]), full=_cat(*spoken), tag="#status")
+                self._last_reply = c.get("heard") or ""
+                self.log("report", text=_cat(*spoken) + self._L(" ⟂被打断", " ⟂cut off"))
                 return
             self.fast.remember("assistant", "#status\n" + _cat(*spoken) + "（说到这里被打断了）")
+        if not spoken and already:          # 快嘴没说出来：一句话兜底（用工人那句"哪一处已经是什么样"），不说没改成
+            said = re.split(r"(?<=[。！？!?])\s*", " ".join(str(task.get("result") or "").split()))[0].rstrip("。.！!")
+            text = self._L(f"{said}，不用再改。" if 4 <= len(said) <= 60 else f"「{task.get('title')}」前面已经是这样了，不用再改。",
+                           f"{said}, so nothing needed changing." if 4 <= len(said) <= 120
+                           else f"{self._q(task)} already reads that way, so nothing needed changing.")
+            self.mouth.say(text, on_start=line)
+            self.fast.remember("assistant", text)
+            spoken = [text]
         if not spoken and task.get("note") and task.get("unchanged"):
             text = self._L(f"「{task.get('title')}」没改成，正文没动，我记进修改清单了。",
                            f"{self._q(task)} wasn't done. The text is unchanged and it's on the to-do list.")

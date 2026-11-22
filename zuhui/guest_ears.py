@@ -867,7 +867,7 @@ class GuestEars:
     def _host_check(self, g: _Guest, seg) -> None:
         """这一段有声的部分（最多最后 4 秒）和主持人的声纹比一比（另一个线程里算，约 30–60 毫秒，不卡判停）。"""
         np = self._np
-        if self.host_check is False:
+        if self.host_check is False or g.ident == "app-audio":   # 会议软件那一路是好几个人混在一起，不拿来认主持人
             return
         voiced = [f[0] for f in seg if f[1] >= TH_OFF]
         if len(voiced) * FRAME_S < HOST_MIN_S:

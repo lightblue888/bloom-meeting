@@ -40,7 +40,7 @@ class GuestTurns:
     def ge(self, strict: bool = True):
         """访客的判停 / 转写（guest_ears）。strict：直接转写这条路得是好的（判"说完没有"要用转写的时间线）。"""
         br = getattr(self.app, "bridge", None)
-        if br is None or not getattr(br, "connected", False):
+        if br is None or not getattr(br, "hears_guests", False):
             return None
         if strict and not getattr(br, "direct_ok", False):
             return None

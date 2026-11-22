@@ -176,6 +176,8 @@ class AudioBridge:
         self._now: dict[str, tuple[str, float]] = {}              # 身份 -> (名字, 开始) 正在说
         self._vad_state: dict[str, list] = {}                     # 身份 -> [连续响了几帧, 最后一次响的时间]
         self._stu_src = None
+        self.app_audio = None                     # 会议软件（腾讯会议等）放出来的声音：当成一位访客转写（zuhui/app_audio.py）
+        self.app_label: str | None = None         # 现在挂着的会议软件的显示名（"腾讯会议"）；也是逐字稿上那一行的名字
         from .components import which
         self._ffmpeg = which("ffmpeg")
         self._spare = None                        # 提前起好、等着的转码进程：((采样率, 语速), 进程)
@@ -190,15 +192,89 @@ class AudioBridge:
         return bool(self._thread and self._thread.is_alive())
 
     @property
+    def hears_guests(self) -> bool:
+        """有访客的声音进来：通过邀请链接进了语音房间，或者挂上了会议软件（腾讯会议）的声音。"""
+        return bool(self.connected or self.app_label)
+
+    @property
     def direct_ok(self) -> bool:
         """访客的话在直接转写（他自己那一路）：麦克风里漏进来的访客声音就不用再记了。"""
         ge = self.guest_ears
-        return bool(self.connected and ge is not None and ge.healthy)
+        return bool(self.hears_guests and ge is not None and ge.healthy)
 
     def guest_talking(self, within: float = 0.5) -> list[str]:
         """这会儿正在出声的访客的名字（判停说他最后一个有声帧离现在不到 within 秒）。"""
         ge = self.guest_ears
-        return ge.talking(within) if (ge is not None and self.connected) else []
+        return ge.talking(within) if (ge is not None and self.hears_guests) else []
+
+    # ---------- 会议软件的声音（腾讯会议等，zuhui/app_audio.py） ----------
+    APP_IDENT = "app-audio"
+
+    def app_on(self) -> None:
+        """开会时：找正在跑的会议软件，单独录它放出来的声音，当成一位访客（名字 = 软件名）直接转写进逐字稿。
+        不用中继、不用开邀请；不分是谁在说。config 的 app_audio.enabled = false 关掉。"""
+        if self.app_audio is not None or self.guest_ears is None:
+            return
+        if (self.cfg.get("app_audio") or {}).get("enabled", True) is False:
+            return
+        try:
+            from . import app_audio
+            if not app_audio.supported():
+                return
+            self.app_audio = app_audio.AppListener(self._app_pcm, on_state=self._app_state)
+            self.app_audio.start()
+        except Exception as ex:
+            self.app_audio = None
+            log.warning("会议软件的声音录不了：%r", ex)
+
+    def app_off(self) -> None:
+        """散会：不再录会议软件的声音。语音房间没开时访客转写是这里起的，没说完的那段转完交出去、转写进程停掉。"""
+        a, self.app_audio = self.app_audio, None
+        if a is not None:
+            try:
+                a.stop()
+            except Exception:
+                log.exception("停会议软件的声音出错")
+        if self.app_label:
+            self._app_state(None)
+        if not self.running and self.guest_ears is not None:
+            try:
+                self.guest_ears.stop()
+            except Exception:
+                log.exception("停访客转写出错")
+
+    def _app_state(self, label: str | None) -> None:
+        ge, old = self.guest_ears, self.app_label
+        if label:
+            self.app_label = label
+            if ge is not None:
+                ge.start()                        # 语音房间没开（没邀请人）时访客转写还没起
+                ge.joined(self.APP_IDENT, label)
+            log.info("会议软件：录 %s 放出来的声音", label)
+        else:
+            self.app_label = None
+            if ge is not None and old:
+                ge.left(self.APP_IDENT)
+            log.info("会议软件：%s 断开了", old)
+
+    def _app_pcm(self, label: str, pcm: bytes, t: float) -> None:
+        """会议软件放出来的一块声音（16 kHz 单声道，t = 第一个采样的墙上时间）：判谁在说、回声参考、直接转写，和访客那一路一样。"""
+        try:
+            import numpy as np
+            a16 = np.frombuffer(pcm, dtype=np.int16)
+            ident, n = self.APP_IDENT, 160
+            for i in range(0, len(a16) - n + 1, n):
+                a = a16[i:i + n].astype(np.float32)
+                self._level(ident, label, float(np.sqrt(np.mean(a * a))), 300.0, t + (i + n) / 16000)
+            t_end = t + len(a16) / 16000
+            PLAYBACK.put(ident, a16, t_end, kind="guest")
+            ge = self.guest_ears
+            if ge is not None:
+                if self.app_audio is not None and not (ge._thread and ge._thread.is_alive()):
+                    ge.start()                    # 语音房间断了会把访客转写一起停掉：会议软件还挂着就再起
+                ge.feed(ident, label, pcm, t_end)
+        except Exception:
+            log.debug("会议软件的声音没接上", exc_info=True)
 
     def guest_texts(self, name: str, ws: float, we: float) -> list[str]:
         """这位访客在 [ws, we] 前后直接转出来的字。"""
@@ -242,6 +318,7 @@ class AudioBridge:
         self._thread.start()
 
     def stop(self, wait: float = 5.0) -> None:
+        self.app_off()
         loop, ev = self._loop, self._stop
         if loop and ev:
             try:

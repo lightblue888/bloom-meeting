@@ -1,6 +1,6 @@
 [package]
 name = "blurt-desktop"
-version = "0.7.6"
+version = "0.7.7"
 description = "Bloom"
 authors = ["Bloom"]
 license = "MIT"

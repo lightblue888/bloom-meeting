@@ -803,6 +803,10 @@ class Meeting:
                 self.bridge.start()
             except Exception as e:
                 self.log("fast_error", error=self._L(f"语音桥没起来：{e!r}", f"voice bridge did not start: {e!r}"))
+            try:                                  # 腾讯会议等会议软件放出来的声音：当成一位访客转写（不用开邀请）
+                self.bridge.app_on()
+            except Exception as e:
+                self.log("fast_error", error=self._L(f"会议软件的声音录不了：{e!r}", f"meeting app audio failed: {e!r}"))
 
     def on_meeting_ended(self, session: str):
         """耳朵发现录屏结束了（record.py 收完尾）。会要是已经按散会按钮散了，这里只把"保存录屏"记成完成，不再散一次。"""
@@ -2089,7 +2093,7 @@ class Meeting:
         通过链接进来的访客在说（他的声音从你的扬声器放出来、被麦克风录到）：他自己那一路已经直接转写了（_direct_guest），
         这段是漏进来的，丢掉，不记两遍；直接转写起不来时才退回老办法，把这段记成访客的话。"""
         br = self.bridge
-        guest = br.guest_over(ws, we) if (br is not None and br.connected) else None
+        guest = br.guest_over(ws, we) if (br is not None and getattr(br, "hears_guests", br.connected)) else None
         if guest:
             if not br.direct_ok:
                 # 老办法：按停顿攒成一句再处理（老师的话学生会回应，参会者的问题会答）
@@ -2889,7 +2893,7 @@ class Meeting:
         except Exception:
             pass
         br = self.bridge
-        return bool(br is not None and getattr(br, "connected", False) and time.time() - self._last_guest_t < 90)
+        return bool(br is not None and getattr(br, "hears_guests", False) and time.time() - self._last_guest_t < 90)
 
     def _addr_decide(self, text: str, guest: str | None) -> bool | None:
         """多人会：本机分类模型判这句该不该接（zuhui/addr.py）。True 接、False 不接、None 不管（没开 / 模型没好 / 拿不准）。"""
@@ -3064,7 +3068,7 @@ class Meeting:
         再拿这句和他那会儿转出来的字比，大半对得上就是漏进来的，返回访客名字。"""
         br = self.bridge
         ge = getattr(br, "guest_ears", None) if br is not None else None
-        if ge is None or not getattr(br, "connected", False) or not getattr(br, "direct_ok", False):
+        if ge is None or not getattr(br, "hears_guests", False) or not getattr(br, "direct_ok", False):
             return None
         try:
             with ge._lock:

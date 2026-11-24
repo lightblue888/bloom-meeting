@@ -1214,6 +1214,22 @@ const People = memo(function People({ people, status, onRole, active, uiLang: _u
   // doesn't refetch anything
   const hasStatus = !!status;
   const mic = useMic(active && hasStatus);
+  // a meeting app (腾讯会议 …) in a call on this computer: recorded or not. A click shows at once; the poll catches up
+  const appP = people.find((p) => p.rank === 'app');
+  const [appWant, setAppWant] = useState<boolean | null>(null);
+  const appOn = appWant ?? (appP?.listening !== false);
+  useEffect(() => {
+    if (appWant != null && (!appP || appP.listening === appWant)) setAppWant(null);
+  }, [appWant, appP]);
+  const toggleApp = useCallback(async () => {
+    const want = !appOn;
+    setAppWant(want);
+    try {
+      await meetingApi.setAppListen(want);
+    } catch {
+      setAppWant(null);
+    }
+  }, [appOn]);
   const loadModels = useCallback(() => {
     if (!hasStatus) return;
     meetingApi.models().then((m) => setModels(m), () => setModels(null));
@@ -1441,7 +1457,20 @@ const People = memo(function People({ people, status, onRole, active, uiLang: _u
           {t(mic.muted ? 'meeting.mic.unmute' : 'meeting.mic.mute')}
         </button>
       )}
-      {!p.you && p.id !== 'claude' && onRole && (
+      {rank(p) === 'app' && hasStatus && (
+        <button
+          className={`mt-card-act ${appOn ? '' : 'is-muted'}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            void toggleApp();
+          }}
+          aria-pressed={!appOn}
+          data-testid="app-listen"
+        >
+          {t(appOn ? 'meeting.app.off' : 'meeting.app.on')}
+        </button>
+      )}
+      {!p.you && p.id !== 'claude' && rank(p) !== 'app' && onRole && (
         <button className="mt-card-act" onClick={() => onRole(p.name, rank(p) === 'cohost' ? 'participant' : 'cohost')} data-testid={`role-${p.id}`}>
           {t(rank(p) === 'cohost' ? 'meeting.rank.unset' : 'meeting.rank.set')}
         </button>
@@ -1485,6 +1514,7 @@ const People = memo(function People({ people, status, onRole, active, uiLang: _u
       <span className="mt-av-wrap">
         <Avatar person={p} color={colorOf[p.id]} />
         {p.you && hasStatus && mic.muted && <MutedMark onUnmute={mic.toggle} />}
+        {rank(p) === 'app' && hasStatus && !appOn && <MutedMark onUnmute={toggleApp} label={t('meeting.app.on')} testid="app-off" />}
         {p.id === 'claude' && rows.length > 0 && <span className={`mt-status-dot is-${overall}`} aria-hidden="true" />}
       </span>
       <span className="mt-person-name" style={{ color: nameColor(colorOf[p.id]) }} title={p.name}>{p.name}</span>
@@ -1524,6 +1554,7 @@ const People = memo(function People({ people, status, onRole, active, uiLang: _u
           <span key={p.id} className={`mt-stack-item ${kind(p)}`}>
             <Avatar person={p} color={colorOf[p.id]} />
             {p.you && hasStatus && mic.muted && <MutedMark onUnmute={mic.toggle} />}
+            {rank(p) === 'app' && hasStatus && !appOn && <MutedMark onUnmute={toggleApp} label={t('meeting.app.on')} testid="app-off" />}
           </span>
         ))}
         {more > 0 && <span className="mt-stack-more">+{more}</span>}
@@ -1582,8 +1613,10 @@ function useMic(on: boolean) {
 }
 
 /** a small badge on your avatar's corner while your microphone is muted (nothing there otherwise, so nothing shifts): a crossed-out
- *  microphone; a click unmutes. The switch itself is in your card. */
-function MutedMark({ onUnmute }: { onUnmute: () => void }) {
+ *  microphone; a click unmutes. The switch itself is in your card. The same badge on a meeting app (腾讯会议 …) Bloom isn't
+ *  recording: a click starts it. */
+function MutedMark({ onUnmute, label, testid = 'mic-muted' }: { onUnmute: () => void; label?: string; testid?: string }) {
+  const tip = label ?? t('meeting.mic.unmute');
   return (
     <button
       type="button"
@@ -1592,9 +1625,9 @@ function MutedMark({ onUnmute }: { onUnmute: () => void }) {
         e.stopPropagation();
         onUnmute();
       }}
-      aria-label={t('meeting.mic.unmute')}
-      title={t('meeting.mic.unmute')}
-      data-testid="mic-muted"
+      aria-label={tip}
+      title={tip}
+      data-testid={testid}
     >
       <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
         <rect x="5.5" y="1.8" width="5" height="8.4" rx="2.5" />

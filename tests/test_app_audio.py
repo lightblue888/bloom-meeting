@@ -316,7 +316,10 @@ class AppAudioTest(unittest.TestCase):
             states.append((lbl, len(labels)))
             (on if lbl else off).set()
 
-        lis = app_audio.AppListener(lambda lbl, pcm, t: labels.append(lbl), on_state, poll_s=0.3, apps=apps)
+        self.assertTrue({root.pid, kid} <= app_audio.tree_pids(root.pid), "子进程不在进程树里")
+        # 假会议软件不出声：当它麦克风一直开着（在开会）。在不在开会怎么判见 ListenerLogic
+        lis = app_audio.AppListener(lambda lbl, pcm, t: labels.append(lbl), on_state, poll_s=0.3, apps=apps,
+                                    activity_fn=lambda pids: (True, False))
         lis.start()
         self.addCleanup(lis.stop)
         self.assertTrue(on.wait(5), "没挂上")
@@ -331,6 +334,162 @@ class AppAudioTest(unittest.TestCase):
         self.assertEqual([s for s, _ in states], ["测试", None])
         self.assertGreater(n_pcm, 10)
         self.assertEqual(set(labels), {"测试"})
+
+    def test_activity_real_session(self):
+        """真的音频会话：子进程放 4 秒全零的 wav（听不见），放的时候它的扬声器会话是活动的、麦克风没有；
+        不出声的进程两样都没有。"""
+        wav = self.tmp / "silent.wav"
+        with wave.open(str(wav), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(48000)
+            w.writeframes(bytes(2 * 48000 * 4))
+        quiet = subprocess.Popen([sys.executable, "-S", "-c", SLEEPER, "6"], creationflags=NO_WINDOW)
+        self.addCleanup(_kill, quiet)
+        p = subprocess.Popen([sys.executable, "-S", "-c", PLAYER, str(wav)], stdin=subprocess.PIPE, creationflags=NO_WINDOW)
+        self.addCleanup(_kill, p)
+        self.addCleanup(p.stdin.close)
+        p.stdin.write(b"go\n")
+        p.stdin.flush()
+        co = app_audio._coinit()
+        try:
+            seen = None
+            end = time.time() + 3.5
+            while time.time() < end:
+                seen = app_audio.activity({p.pid})
+                if seen and seen[1]:
+                    break
+                time.sleep(0.1)
+            self.assertEqual(seen, (False, True), "放声音的进程扬声器会话应是活动的")
+            self.assertEqual(app_audio.activity({quiet.pid}), (False, False))
+        finally:
+            if co:
+                app_audio._couninit()
+
+
+class _FakeCap:
+    """假的 AppCapture：不真录，记下开了几个、停了几个。"""
+    made: list = []
+
+    def __init__(self, pid, on_pcm):
+        self.pid, self.on_pcm, self.stopped = pid, on_pcm, False
+        _FakeCap.made.append(self)
+
+    alive = property(lambda self: not self.stopped)
+    error = None
+
+    def start(self):
+        pass
+
+    def stop(self):
+        self.stopped = True
+
+
+class ListenerLogic(unittest.TestCase):
+    """AppListener 判在不在开会：不起线程，直接按假时钟调 _poll。
+
+    托盘里挂着（会话都不活动）不算；提示音（扬声器响一两秒）不算；扬声器连着响够 SPK_HOLD_S 算；麦克风一开就算；
+    开着会的麦克风、扬声器都停够 IDLE_S 算开完；软件关了算开完；查不了会话照老办法（进程在就算）；
+    enabled=False 只报在不在开会、不录，set_enabled 切换。"""
+
+    def setUp(self):
+        _FakeCap.made = []
+        self.act = (False, False)
+        self.found = (100, "x.exe", "测试")
+        self.states = []
+        self.patches = [mock.patch.object(app_audio, "AppCapture", _FakeCap),
+                        mock.patch.object(app_audio, "find_app", lambda apps=None: self.found),
+                        mock.patch.object(app_audio, "tree_pids", lambda pid: {pid})]
+        for p in self.patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in self.patches])
+
+    def make(self, enabled=True):
+        return app_audio.AppListener(lambda *a: None, self.states.append, enabled=enabled, activity_fn=lambda pids: self.act)
+
+    def run_until(self, lis, t0, t1, step=2.0):
+        t = t0
+        while t <= t1 + 1e-9:
+            lis._poll(t)
+            t += step
+        return t
+
+    def test_tray_idle_and_notification(self):
+        lis = self.make()
+        self.run_until(lis, 0, 20)
+        self.act = (False, True)                     # 提示音：扬声器响了两轮
+        self.run_until(lis, 22, 24)
+        self.act = (False, False)
+        self.run_until(lis, 26, 40)
+        self.assertEqual(self.states, [])
+        self.assertEqual(_FakeCap.made, [])
+        self.assertIsNone(lis.label)
+
+    def test_speaker_held_counts(self):
+        lis = self.make()
+        self.act = (False, True)
+        lis._poll(0)
+        lis._poll(4)
+        self.assertEqual(self.states, [])
+        lis._poll(6)
+        self.assertEqual(self.states, ["测试"])
+        self.assertTrue(lis.capturing)
+
+    def test_mic_starts_and_idle_ends(self):
+        lis = self.make()
+        self.act = (True, True)
+        lis._poll(0)
+        self.assertEqual(self.states, ["测试"])
+        self.assertEqual(len(_FakeCap.made), 1)
+        self.act = (False, False)                    # 会开完了：麦克风、扬声器都停了
+        lis._poll(2)
+        lis._poll(8)
+        self.assertEqual(self.states, ["测试"], "停了不到 IDLE_S 不算开完")
+        self.act = (True, False)                     # 中间又开了麦克风：重新计时
+        lis._poll(10)
+        self.act = (False, False)
+        lis._poll(12)
+        lis._poll(20)
+        self.assertEqual(self.states, ["测试"])
+        lis._poll(22)
+        self.assertEqual(self.states, ["测试", None])
+        self.assertTrue(_FakeCap.made[0].stopped)
+        self.assertFalse(lis.capturing)
+
+    def test_app_closed_and_reopened(self):
+        lis = self.make()
+        self.act = (True, False)
+        lis._poll(0)
+        self.found = None
+        lis._poll(2)
+        self.assertEqual(self.states, ["测试", None])
+        self.found = (200, "x.exe", "测试")         # 重开了：新进程
+        lis._poll(4)
+        self.assertEqual(self.states, ["测试", None, "测试"])
+        self.assertEqual([c.pid for c in _FakeCap.made], [100, 200])
+
+    def test_no_session_info_falls_back(self):
+        lis = self.make()
+        self.act = None
+        lis._poll(0)
+        self.assertEqual(self.states, ["测试"])
+        self.assertTrue(lis.capturing)
+
+    def test_disabled_reports_but_does_not_record(self):
+        lis = self.make(enabled=False)
+        self.act = (True, True)
+        lis._poll(0)
+        self.assertEqual(self.states, ["测试"])
+        self.assertEqual(lis.label, "测试")
+        self.assertFalse(lis.capturing)
+        lis.set_enabled(True)
+        lis._poll(1)
+        self.assertTrue(lis.capturing)
+        lis.set_enabled(False)
+        lis._poll(2)
+        self.assertFalse(lis.capturing)
+        self.assertTrue(_FakeCap.made[0].stopped)
+        self.assertEqual(self.states, ["测试"], "开关只管录不录，不算开完会")
 
 
 if __name__ == "__main__":

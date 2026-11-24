@@ -593,8 +593,11 @@ export interface Participant {
   id: string;
   name: string;
   role: 'teacher' | 'student' | 'guest' | string;
-  /** 主持人 / Claude / 参会者 / 老师 (a participant the host marked: what they say is acted on like the host's) */
-  rank?: 'host' | 'assistant' | 'participant' | 'cohost' | 'teacher';
+  /** 主持人 / Claude / 参会者 / 老师 (a participant the host marked: what they say is acted on like the host's) / a meeting app
+   *  (腾讯会议 and the like, in a call on this computer: what its people say is transcribed under its name; host's page only) */
+  rank?: 'host' | 'assistant' | 'participant' | 'cohost' | 'teacher' | 'app';
+  /** a meeting app: whether Bloom records it (its card's 停止收听 / 开始收听) */
+  listening?: boolean;
   you?: boolean;
   /** talking right now (the guest page knows it from the meeting's voice; the host's app doesn't send it) */
   speaking?: boolean;
@@ -1125,6 +1128,18 @@ export const meetingApi = {
     const j = (await r.json().catch(() => ({}))) as { muted?: unknown; error?: string };
     if (!r.ok || typeof j.muted !== 'boolean') throw new Error(j.error || `HTTP ${r.status}`);
     return j.muted;
+  },
+  /** record the meeting app (腾讯会议 …) in a call on this computer, or stop: kept for later meetings too. Host only. */
+  setAppListen: async (on: boolean): Promise<boolean> => {
+    const r = await fetch(`${ZUHUI_BASE}/api/app_audio`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ on }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const j = (await r.json().catch(() => ({}))) as { on?: unknown; error?: string };
+    if (!r.ok || typeof j.on !== 'boolean') throw new Error(j.error || `HTTP ${r.status}`);
+    return j.on;
   },
   profile: async (): Promise<Profile> => {
     const r = await fetch(`${ZUHUI_BASE}/api/profile`, { cache: 'no-store', signal: AbortSignal.timeout(8000) });

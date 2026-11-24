@@ -4205,6 +4205,23 @@ class Viewer:
                         "color": cmap.get(name)})
         return out
 
+    def app_participant(self, people: list[dict]) -> dict | None:
+        """在开会的会议软件（腾讯会议等，zuhui/app_audio.py）当成一位参会人：主持人的会议页上显示，卡片里能停止 / 开始收听。
+        只给主持人这边（访客页、存下来的参会人名单都不放）。listening = 录不录。"""
+        fn = getattr(self, "app_audio_state", None)
+        try:
+            st = fn() if callable(fn) else None
+        except Exception:
+            st = None
+        name = str((st or {}).get("name") or "")
+        if not name:
+            return None
+        guests = [p["name"] for p in people if p.get("rank") in ("participant", "cohost")]
+        color = self.guest_colors(guests + [name]).get(name)
+        return {"id": "app-audio", "name": name, "role": "app", "rank": "app",
+                "avatar": "/avatars/bloom.png" if (AVATARS / "bloom.png").exists() else None,
+                "color": color, "listening": bool(st.get("on"))}
+
     def dev_people(self, meta: dict) -> list[dict]:
         """Dev 里一场模拟会的参会人：主持人（扮演你）、Claude、扮演的访客；头像和颜色照会议页的规矩。"""
         base = self.participants(guests=False)
@@ -4283,6 +4300,10 @@ class Viewer:
             out["role_suggest"] = [x for x in roles.suggestions() if x.get("name") in here]
         except Exception:
             out["role_suggest"] = []
+        if cur:
+            app = self.app_participant(out["participants"])
+            if app:
+                out["participants"].append(app)
         # 摊开的几篇论文（"新增"、来回切的那个菜单）和屏幕上是哪篇：开会时是这场会的；没开会时是开会前新增过的那张单子
         # （2026-11-15：开会前新增一篇也不换掉上一篇，开会时整张单子带进会）
         from .meetings import load_open_papers, papers_of
@@ -4950,6 +4971,17 @@ class Viewer:
                         return self._json({"muted": bool(fn(want))})
                     except Exception as e:
                         return self._json({"muted": _mic_state(viewer)["muted"], "error": repr(e)[:120]}, 500)
+                if p == "/api/app_audio":      # 会议页上会议软件（腾讯会议等）卡片里的开关 {"on": true|false} → {"on": 现在录不录}
+                    fn = getattr(viewer, "app_audio_set", None)
+                    want = body.get("on") if isinstance(body, dict) else None
+                    if not isinstance(want, bool):
+                        return self._json({"error": "on 要是 true 或 false"}, 400)
+                    if not callable(fn):
+                        return self._json({"error": "设置失败：后端未就绪"}, 503)
+                    try:
+                        return self._json({"on": bool(fn(want))})
+                    except Exception as e:
+                        return self._json({"error": f"设置失败：{e!r}"[:120]}, 500)
                 if p == "/api/focus":          # 对比页：屏幕上正显示哪一节哪一段
                     sec = (body.get("section") or "").strip() if isinstance(body.get("section"), str) else ""
                     txt = str(body.get("text") or "")[:200]

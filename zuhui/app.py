@@ -1262,6 +1262,9 @@ class Meeting:
                 self.viewer.voice_test = self._voice_test      # 设置 / 引导里的"试听"
                 self.viewer.on_invite = lambda: self._bridge_on() if self.meetings.current() else None   # 开会时才打开邀请
                 self.viewer.mic_mute = lambda m=None: self.ears.set_muted(m) if self.ears is not None else False   # 主持人麦克风静音（m=None 只问）
+                # 会议软件（腾讯会议等）：在不在开会、录不录（会议页上它那张卡片里的「停止收听 / 开始收听」）
+                self.viewer.app_audio_state = lambda: self.bridge.app_status() if self.bridge is not None else {}
+                self.viewer.app_audio_set = lambda on: self.bridge.set_app_listen(on) if self.bridge is not None else False
                 self.viewer.on_log = self.log                  # 访客在会议页上做的事记进会议日志
                 self.viewer.on_ask = self.ask_typed            # 打字问 AI（主持人、共同主持人）
                 self.viewer.anchor = self.anchor               # 先选中再说：页面报上来的那段，下一句以它为准

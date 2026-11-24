@@ -173,6 +173,13 @@ async function zuhui(route: Route, w: World, rec: Recorder) {
     case 'POST /api/mic/mute':
       w.mic.muted = !!(body as { muted?: boolean }).muted;
       return json(route, { muted: w.mic.muted });
+    // the meeting app (腾讯会议 …) in a call: its card's 停止收听 / 开始收听 (zuhui/bridge.py set_app_listen)
+    case 'POST /api/app_audio': {
+      const on = (body as { on?: unknown }).on;
+      if (typeof on !== 'boolean') return json(route, { error: 'on 要是 true 或 false' }, 400);
+      for (const p of w.current.participants ?? []) if (p.rank === 'app') p.listening = on;
+      return json(route, { on });
+    }
     case 'GET /api/mic/stream':
       return sse(route, { muted: w.mic.muted, talk: w.mic.talk });
     case 'GET /api/brain/stream':

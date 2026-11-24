@@ -1232,6 +1232,33 @@ export const SCREENS: Screen[] = [
     ],
   },
   {
+    // 腾讯会议 in a call on this computer (zuhui/app_audio.py): one more person, its card stops / starts recording it
+    name: 'meeting-app-card',
+    what: "A meeting app in a call (腾讯会议) as a person: its hover card's 停止收听, then the badge on its avatar",
+    page: 'main',
+    world: (w) => {
+      const c = w.current;
+      c.participants = [...c.participants!.filter((p) => p.role !== 'guest'),
+        { id: 'app-audio', name: '腾讯会议', role: 'app', rank: 'app', listening: true, avatar: null, color: '#34d399' }];
+      w.userStrings.push('腾讯会议');
+    },
+    ready: '[data-testid="app-listen"]',
+    go: hover('person-app-audio'),
+    reapply: hover('person-app-audio'),
+    transitions: [
+      {
+        name: 'stop listening from the card',
+        act: async (c) => {
+          await c.page.getByTestId('app-listen').click();
+          await c.page.getByTestId('app-off').waitFor();
+          await c.waitPoll();
+        },
+        expect: ['[data-testid="app-listen"]', '[data-testid="app-off"]', '.mt-mic-off'],
+        note: 'the button label changes (停止收听 ↔ 开始收听) and the badge appears on the avatar',
+      },
+    ],
+  },
+  {
     name: 'meeting-people-list',
     what: '14 people: the avatar stack and its list (longest names)',
     page: 'main',

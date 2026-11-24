@@ -65,15 +65,19 @@ class FakeEars:
 class FakeListener:
     last = None
 
-    def __init__(self, on_pcm, on_state=None, **kw):
-        self.on_pcm, self.on_state, self.stopped = on_pcm, on_state, False
+    def __init__(self, on_pcm, on_state=None, enabled=True, **kw):
+        self.on_pcm, self.on_state, self.stopped, self.enabled = on_pcm, on_state, False, enabled
         FakeListener.last = self
 
     def start(self):
         self.on_state("腾讯会议")
 
+    def set_enabled(self, on):
+        self.enabled = on
+
     def stop(self):
         self.stopped = True
+        self.on_state(None)
 
 
 def fake_module(ok=True):
@@ -81,6 +85,11 @@ def fake_module(ok=True):
 
 
 class AppAudioBridge(unittest.TestCase):
+    def setUp(self):
+        self.saved = Path(zconfig.STATE) / zb.AudioBridge.APP_LISTEN_FILE
+        self.saved.unlink(missing_ok=True)
+        self.addCleanup(lambda: self.saved.unlink(missing_ok=True))
+
     def make(self, cfg=None):
         br = zb.AudioBridge(cfg or {}, None, me="测试", devices=False)
         br.guest_ears = FakeEars()
@@ -130,14 +139,55 @@ class AppAudioBridge(unittest.TestCase):
         self.assertTrue(br.guest_ears.alive)
         br.stop()
 
-    def test_off_in_config_or_unsupported(self):
-        br = self.make({"app_audio": {"enabled": False}})
-        self.on(br)
-        self.assertIsNone(br.app_audio)
+    def test_unsupported(self):
         br = self.make()
         self.on(br, ok=False)
         self.assertIsNone(br.app_audio)
         self.assertFalse(br.hears_guests)
+
+    def test_off_still_shown_and_toggle(self):
+        """config 里关了（或者会议页上点了「停止收听」）：照样知道腾讯会议在开会（会议页上显示它），但不录、不转写；
+        点「开始收听」马上 joined、开始录，点「停止收听」马上 left、停录；开关记下来，下一场会照这个。"""
+        br = self.make({"app_audio": {"enabled": False}})
+        self.on(br)
+        lis, ge = FakeListener.last, br.guest_ears
+        self.assertFalse(lis.enabled)
+        self.assertEqual(br.app_status(), {"name": "腾讯会议", "on": False})
+        self.assertNotIn(("joined", "app-audio", "腾讯会议"), ge.calls)
+        self.assertFalse(br.hears_guests)
+        lis.on_pcm("腾讯会议", np.zeros(320, np.int16).tobytes(), time.time())
+        self.assertFalse([c for c in ge.calls if c[0] == "feed"], "关着时不送去转写")
+
+        self.assertTrue(br.set_app_listen(True))
+        self.assertTrue(lis.enabled)
+        self.assertIn(("joined", "app-audio", "腾讯会议"), ge.calls)
+        self.assertTrue(br.hears_guests)
+        lis.on_pcm("腾讯会议", np.zeros(320, np.int16).tobytes(), time.time())
+        self.assertEqual(len([c for c in ge.calls if c[0] == "feed"]), 1)
+        self.assertEqual(self.make().app_listen, True)
+
+        self.assertFalse(br.set_app_listen(False))
+        self.assertFalse(lis.enabled)
+        self.assertEqual(ge.calls[-1], ("left", "app-audio"))
+        self.assertFalse(br.hears_guests)
+        self.assertEqual(br.app_status(), {"name": "腾讯会议", "on": False})
+        self.assertFalse(self.make().app_listen, "点过「停止收听」：下一场会也不录")
+        br.stop()
+        self.assertIsNone(br.app_status()["name"])
+        self.assertEqual([c for c in ge.calls if c[0] == "left"], [("left", "app-audio")], "没在录时散会不再 left")
+
+    def test_app_participant(self):
+        """会议页参会人里的会议软件：在开会才有，带 listening；颜色避开在场访客。"""
+        from zuhui.view import Viewer
+        stub = types.SimpleNamespace(app_audio_state=lambda: {"name": "腾讯会议", "on": False},
+                                     guest_colors=lambda names: {n: f"#00000{i}" for i, n in enumerate(names)})
+        people = [{"name": "我", "rank": "host"}, {"name": "小王", "rank": "participant"}]
+        p = Viewer.app_participant(stub, people)
+        self.assertEqual((p["id"], p["name"], p["rank"], p["listening"], p["color"]), ("app-audio", "腾讯会议", "app", False, "#000001"))
+        stub.app_audio_state = lambda: {"name": None, "on": True}
+        self.assertIsNone(Viewer.app_participant(stub, people))
+        stub.app_audio_state = lambda: 1 / 0
+        self.assertIsNone(Viewer.app_participant(stub, people))
 
 
 if __name__ == "__main__":

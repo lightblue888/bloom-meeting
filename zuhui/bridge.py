@@ -177,7 +177,9 @@ class AudioBridge:
         self._vad_state: dict[str, list] = {}                     # 身份 -> [连续响了几帧, 最后一次响的时间]
         self._stu_src = None
         self.app_audio = None                     # 会议软件（腾讯会议等）放出来的声音：当成一位访客转写（zuhui/app_audio.py）
-        self.app_label: str | None = None         # 现在挂着的会议软件的显示名（"腾讯会议"）；也是逐字稿上那一行的名字
+        self.app_label: str | None = None         # 在开会的会议软件的显示名（"腾讯会议"）；也是逐字稿上那一行的名字
+        self.app_listen = self._load_app_listen() # 录不录会议软件的声音（会议页上这位参会人卡片里的开关）
+        self._app_joined = False                  # 访客转写那边挂着它这一路
         from .components import which
         self._ffmpeg = which("ffmpeg")
         self._spare = None                        # 提前起好、等着的转码进程：((采样率, 语速), 进程)
@@ -193,8 +195,8 @@ class AudioBridge:
 
     @property
     def hears_guests(self) -> bool:
-        """有访客的声音进来：通过邀请链接进了语音房间，或者挂上了会议软件（腾讯会议）的声音。"""
-        return bool(self.connected or self.app_label)
+        """有访客的声音进来：通过邀请链接进了语音房间，或者在录会议软件（腾讯会议）的声音。"""
+        return bool(self.connected or self._app_joined)
 
     @property
     def direct_ok(self) -> bool:
@@ -210,22 +212,74 @@ class AudioBridge:
     # ---------- 会议软件的声音（腾讯会议等，zuhui/app_audio.py） ----------
     APP_IDENT = "app-audio"
 
+    APP_LISTEN_FILE = "app_audio.json"
+
+    def _load_app_listen(self) -> bool:
+        """会议页上点过「停止收听 / 开始收听」的就按点的（~/.zuhui/app_audio.json）；没点过按 config 的 app_audio.enabled（默认录）。"""
+        try:
+            from .config import STATE
+            d = json.loads((STATE / self.APP_LISTEN_FILE).read_text(encoding="utf-8"))
+            if isinstance(d, dict) and isinstance(d.get("on"), bool):
+                return d["on"]
+        except (OSError, ValueError):
+            pass
+        return (self.cfg.get("app_audio") or {}).get("enabled", True) is not False
+
     def app_on(self) -> None:
-        """开会时：找正在跑的会议软件，单独录它放出来的声音，当成一位访客（名字 = 软件名）直接转写进逐字稿。
-        不用中继、不用开邀请；不分是谁在说。config 的 app_audio.enabled = false 关掉。"""
+        """开会时：盯着会议软件。它在开会（麦克风开着，或者扬声器一直在响）时单独录它放出来的声音，当成一位访客
+        （名字 = 软件名）直接转写进逐字稿；只是挂在托盘里不录。不用中继、不用开邀请；不分是谁在说。
+        app_listen 关着（会议页上点了「停止收听」）时只看在不在开会（会议页上照样显示这位参会人，好再打开），不录。"""
         if self.app_audio is not None or self.guest_ears is None:
-            return
-        if (self.cfg.get("app_audio") or {}).get("enabled", True) is False:
             return
         try:
             from . import app_audio
             if not app_audio.supported():
                 return
-            self.app_audio = app_audio.AppListener(self._app_pcm, on_state=self._app_state)
+            self.app_audio = app_audio.AppListener(self._app_pcm, on_state=self._app_state, enabled=self.app_listen)
             self.app_audio.start()
         except Exception as ex:
             self.app_audio = None
             log.warning("会议软件的声音录不了：%r", ex)
+
+    def app_status(self) -> dict:
+        """会议页用：{"name": 在开会的会议软件（没有是 None）, "on": 录不录}。"""
+        return {"name": self.app_label, "on": bool(self.app_listen)}
+
+    def set_app_listen(self, on: bool) -> bool:
+        """会议页上这位参会人卡片里的「停止收听 / 开始收听」：马上停 / 开始录，记下来（下一场会照这个）。"""
+        on = bool(on)
+        self.app_listen = on
+        try:
+            from .config import STATE
+            p = STATE / self.APP_LISTEN_FILE
+            tmp = p.with_name(p.name + ".tmp")
+            tmp.write_text(json.dumps({"on": on}), encoding="utf-8")
+            os.replace(tmp, p)
+        except OSError:
+            log.warning("会议软件收听开关没存上", exc_info=True)
+        a = self.app_audio
+        if on and self.app_label:
+            self._app_join(self.app_label)        # 先挂上访客转写，再开始录（第一块声音就有地方去）
+        if a is not None:
+            a.set_enabled(on)
+        if not on:
+            self._app_leave()
+        log.info("会议软件：%s", "开始收听" if on else "停止收听")
+        return on
+
+    def _app_join(self, label: str) -> None:
+        ge = self.guest_ears
+        if ge is None:
+            return
+        ge.start()                                # 语音房间没开（没邀请人）时访客转写还没起
+        ge.joined(self.APP_IDENT, label)
+        self._app_joined = True
+
+    def _app_leave(self) -> None:
+        ge, was = self.guest_ears, self._app_joined
+        self._app_joined = False
+        if ge is not None and was:
+            ge.left(self.APP_IDENT)
 
     def app_off(self) -> None:
         """散会：不再录会议软件的声音。语音房间没开时访客转写是这里起的，没说完的那段转完交出去、转写进程停掉。"""
@@ -244,21 +298,22 @@ class AudioBridge:
                 log.exception("停访客转写出错")
 
     def _app_state(self, label: str | None) -> None:
-        ge, old = self.guest_ears, self.app_label
+        """会议软件开始开会（label = 显示名）/ 开完了（None）。"""
+        old = self.app_label
         if label:
             self.app_label = label
-            if ge is not None:
-                ge.start()                        # 语音房间没开（没邀请人）时访客转写还没起
-                ge.joined(self.APP_IDENT, label)
-            log.info("会议软件：录 %s 放出来的声音", label)
+            if self.app_listen:
+                self._app_join(label)
+            log.info("会议软件：%s 在开会（%s）", label, "录" if self.app_listen else "不录")
         else:
             self.app_label = None
-            if ge is not None and old:
-                ge.left(self.APP_IDENT)
-            log.info("会议软件：%s 断开了", old)
+            self._app_leave()
+            log.info("会议软件：%s 不在开会了", old)
 
     def _app_pcm(self, label: str, pcm: bytes, t: float) -> None:
         """会议软件放出来的一块声音（16 kHz 单声道，t = 第一个采样的墙上时间）：判谁在说、回声参考、直接转写，和访客那一路一样。"""
+        if not self.app_listen:                   # 刚点了「停止收听」：抓取线程还没停下的这一点不要
+            return
         try:
             import numpy as np
             a16 = np.frombuffer(pcm, dtype=np.int16)

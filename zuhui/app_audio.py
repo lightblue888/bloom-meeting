@@ -11,9 +11,16 @@
   supported()                   这台 Windows 能不能按程序录
   find_app(apps=None)           正在跑的会议软件 → (根进程 pid, 进程名, 显示名) | None
                                 腾讯会议是一堆 wemeetapp.exe，取"父进程不是同名程序"的那个；录的时候带上整棵进程树
+  tree_pids(pid)                这个进程和它所有的子孙
+  activity(pids)                这些进程现在有没有活动的音频会话 → (麦克风, 扬声器) | None（查不了）
   AppCapture(pid, on_pcm)       on_pcm(pcm, t)：16 kHz 单声道 s16le，每块 10 ms 的整数倍，t = 这块第一个采样的墙上时间
-  AppListener(on_pcm, on_state) 后台每 poll_s 秒找一次会议软件：开了就挂上，关了就断开，再开再挂。
-                                on_pcm(显示名, pcm, t)；on_state(显示名 | None) 挂上、断开时各一次
+  AppListener(on_pcm, on_state) 后台每 poll_s 秒找一次会议软件，看它是不是在开会：在开会就挂上录，开完了、关了就断开。
+                                on_pcm(显示名, pcm, t)；on_state(显示名 | None) 开始开会、开完时各一次。
+                                set_enabled(False) 只看不录（会议页上点了「停止收听」）
+
+在不在开会：会议软件开机自启、挂在托盘里时进程一直在，但它的音频会话都是不活动的；开会时麦克风会话是活动的
+（静音了也开着，用来提示"你在说话"），扬声器会话也一直开着。以前只看进程在不在，托盘里的腾讯会议也挂上录，
+它放的一声提示音被转写成一句 "I'm not sure." 记在「腾讯会议」名下（2026-11-25 组会）。
 
 怎么录：
   ActivateAudioInterfaceAsync("VAD\\Process_Loopback", IAudioClient, PROCESS_LOOPBACK + 进程树) 拿到 IAudioClient，
@@ -72,6 +79,8 @@ MIN_BUILD = 19041            # Windows 10 2004
 BUF_DISCONTINUITY = 0x1      # AUDCLNT_BUFFERFLAGS_*
 BUF_SILENT = 0x2
 BUF_TIMESTAMP_ERROR = 0x4
+E_RENDER, E_CAPTURE = 0, 1   # 音频端点方向：扬声器、麦克风
+AUDIO_SESSION_ACTIVE = 1     # AudioSessionState：0 不活动，1 活动，2 已失效
 
 
 class AppAudioError(Exception):
@@ -385,6 +394,98 @@ if sys.platform == "win32":
         finally:
             _h_release(addr)
 
+    # ---- 音频会话：会议软件现在有没有在用麦克风、扬声器
+    CLSID_MMDeviceEnumerator = _guid("BCDE0395-E52F-467C-8E3D-C4579291692E")
+    IID_IMMDeviceEnumerator = _guid("A95664D2-9614-4F35-A746-DE8DB63617E6")
+    IID_IAudioSessionManager2 = _guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F")
+    IID_IAudioSessionControl2 = _guid("bfb7ff88-7239-4fc9-8fa2-07c950be9c6d")
+    CLSCTX_ALL = 0x17
+    DEVICE_STATE_ACTIVE = 1
+    _ole32.CoCreateInstance.argtypes = [POINTER(_GUID), c_void_p, c_ulong, POINTER(_GUID), POINTER(c_void_p)]
+    _ole32.CoCreateInstance.restype = c_long
+    _P_ENUM_ENDPOINTS = ctypes.WINFUNCTYPE(c_long, c_void_p, c_int, c_ulong, POINTER(c_void_p))
+    _P_COUNT_U = ctypes.WINFUNCTYPE(c_long, c_void_p, POINTER(c_uint32))
+    _P_ITEM = ctypes.WINFUNCTYPE(c_long, c_void_p, c_uint32, POINTER(c_void_p))
+    _P_DEV_ACTIVATE = ctypes.WINFUNCTYPE(c_long, c_void_p, POINTER(_GUID), c_ulong, c_void_p, POINTER(c_void_p))
+    _P_OUT_PTR = ctypes.WINFUNCTYPE(c_long, c_void_p, POINTER(c_void_p))
+    _P_COUNT_I = ctypes.WINFUNCTYPE(c_long, c_void_p, POINTER(c_int))
+    _P_GET_SESSION = ctypes.WINFUNCTYPE(c_long, c_void_p, c_int, POINTER(c_void_p))
+    _P_GET_PID = ctypes.WINFUNCTYPE(c_long, c_void_p, POINTER(c_ulong))
+    _EN_ENUM_ENDPOINTS = 3
+    _COL_COUNT, _COL_ITEM = 3, 4
+    _DEV_ACTIVATE = 3
+    _SM2_GET_ENUMERATOR = 5
+    _SE_COUNT, _SE_GET = 3, 4
+    _SC_GET_STATE = 3
+    _SC2_GET_PID = 14
+
+    def _sessions(flow: int) -> list[tuple[int, int]]:
+        """一个方向（E_RENDER 扬声器 / E_CAPTURE 麦克风）所有启用的设备上的音频会话：[(pid, 状态)]。
+        调用的线程要已经 CoInitializeEx。"""
+        en = c_void_p()
+        hr = _ole32.CoCreateInstance(byref(CLSID_MMDeviceEnumerator), None, CLSCTX_ALL, byref(IID_IMMDeviceEnumerator), byref(en))
+        if hr < 0 or not en.value:
+            raise AppAudioError(f"查会话失败：{_hex(hr)}", hr)
+        out: list[tuple[int, int]] = []
+        held: list[_Com] = [_Com(en.value)]
+        try:
+            col = c_void_p()
+            hr = held[0].call(_EN_ENUM_ENDPOINTS, _P_ENUM_ENDPOINTS, flow, DEVICE_STATE_ACTIVE, byref(col))
+            if hr < 0 or not col.value:
+                raise AppAudioError(f"查会话失败：{_hex(hr)}", hr)
+            cc = _Com(col.value)
+            held.append(cc)
+            n = c_uint32()
+            cc.call(_COL_COUNT, _P_COUNT_U, byref(n))
+            for i in range(n.value):
+                dev = c_void_p()
+                if cc.call(_COL_ITEM, _P_ITEM, i, byref(dev)) < 0 or not dev.value:
+                    continue
+                d = _Com(dev.value)
+                mgr = se = None
+                try:
+                    p = c_void_p()
+                    if d.call(_DEV_ACTIVATE, _P_DEV_ACTIVATE, byref(IID_IAudioSessionManager2), CLSCTX_ALL, None, byref(p)) < 0 or not p.value:
+                        continue
+                    mgr = _Com(p.value)
+                    p = c_void_p()
+                    if mgr.call(_SM2_GET_ENUMERATOR, _P_OUT_PTR, byref(p)) < 0 or not p.value:
+                        continue
+                    se = _Com(p.value)
+                    k = c_int()
+                    se.call(_SE_COUNT, _P_COUNT_I, byref(k))
+                    for j in range(k.value):
+                        p = c_void_p()
+                        if se.call(_SE_GET, _P_GET_SESSION, j, byref(p)) < 0 or not p.value:
+                            continue
+                        sc = _Com(p.value)
+                        try:
+                            st, q, pid = c_int(), c_void_p(), c_ulong()
+                            sc.call(_SC_GET_STATE, _P_COUNT_I, byref(st))
+                            if sc.call(_QI, _P_QI, byref(IID_IAudioSessionControl2), byref(q)) >= 0 and q.value:
+                                sc2 = _Com(q.value)
+                                try:
+                                    sc2.call(_SC2_GET_PID, _P_GET_PID, byref(pid))
+                                finally:
+                                    sc2.release()
+                            out.append((int(pid.value), int(st.value)))
+                        finally:
+                            sc.release()
+                finally:
+                    for c in (se, mgr, d):
+                        if c is not None:
+                            c.release()
+        finally:
+            for c in reversed(held):
+                c.release()
+        return out
+
+    def _coinit() -> bool:
+        return _ole32.CoInitializeEx(None, COINIT_MULTITHREADED) >= 0
+
+    def _couninit() -> None:
+        _ole32.CoUninitialize()
+
     def _snapshot() -> list[tuple[int, int, str]]:
         """所有进程的 (pid, 父 pid, exe 名)。"""
         h = _k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
@@ -453,6 +554,15 @@ else:
     def _snapshot() -> list[tuple[int, int, str]]:
         return []
 
+    def _sessions(flow: int) -> list[tuple[int, int]]:
+        raise AppAudioError("查会话失败：不是 Windows")
+
+    def _coinit() -> bool:
+        return False
+
+    def _couninit() -> None:
+        pass
+
 
 # ---------------------------------------------------------------- 找会议软件
 
@@ -505,6 +615,37 @@ def find_app(apps: dict | None = None) -> tuple[int, str, str] | None:
     order = {k: i for i, k in enumerate(want)}
     pid, _, name = min(roots, key=lambda c: (order[c[2]], -tree(c[0]), born(c[0]) or 0, c[0]))
     return pid, name, want[name]
+
+
+def tree_pids(root: int) -> set[int]:
+    """root 和它所有的子孙进程（不管叫什么：腾讯会议的声音可能是子进程放的）。"""
+    kids: dict[int, list[int]] = {}
+    try:
+        for pid, ppid, _ in _snapshot():
+            if pid != ppid:
+                kids.setdefault(ppid, []).append(pid)
+    except Exception:
+        log.debug("进程快照失败", exc_info=True)
+    seen, todo = {int(root)}, [int(root)]
+    while todo:
+        for k in kids.get(todo.pop(), ()):
+            if k not in seen:
+                seen.add(k)
+                todo.append(k)
+    return seen
+
+
+def activity(pids) -> tuple[bool, bool] | None:
+    """这些进程现在有没有活动的音频会话：(麦克风, 扬声器)。查不了（不是 Windows、系统出错）返回 None。
+    调用的线程要已经 CoInitializeEx（AppListener 的监听线程是 MTA）。"""
+    want = {int(p) for p in pids}
+    try:
+        mic = any(p in want and st == AUDIO_SESSION_ACTIVE for p, st in _sessions(E_CAPTURE))
+        spk = any(p in want and st == AUDIO_SESSION_ACTIVE for p, st in _sessions(E_RENDER))
+    except Exception:
+        log.debug("查音频会话失败", exc_info=True)
+        return None
+    return mic, spk
 
 
 # ---------------------------------------------------------------- 录一个进程树
@@ -807,28 +948,54 @@ class AppCapture:
 # ---------------------------------------------------------------- 盯着会议软件
 
 class AppListener:
-    """后台每 poll_s 秒找一次会议软件，找到就挂上录，程序退出（或抓取线程死了）就断开、接着找。
+    """后台每 poll_s 秒找一次会议软件，看它是不是在开会：麦克风会话活动，或者扬声器会话连着活动了 SPK_HOLD_S 秒
+    （提示音、来电铃声不算）。在开会就挂上录；麦克风、扬声器都停了 IDLE_S 秒（会开完了）或者程序退出就断开，接着找。
+    查不了音频会话（activity 返回 None）时照老办法：进程在就算在开会。
 
-    on_pcm(显示名, pcm, t) 在抓取线程里调；on_state(显示名 | None) 在监听线程里调，挂上、断开时各一次
-    （stop() 时挂着的也会回调一次 None）。挂上那次 on_state 一定先于这次的第一块 on_pcm。
+    on_state(显示名 | None) 在监听线程里调：开始开会、开完时各一次，不管录不录（会议页上据此显示、收起这位参会人；
+    stop() 时在开会的也会回调一次 None）。enabled=False 只看在不在开会、不录；set_enabled 随时切换。
+    on_pcm(显示名, pcm, t) 在抓取线程里调；开始开会那次 on_state 一定先回调完，才挂上录。
     """
 
     RETRY_S = 30.0       # 同一个进程挂不上，隔这么久再试
+    SPK_HOLD_S = 6.0     # 麦克风没开、只有扬声器在响：连着响这么久才算在开会
+    IDLE_S = 10.0        # 在开会的软件麦克风、扬声器都不活动这么久，算会开完了
 
-    def __init__(self, on_pcm, on_state=None, poll_s: float = 2.0, apps: dict | None = None):
+    def __init__(self, on_pcm, on_state=None, poll_s: float = 2.0, apps: dict | None = None, enabled: bool = True,
+                 activity_fn=None):
         self._on_pcm = on_pcm
         self._on_state = on_state
         self._poll_s = max(0.05, float(poll_s))
         self._apps = apps
+        self._activity = activity_fn or activity
+        self._enabled = bool(enabled)
         self._cap: AppCapture | None = None
-        self._label: str | None = None
+        self._call: tuple[int, str] | None = None      # 在开会的那个：(根进程 pid, 显示名)
+        self._spk_since: float | None = None
+        self._idle_since: float | None = None
         self._failed: dict[int, float] = {}
         self._stop = threading.Event()
+        self._wake = threading.Event()
         self._th: threading.Thread | None = None
 
     @property
     def label(self) -> str | None:
-        return self._label
+        """在开会的会议软件的显示名（不管录不录）。"""
+        c = self._call
+        return c[1] if c else None
+
+    @property
+    def capturing(self) -> bool:
+        return self._cap is not None
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def set_enabled(self, on: bool) -> None:
+        """录不录（在开会时马上挂上 / 断开）。"""
+        self._enabled = bool(on)
+        self._wake.set()
 
     def start(self) -> None:
         if self._th is not None and self._th.is_alive():
@@ -839,71 +1006,112 @@ class AppListener:
 
     def stop(self) -> None:
         self._stop.set()
+        self._wake.set()
         th = self._th
         if th is not None and th is not threading.current_thread():
             th.join(6)
         self._th = None
 
     def _run(self) -> None:
+        co = _coinit()                    # 查音频会话要 COM（MTA）
         try:
+            next_poll = 0.0
             while not self._stop.is_set():
                 cap = self._cap
-                if cap is None:
-                    self._attach()
-                    if self._cap is None:
-                        self._stop.wait(self._poll_s)
-                elif not cap.alive:
+                if cap is not None and not cap.alive:
                     if cap.error:
-                        log.info("按程序录音：%s 断开（%s）", self._label, cap.error)
-                    self._detach()
-                else:
-                    self._stop.wait(min(self._poll_s, 0.2))
+                        log.info("按程序录音：%s 断开（%s）", self.label, cap.error)
+                    self._drop()          # 抓取断了：马上再看一次，还在开会就重挂
+                    next_poll = 0.0
+                now = time.monotonic()
+                if self._wake.is_set() or now >= next_poll:
+                    self._wake.clear()
+                    next_poll = now + self._poll_s
+                    self._poll(now)
+                wait = max(0.0, next_poll - time.monotonic())
+                self._wake.wait(min(wait, 0.2) if self._cap is not None else wait)
         except Exception:
             log.exception("按程序录音：监听出错")
         finally:
-            self._detach()
+            self._end_call()
+            if co:
+                _couninit()
 
-    def _attach(self) -> None:
+    def _poll(self, now: float) -> None:
         try:
             found = find_app(self._apps)
         except Exception:
             log.debug("找会议软件失败", exc_info=True)
-            return
+            found = None
         if not found:
+            self._end_call()
             return
         pid, exe, name = found
-        now = time.monotonic()
+        if self._call is not None and self._call[0] != pid:
+            self._end_call()                  # 软件重开了：换了一个进程
+        live = self._live(pid, now)
+        if live and self._call is None:
+            self._call = (pid, name)
+            log.info("按程序录音：%s 在开会（%s，pid %d）", name, exe, pid)
+            self._call_state(name)
+        elif not live and self._call is not None:
+            self._end_call()
+        if self._call is not None and self._enabled and self._cap is None:
+            self._attach(pid, name, now)
+        elif self._cap is not None and not self._enabled:
+            self._drop()
+
+    def _live(self, pid: int, now: float) -> bool:
+        """这个会议软件现在算不算在开会（见类的说明）。"""
+        try:
+            act = self._activity(tree_pids(pid))
+        except Exception:
+            log.debug("查音频会话失败", exc_info=True)
+            act = None
+        if act is None:
+            return True
+        mic, spk = act
+        if not spk:
+            self._spk_since = None
+        elif self._spk_since is None:
+            self._spk_since = now
+        if mic or spk:
+            self._idle_since = None
+        elif self._idle_since is None:
+            self._idle_since = now
+        if self._call is None:
+            return bool(mic or (spk and now - self._spk_since >= self.SPK_HOLD_S))
+        return self._idle_since is None or now - self._idle_since < self.IDLE_S
+
+    def _attach(self, pid: int, name: str, now: float) -> None:
         self._failed = {p: t for p, t in self._failed.items() if t > now}
         if pid in self._failed:
             return
-        gate = threading.Event()        # on_state(name) 回调完才放 on_pcm 出去
-
-        def on_pcm(pcm, t, _name=name):
-            if not gate.is_set():
-                gate.wait(2.0)
-            self._on_pcm(_name, pcm, t)
-
-        cap = AppCapture(pid, on_pcm)
+        cap = AppCapture(pid, lambda pcm, t, _name=name: self._on_pcm(_name, pcm, t))
         try:
             cap.start()
         except AppAudioError as e:
             log.warning("按程序录音：%s（pid %d）挂不上：%s", name, pid, e)
             self._failed[pid] = now + self.RETRY_S
             return
-        self._cap, self._label = cap, name
-        log.info("按程序录音：挂上 %s（%s，pid %d）", name, exe, pid)
-        try:
-            self._call_state(name)
-        finally:
-            gate.set()
+        self._cap = cap
+        log.info("按程序录音：开始录 %s（pid %d）", name, pid)
 
-    def _detach(self) -> None:
+    def _drop(self) -> None:
+        """不录了（会议软件还可能在开会）。"""
         cap, self._cap = self._cap, None
         if cap is None:
             return
         cap.stop()
-        log.info("按程序录音：断开 %s", self._label)
-        self._label = None
+        log.info("按程序录音：停止录 %s", self.label)
+
+    def _end_call(self) -> None:
+        self._drop()
+        call, self._call = self._call, None
+        self._spk_since = self._idle_since = None
+        if call is None:
+            return
+        log.info("按程序录音：%s 不在开会了", call[1])
         self._call_state(None)
 
     def _call_state(self, label) -> None:
